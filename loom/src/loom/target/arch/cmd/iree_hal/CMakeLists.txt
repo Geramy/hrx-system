@@ -35,8 +35,11 @@ loom_cc_test(
     "recording_test.cc"
   DEPS
     ::recording
+    iree::async
+    iree::async::util::proactor_pool
     iree::base::internal::arena
     iree::hal
+    iree::hal::drivers::local_sync::sync_driver
     iree::testing::gtest
     iree::testing::gtest_main
     loom::codegen::low::text_asm
