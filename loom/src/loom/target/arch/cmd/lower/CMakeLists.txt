@@ -55,6 +55,22 @@ loom_cc_library(
 
 loom_cc_library(
   NAME
+    launch_artifact
+  HDRS
+    "launch_artifact.h"
+  SRCS
+    "launch_artifact.c"
+  DEPS
+    ::launch_graph
+    iree::base
+    iree::base::internal::arena
+    iree::io::stream
+    loom::format::bytecode::writer
+  PUBLIC
+)
+
+loom_cc_library(
+  NAME
     lower
   HDRS
     "lower.h"
@@ -142,6 +158,7 @@ loom_cc_test(
   SRCS
     "launch_graph_test.cc"
   DEPS
+    ::launch_artifact
     ::launch_graph
     ::schedule
     iree::base
@@ -196,19 +213,18 @@ loom_cc_test(
   SRCS
     "lower_test.cc"
   DEPS
+    ::launch_artifact
     ::lower
     ::schedule
     ::serialize
     iree::base
     iree::base::internal::arena
     iree::hal
-    iree::io::stream
     iree::testing::gtest
     iree::testing::gtest_main
     loom::analysis::exact_function
     loom::codegen::low::verify
     loom::format::bytecode::reader
-    loom::format::bytecode::writer
     loom::format::text::parser
     loom::ir
     loom::ops::low

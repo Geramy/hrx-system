@@ -55,6 +55,19 @@ loom_cc_library(
 )
 
 loom_cc_library(
+    name = "launch_artifact",
+    srcs = ["launch_artifact.c"],
+    hdrs = ["launch_artifact.h"],
+    deps = [
+        ":launch_graph",
+        "//loom/src/loom/format/bytecode:writer",
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/base/internal:arena",
+        "//runtime/src/iree/io:stream",
+    ],
+)
+
+loom_cc_library(
     name = "lower",
     srcs = ["lower.c"],
     hdrs = ["lower.h"],
@@ -132,6 +145,7 @@ loom_cc_test(
     name = "launch_graph_test",
     srcs = ["launch_graph_test.cc"],
     deps = [
+        ":launch_artifact",
         ":launch_graph",
         ":schedule",
         "//loom/src/loom/analysis:exact_function",
@@ -184,13 +198,13 @@ loom_cc_test(
     name = "lower_test",
     srcs = ["lower_test.cc"],
     deps = [
+        ":launch_artifact",
         ":lower",
         ":schedule",
         ":serialize",
         "//loom/src/loom/analysis:exact_function",
         "//loom/src/loom/codegen/low:verify",
         "//loom/src/loom/format/bytecode:reader",
-        "//loom/src/loom/format/bytecode:writer",
         "//loom/src/loom/format/text:parser",
         "//loom/src/loom/ir",
         "//loom/src/loom/ops:op_registry",
@@ -203,7 +217,6 @@ loom_cc_test(
         "//runtime/src/iree/base",
         "//runtime/src/iree/base/internal:arena",
         "//runtime/src/iree/hal",
-        "//runtime/src/iree/io:stream",
         "//runtime/src/iree/testing:gtest",
         "//runtime/src/iree/testing:gtest_main",
     ],
