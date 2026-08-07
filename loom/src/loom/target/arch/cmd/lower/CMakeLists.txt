@@ -48,6 +48,28 @@ loom_cc_library(
 
 loom_cc_library(
   NAME
+    kernel_unit
+  HDRS
+    "kernel_unit.h"
+  SRCS
+    "kernel_unit.c"
+  DEPS
+    iree::base
+    iree::base::internal::arena
+    loom::ir
+    loom::link::linker
+    loom::ops::kernel
+    loom::ops::op_defs
+    loom::ops::special_values
+    loom::ops::type_registry
+    loom::pass::value_facts
+    loom::transforms::cleanup::canonicalize
+    loom::util::fact_table
+  PUBLIC
+)
+
+loom_cc_library(
+  NAME
     serialize
   HDRS
     "serialize.h"
@@ -83,6 +105,31 @@ loom_cc_test(
     loom::ops::kernel
     loom::ops::op_registry
     loom::testing::module_ptr
+)
+
+loom_cc_test(
+  NAME
+    kernel_unit_test
+  SRCS
+    "kernel_unit_test.cc"
+  DEPS
+    ::kernel_unit
+    iree::base
+    iree::base::internal::arena
+    iree::testing::gtest
+    iree::testing::gtest_main
+    loom::format::text::parser
+    loom::ir
+    loom::ops::buffer
+    loom::ops::kernel
+    loom::ops::op_registry
+    loom::ops::scf
+    loom::ops::type_registry
+    loom::ops::view
+    loom::testing::diagnostic_matchers
+    loom::testing::module_ptr
+    loom::util::fact_table
+    loom::verify
 )
 
 loom_cc_test(
