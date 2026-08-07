@@ -19,30 +19,46 @@ enum {
 };
 
 typedef enum loom_cmd_schedule_mode_e {
+  // Each child begins after the complete span of its previous sibling.
   LOOM_CMD_SCHEDULE_MODE_SERIAL = 0,
+  // Every child begins at the region base wave.
   LOOM_CMD_SCHEDULE_MODE_CONCURRENT = 1,
 } loom_cmd_schedule_mode_t;
 
 typedef struct loom_cmd_schedule_frame_t {
+  // Next operation awaiting traversal in this region.
   loom_op_t* next_op;
+  // First wave available to children in this region.
   iree_host_size_t base_wave;
+  // Number of waves occupied by children visited so far.
   iree_host_size_t span;
+  // Composition rule applied to direct children.
   loom_cmd_schedule_mode_t mode;
 } loom_cmd_schedule_frame_t;
 
 typedef struct loom_cmd_schedule_command_t {
+  // Source command operation.
   const loom_op_t* op;
+  // Wave assigned while traversing the structured schedule.
   iree_host_size_t wave_index;
 } loom_cmd_schedule_command_t;
 
 typedef struct loom_cmd_schedule_build_t {
+  // Source module used to diagnose unsupported operations.
   const loom_module_t* module;
+  // Arena owning traversal and command tables.
   iree_arena_allocator_t* arena;
+  // Non-recursive structured-region traversal stack.
   loom_cmd_schedule_frame_t* frames;
+  // Number of active traversal frames.
   iree_host_size_t frame_count;
+  // Number of allocated traversal frames.
   iree_host_size_t frame_capacity;
+  // Commands accumulated in source traversal order.
   loom_cmd_schedule_command_t* commands;
+  // Number of accumulated commands.
   iree_host_size_t command_count;
+  // Number of allocated command rows.
   iree_host_size_t command_capacity;
 } loom_cmd_schedule_build_t;
 
