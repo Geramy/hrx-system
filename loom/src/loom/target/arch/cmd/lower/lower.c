@@ -18,7 +18,7 @@
 #include "loom/ops/kernel/ops.h"
 #include "loom/ops/low/ops.h"
 #include "loom/target/arch/cmd/descriptors/descriptors.h"
-#include "loom/target/arch/cmd/lower/schedule.h"
+#include "loom/target/types.h"
 
 typedef struct loom_cmd_lower_constant_t {
   // Source constant bit pattern used to deduplicate materializations.
@@ -70,6 +70,8 @@ typedef struct loom_cmd_lower_resources_t {
   loom_value_id_t* fixed_buffers;
   // Rebindable resources indexed by issue-time binding slot.
   loom_value_id_t* bindings;
+  // Buffer references indexed by aggregate host launch tuple ordinal.
+  loom_value_id_t* launch_counts;
   // Executable resources indexed by package executable ordinal.
   loom_value_id_t* executables;
   // Entry-token resources indexed by program entry ordinal.
@@ -83,8 +85,6 @@ typedef struct loom_cmd_lower_state_t {
   loom_func_like_t source_program;
   // Compiler-owned placement and dispatch facts.
   const loom_cmd_lower_plan_t* plan;
-  // Portable wave schedule derived before conversion begins.
-  const loom_cmd_schedule_plan_t* schedule;
   // Generated descriptor set for the portable command ISA.
   const loom_low_descriptor_set_t* descriptor_set;
   // Scratch storage discarded after conversion.
@@ -276,11 +276,17 @@ static iree_status_t loom_cmd_lower_map_source_bindings(
   uint16_t argument_count = 0;
   const loom_value_id_t* argument_ids =
       loom_func_like_arg_ids(state->source_program, &argument_count);
-  IREE_ASSERT_EQ(state->plan->binding_count, argument_count);
+  const int64_t specialization_count_i64 =
+      loom_func_like_specialization_count(state->source_program);
+  IREE_ASSERT_GE(specialization_count_i64, 0);
+  IREE_ASSERT_LE(specialization_count_i64, argument_count);
+  const uint16_t specialization_count = (uint16_t)specialization_count_i64;
+  const uint16_t binding_count = argument_count - specialization_count;
+  IREE_ASSERT_EQ(state->plan->binding_count, binding_count);
   IREE_ASSERT(state->plan->binding_count == 0 || state->plan->bindings != NULL);
 
-  for (uint16_t i = 0; i < argument_count; ++i) {
-    const loom_value_id_t source_value = argument_ids[i];
+  for (uint16_t i = 0; i < binding_count; ++i) {
+    const loom_value_id_t source_value = argument_ids[specialization_count + i];
     IREE_ASSERT_LT(source_value, state->resources.source_value_count);
     IREE_ASSERT(loom_type_is_buffer(
         loom_module_value_type(state->module, source_value)));
@@ -318,6 +324,46 @@ static iree_status_t loom_cmd_lower_map_source_bindings(
     state->resources.source_value_map[source_value] = buffer_ref;
     IREE_RETURN_IF_ERROR(
         loom_module_copy_value_name(state->module, source_value, buffer_ref));
+  }
+  return iree_ok_status();
+}
+
+static iree_status_t loom_cmd_lower_build_launch_count_refs(
+    loom_cmd_lower_state_t* state) {
+  const loom_cmd_launch_graph_t* graph = state->plan->launch_graph;
+  if (graph->host_tuple_count == 0) return iree_ok_status();
+
+  const loom_cmd_lower_launch_count_binding_t binding =
+      state->plan->launch_count_binding;
+  IREE_ASSERT_LT(binding.resource_index, state->plan->rebindable_binding_count);
+  IREE_ASSERT_EQ(binding.byte_offset % sizeof(uint32_t), 0u);
+  IREE_RETURN_IF_ERROR(loom_cmd_lower_allocate_value_array(
+      state, graph->host_tuple_count, &state->resources.launch_counts));
+
+  const uint64_t tuple_byte_length = LOOM_CMD_LAUNCH_COUNT_TUPLE_BYTE_LENGTH;
+  loom_value_id_t byte_length = LOOM_VALUE_ID_INVALID;
+  IREE_RETURN_IF_ERROR(loom_cmd_lower_build_u64_constant(
+      state, tuple_byte_length, state->source_program.op->location,
+      &byte_length));
+  for (uint32_t i = 0; i < graph->host_tuple_count; ++i) {
+    const uint64_t tuple_byte_offset = (uint64_t)i * tuple_byte_length;
+    IREE_ASSERT_LE(binding.byte_offset, UINT64_MAX - tuple_byte_offset);
+    loom_value_id_t byte_offset = LOOM_VALUE_ID_INVALID;
+    IREE_RETURN_IF_ERROR(loom_cmd_lower_build_u64_constant(
+        state, binding.byte_offset + tuple_byte_offset,
+        state->source_program.op->location, &byte_offset));
+    const loom_value_id_t operands[] = {
+        state->resources.bindings[binding.resource_index],
+        byte_offset,
+        byte_length,
+    };
+    loom_op_t* buffer_ref_op = NULL;
+    IREE_RETURN_IF_ERROR(loom_cmd_lower_build_descriptor_op(
+        state, CMD_CORE_DESCRIPTOR_REF_BUFFER_REF_BINDING, operands,
+        IREE_ARRAYSIZE(operands), &state->types.buffer_ref, /*result_count=*/1,
+        state->source_program.op->location, &buffer_ref_op));
+    state->resources.launch_counts[i] =
+        loom_low_op_results(buffer_ref_op).values[0];
   }
   return iree_ok_status();
 }
@@ -360,27 +406,25 @@ static iree_status_t loom_cmd_lower_build_launch_arguments(
 }
 
 static iree_status_t loom_cmd_lower_build_direct_launch(
-    loom_cmd_lower_state_t* state,
-    const loom_cmd_lower_direct_launch_t* launch) {
-  IREE_ASSERT(loom_kernel_launch_isa(launch->source_op));
+    loom_cmd_lower_state_t* state, const loom_op_t* source_op,
+    const loom_cmd_lower_launch_t* launch,
+    loom_target_dispatch_workgroup_count_t workgroup_count) {
+  IREE_ASSERT(loom_kernel_launch_isa(source_op));
   IREE_ASSERT_LT(launch->executable_index, state->plan->executable_count);
   IREE_ASSERT_LT(launch->entry_index, state->plan->entry_count);
 
   loom_value_id_t arguments = LOOM_VALUE_ID_INVALID;
-  IREE_RETURN_IF_ERROR(loom_cmd_lower_build_launch_arguments(
-      state, launch->source_op, &arguments));
+  IREE_RETURN_IF_ERROR(
+      loom_cmd_lower_build_launch_arguments(state, source_op, &arguments));
   loom_value_id_t workgroup_count_x = LOOM_VALUE_ID_INVALID;
   loom_value_id_t workgroup_count_y = LOOM_VALUE_ID_INVALID;
   loom_value_id_t workgroup_count_z = LOOM_VALUE_ID_INVALID;
   IREE_RETURN_IF_ERROR(loom_cmd_lower_build_u32_constant(
-      state, launch->workgroup_count.x, launch->source_op->location,
-      &workgroup_count_x));
+      state, workgroup_count.x, source_op->location, &workgroup_count_x));
   IREE_RETURN_IF_ERROR(loom_cmd_lower_build_u32_constant(
-      state, launch->workgroup_count.y, launch->source_op->location,
-      &workgroup_count_y));
+      state, workgroup_count.y, source_op->location, &workgroup_count_y));
   IREE_RETURN_IF_ERROR(loom_cmd_lower_build_u32_constant(
-      state, launch->workgroup_count.z, launch->source_op->location,
-      &workgroup_count_z));
+      state, workgroup_count.z, source_op->location, &workgroup_count_z));
   const loom_value_id_t operands[] = {
       state->resources.executables[launch->executable_index],
       state->resources.entries[launch->entry_index],
@@ -393,7 +437,51 @@ static iree_status_t loom_cmd_lower_build_direct_launch(
   return loom_cmd_lower_build_descriptor_op(
       state, CMD_CORE_DESCRIPTOR_REF_DISPATCH_DIRECT, operands,
       IREE_ARRAYSIZE(operands), /*result_types=*/NULL, /*result_count=*/0,
-      launch->source_op->location, &dispatch_op);
+      source_op->location, &dispatch_op);
+}
+
+static iree_status_t loom_cmd_lower_build_host_launch(
+    loom_cmd_lower_state_t* state, const loom_op_t* source_op,
+    const loom_cmd_lower_launch_t* launch, uint32_t host_tuple_ordinal) {
+  IREE_ASSERT(loom_kernel_launch_isa(source_op));
+  IREE_ASSERT_LT(launch->executable_index, state->plan->executable_count);
+  IREE_ASSERT_LT(launch->entry_index, state->plan->entry_count);
+  IREE_ASSERT_LT(host_tuple_ordinal,
+                 state->plan->launch_graph->host_tuple_count);
+
+  loom_value_id_t arguments = LOOM_VALUE_ID_INVALID;
+  IREE_RETURN_IF_ERROR(
+      loom_cmd_lower_build_launch_arguments(state, source_op, &arguments));
+  const loom_value_id_t operands[] = {
+      state->resources.executables[launch->executable_index],
+      state->resources.entries[launch->entry_index],
+      state->resources.launch_counts[host_tuple_ordinal],
+      arguments,
+  };
+  loom_op_t* dispatch_op = NULL;
+  return loom_cmd_lower_build_descriptor_op(
+      state, CMD_CORE_DESCRIPTOR_REF_DISPATCH_INDIRECT_STATIC, operands,
+      IREE_ARRAYSIZE(operands), /*result_types=*/NULL, /*result_count=*/0,
+      source_op->location, &dispatch_op);
+}
+
+static iree_status_t loom_cmd_lower_build_launch(
+    loom_cmd_lower_state_t* state, iree_host_size_t launch_index) {
+  const loom_cmd_lower_launch_t* launch = &state->plan->launches[launch_index];
+  const loom_cmd_launch_count_t* launch_count =
+      &state->plan->launch_graph->launches[launch_index];
+  switch (launch_count->kind) {
+    case LOOM_CMD_LAUNCH_COUNT_KIND_DIRECT:
+      return loom_cmd_lower_build_direct_launch(
+          state, launch_count->source_op, launch, launch_count->payload.direct);
+    case LOOM_CMD_LAUNCH_COUNT_KIND_HOST:
+      return loom_cmd_lower_build_host_launch(
+          state, launch_count->source_op, launch,
+          launch_count->payload.host_tuple_ordinal);
+    default:
+      IREE_ASSERT_UNREACHABLE("aggregate launch count kind is valid");
+      IREE_BUILTIN_UNREACHABLE();
+  }
 }
 
 static iree_status_t loom_cmd_lower_build_barrier(loom_cmd_lower_state_t* state,
@@ -405,26 +493,24 @@ static iree_status_t loom_cmd_lower_build_barrier(loom_cmd_lower_state_t* state,
       /*result_count=*/0, location, &barrier_op);
 }
 
-static iree_status_t loom_cmd_lower_build_schedule(
+static iree_status_t loom_cmd_lower_build_commands(
     loom_cmd_lower_state_t* state) {
-  IREE_ASSERT_EQ(state->plan->launch_count, state->schedule->command_count);
-  IREE_ASSERT(state->plan->launch_count == 0 || state->plan->launches != NULL);
-  for (iree_host_size_t wave_index = 0;
-       wave_index < state->schedule->wave_count; ++wave_index) {
-    const loom_cmd_schedule_wave_t wave = state->schedule->waves[wave_index];
+  const loom_cmd_launch_graph_t* graph = state->plan->launch_graph;
+  IREE_ASSERT(graph->launch_count == 0 || graph->launches != NULL);
+  IREE_ASSERT(graph->launch_count == 0 || state->plan->launches != NULL);
+  IREE_ASSERT(graph->wave_count == 0 || graph->waves != NULL);
+  for (iree_host_size_t wave_index = 0; wave_index < graph->wave_count;
+       ++wave_index) {
+    const loom_cmd_schedule_wave_t wave = graph->waves[wave_index];
     IREE_ASSERT_GT(wave.command_count, 0u);
     for (iree_host_size_t i = 0; i < wave.command_count; ++i) {
       const iree_host_size_t launch_index = wave.command_offset + i;
-      const loom_cmd_lower_direct_launch_t* launch =
-          &state->plan->launches[launch_index];
-      IREE_ASSERT_EQ(launch->source_op,
-                     state->schedule->commands[launch_index]);
-      IREE_RETURN_IF_ERROR(loom_cmd_lower_build_direct_launch(state, launch));
+      IREE_RETURN_IF_ERROR(loom_cmd_lower_build_launch(state, launch_index));
     }
-    if (wave_index + 1 < state->schedule->wave_count) {
+    if (wave_index + 1 < graph->wave_count) {
       const loom_op_t* last_op =
-          state->schedule
-              ->commands[wave.command_offset + wave.command_count - 1];
+          graph->launches[wave.command_offset + wave.command_count - 1]
+              .source_op;
       IREE_RETURN_IF_ERROR(
           loom_cmd_lower_build_barrier(state, last_op->location));
     }
@@ -493,7 +579,8 @@ static iree_status_t loom_cmd_lower_convert(loom_cmd_lower_state_t* state) {
   IREE_RETURN_IF_ERROR(loom_cmd_lower_create_function(state));
   IREE_RETURN_IF_ERROR(loom_cmd_lower_build_abi_resources(state));
   IREE_RETURN_IF_ERROR(loom_cmd_lower_map_source_bindings(state));
-  return loom_cmd_lower_build_schedule(state);
+  IREE_RETURN_IF_ERROR(loom_cmd_lower_build_launch_count_refs(state));
+  return loom_cmd_lower_build_commands(state);
 }
 
 iree_status_t loom_cmd_lower_program_to_low(loom_module_t* module,
@@ -512,31 +599,28 @@ iree_status_t loom_cmd_lower_program_to_low(loom_module_t* module,
 
   loom_func_like_t source_program = loom_func_like_cast(module, program_op);
   IREE_ASSERT(loom_func_like_isa(source_program));
-  if (loom_func_like_specialization_count(source_program) != 0) {
-    return iree_make_status(
-        IREE_STATUS_UNIMPLEMENTED,
-        "cmd direct conversion requires all specialization arguments to be "
-        "resolved before low conversion");
-  }
   uint16_t argument_count = 0;
   loom_func_like_arg_ids(source_program, &argument_count);
-  IREE_ASSERT_EQ(plan->binding_count, argument_count);
+  const int64_t specialization_count =
+      loom_func_like_specialization_count(source_program);
+  IREE_ASSERT_GE(specialization_count, 0);
+  IREE_ASSERT_LE(specialization_count, argument_count);
+  IREE_ASSERT_EQ(plan->binding_count,
+                 argument_count - (uint16_t)specialization_count);
   IREE_ASSERT(plan->binding_count == 0 || plan->bindings != NULL);
+  IREE_ASSERT(plan->launch_graph != NULL);
   IREE_ASSERT(loom_symbol_ref_is_valid(plan->command_target));
   IREE_ASSERT_EQ(plan->command_target.module_id, 0u);
   IREE_ASSERT_LT(plan->command_target.symbol_id, module->symbols.count);
 
   iree_arena_allocator_t scratch_arena;
   iree_arena_initialize(module->arena.block_pool, &scratch_arena);
-  loom_cmd_schedule_plan_t schedule = {0};
-  iree_status_t status = loom_cmd_schedule_plan_build(
-      module, loom_func_like_body(source_program), &scratch_arena, &schedule);
+  iree_status_t status = iree_ok_status();
 
   loom_cmd_lower_state_t state = {
       .module = module,
       .source_program = source_program,
       .plan = plan,
-      .schedule = &schedule,
       .descriptor_set = loom_cmd_core_descriptor_set(),
       .scratch_arena = &scratch_arena,
       .resources.source_value_count = module->values.count,

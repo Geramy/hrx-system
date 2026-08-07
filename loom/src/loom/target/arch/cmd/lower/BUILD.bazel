@@ -59,7 +59,7 @@ loom_cc_library(
     srcs = ["lower.c"],
     hdrs = ["lower.h"],
     deps = [
-        ":schedule",
+        ":launch_graph",
         "//loom/src/loom/codegen/low:builder",
         "//loom/src/loom/ir",
         "//loom/src/loom/ops/command",

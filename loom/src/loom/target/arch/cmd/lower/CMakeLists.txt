@@ -61,7 +61,7 @@ loom_cc_library(
   SRCS
     "lower.c"
   DEPS
-    ::schedule
+    ::launch_graph
     iree::base
     iree::base::internal::arena
     loom::codegen::low::builder

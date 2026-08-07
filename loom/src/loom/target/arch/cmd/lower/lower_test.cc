@@ -49,6 +49,8 @@ struct CapturedCommand {
   iree_hal_executable_function_t function = {};
   // Workgroup counts passed to a captured dispatch.
   iree_hal_dispatch_config_t dispatch_config = {};
+  // Dispatch flags selecting direct or indirect parameter stability.
+  iree_hal_dispatch_flags_t dispatch_flags = IREE_HAL_DISPATCH_FLAG_NONE;
   // Buffer references passed to a captured dispatch.
   std::vector<iree_hal_buffer_ref_t> bindings;
 };
@@ -99,12 +101,12 @@ static iree_status_t CaptureDispatch(
     const iree_hal_dispatch_config_t config, iree_const_byte_span_t constants,
     iree_hal_buffer_ref_list_t bindings, iree_hal_dispatch_flags_t flags) {
   IREE_ASSERT(iree_const_byte_span_is_empty(constants));
-  IREE_ASSERT_EQ(flags, IREE_HAL_DISPATCH_FLAG_NONE);
   CapturedCommand command = {
       /*.kind=*/CapturedCommandKind::kDispatch,
       /*.executable=*/executable,
       /*.function=*/function,
       /*.dispatch_config=*/config,
+      /*.dispatch_flags=*/flags,
   };
   command.bindings.assign(bindings.values, bindings.values + bindings.count);
   CastCommandBuffer(base_command_buffer)
@@ -153,7 +155,9 @@ static void ExpectCapturedProgramsEqual(const CaptureCommandBuffer& expected,
     if (actual_command.kind != CapturedCommandKind::kDispatch) continue;
     EXPECT_EQ(actual_command.executable, expected_command.executable);
     EXPECT_EQ(actual_command.function.value, expected_command.function.value);
-    for (iree_host_size_t axis = 0; axis < 3; ++axis) {
+    EXPECT_EQ(actual_command.dispatch_flags, expected_command.dispatch_flags);
+    for (iree_host_size_t axis = 0;
+         axis < LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT; ++axis) {
       EXPECT_EQ(actual_command.dispatch_config.workgroup_size[axis],
                 expected_command.dispatch_config.workgroup_size[axis]);
       EXPECT_EQ(actual_command.dispatch_config.workgroup_count[axis],
@@ -161,6 +165,14 @@ static void ExpectCapturedProgramsEqual(const CaptureCommandBuffer& expected,
     }
     EXPECT_EQ(actual_command.dispatch_config.dynamic_workgroup_local_memory,
               expected_command.dispatch_config.dynamic_workgroup_local_memory);
+    EXPECT_EQ(actual_command.dispatch_config.workgroup_count_ref.buffer,
+              expected_command.dispatch_config.workgroup_count_ref.buffer);
+    EXPECT_EQ(actual_command.dispatch_config.workgroup_count_ref.buffer_slot,
+              expected_command.dispatch_config.workgroup_count_ref.buffer_slot);
+    EXPECT_EQ(actual_command.dispatch_config.workgroup_count_ref.offset,
+              expected_command.dispatch_config.workgroup_count_ref.offset);
+    EXPECT_EQ(actual_command.dispatch_config.workgroup_count_ref.length,
+              expected_command.dispatch_config.workgroup_count_ref.length);
     ASSERT_EQ(actual_command.bindings.size(), expected_command.bindings.size());
     for (iree_host_size_t binding = 0;
          binding < expected_command.bindings.size(); ++binding) {
@@ -256,17 +268,44 @@ TEST_F(CmdLowerTest, LowersAndRecordsPrepareThenConcurrentQkv) {
   ModulePtr module = ParseAndVerifySource(R"(
 target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
 
-kernel.decl @prepare() launch(%parameters: buffer, %input: buffer, %scratch: buffer)
-kernel.decl @query() launch(%parameters: buffer, %scratch: buffer, %output: buffer)
-kernel.decl @key() launch(%parameters: buffer, %scratch: buffer, %output: buffer)
-kernel.decl @value() launch(%parameters: buffer, %scratch: buffer, %output: buffer)
+kernel.def @prepare() {
+  %sixteen = index.constant 16 : index
+  %one = index.constant 1 : index
+  kernel.launch.config workgroups(%sixteen, %one, %one) workgroup_size(%one, %one, %one) : index
+} launch(%parameters: buffer, %input: buffer, %scratch: buffer) {
+  kernel.return
+}
 
-command.program.def public @attention() launch(%parameters: buffer, %input: buffer, %scratch: buffer, %query_output: buffer, %key_output: buffer, %value_output: buffer) {
+kernel.def @query(%token_count: index) {
+  %one = index.constant 1 : index
+  %row_groups = index.add %token_count, %one : index
+  kernel.launch.config workgroups(%row_groups, %one, %one) workgroup_size(%one, %one, %one) : index
+} launch(%parameters: buffer, %scratch: buffer, %output: buffer) {
+  kernel.return
+}
+
+kernel.def @key(%token_count: index) {
+  %one = index.constant 1 : index
+  %row_groups = index.add %token_count, %one : index
+  kernel.launch.config workgroups(%row_groups, %one, %one) workgroup_size(%one, %one, %one) : index
+} launch(%parameters: buffer, %scratch: buffer, %output: buffer) {
+  kernel.return
+}
+
+kernel.def @value(%token_count: index) {
+  %one = index.constant 1 : index
+  %row_groups = index.add %token_count, %one : index
+  kernel.launch.config workgroups(%row_groups, %one, %one) workgroup_size(%one, %one, %one) : index
+} launch(%parameters: buffer, %scratch: buffer, %output: buffer) {
+  kernel.return
+}
+
+command.program.def public @attention(%token_count: index) launch(%parameters: buffer, %input: buffer, %scratch: buffer, %query_output: buffer, %key_output: buffer, %value_output: buffer) where [range(%token_count, 1, 512)] {
   kernel.launch @prepare[](%parameters, %input, %scratch) : [](buffer, buffer, buffer)
   command.concurrent {
-    kernel.launch @query[](%parameters, %scratch, %query_output) : [](buffer, buffer, buffer)
-    kernel.launch @key[](%parameters, %scratch, %key_output) : [](buffer, buffer, buffer)
-    kernel.launch @value[](%parameters, %scratch, %value_output) : [](buffer, buffer, buffer)
+    kernel.launch @query[%token_count](%parameters, %scratch, %query_output) : [index](buffer, buffer, buffer)
+    kernel.launch @key[%token_count](%parameters, %scratch, %key_output) : [index](buffer, buffer, buffer)
+    kernel.launch @value[%token_count](%parameters, %scratch, %value_output) : [index](buffer, buffer, buffer)
   }
   command.return
 }
@@ -282,8 +321,26 @@ command.program.def public @attention() launch(%parameters: buffer, %input: buff
       module.get(), loom_func_like_body(source_program_like), &schedule_arena,
       &schedule));
   ASSERT_EQ(schedule.command_count, 4u);
+  loom_cmd_launch_graph_t launch_graph = {};
+  IREE_ASSERT_OK(loom_cmd_launch_graph_materialize(
+      module.get(), source_program, &schedule, &block_pool_,
+      iree_allocator_system(), &launch_graph));
+  ASSERT_EQ(launch_graph.launch_count, 4u);
+  ASSERT_EQ(launch_graph.wave_count, 2u);
+  ASSERT_EQ(launch_graph.waves[0].command_offset, 0u);
+  ASSERT_EQ(launch_graph.waves[0].command_count, 1u);
+  ASSERT_EQ(launch_graph.waves[1].command_offset, 1u);
+  ASSERT_EQ(launch_graph.waves[1].command_count, 3u);
+  ASSERT_EQ(launch_graph.host_tuple_count, 1u);
+  ASSERT_EQ(launch_graph.launches[0].kind, LOOM_CMD_LAUNCH_COUNT_KIND_DIRECT);
+  for (iree_host_size_t i = 1; i < launch_graph.launch_count; ++i) {
+    ASSERT_EQ(launch_graph.launches[i].kind, LOOM_CMD_LAUNCH_COUNT_KIND_HOST);
+    ASSERT_EQ(launch_graph.launches[i].payload.host_tuple_ordinal, 0u);
+  }
+  iree_arena_deinitialize(&schedule_arena);
 
   static constexpr uint64_t kBufferLength = 4096;
+  static constexpr uint64_t kLaunchCountOffset = 64;
   const std::array<loom_cmd_lower_binding_t, 6> binding_plan = {{
       {LOOM_CMD_LOWER_BUFFER_ROLE_FIXED, 0, 0, kBufferLength},
       {LOOM_CMD_LOWER_BUFFER_ROLE_REBINDABLE, 0, 0, kBufferLength},
@@ -292,11 +349,11 @@ command.program.def public @attention() launch(%parameters: buffer, %input: buff
       {LOOM_CMD_LOWER_BUFFER_ROLE_REBINDABLE, 3, 0, kBufferLength},
       {LOOM_CMD_LOWER_BUFFER_ROLE_REBINDABLE, 4, 0, kBufferLength},
   }};
-  std::array<loom_cmd_lower_direct_launch_t, 4> launch_plan = {{
-      {schedule.commands[0], 0, 0, {16, 1, 1}},
-      {schedule.commands[1], 1, 1, {32, 1, 1}},
-      {schedule.commands[2], 1, 2, {32, 1, 1}},
-      {schedule.commands[3], 1, 3, {32, 1, 1}},
+  const std::array<loom_cmd_lower_launch_t, 4> launch_plan = {{
+      {0, 0},
+      {1, 1},
+      {1, 2},
+      {1, 3},
   }};
   const loom_cmd_lower_plan_t plan = {
       /*.command_target=*/FindSymbolRef(module.get(),
@@ -304,16 +361,17 @@ command.program.def public @attention() launch(%parameters: buffer, %input: buff
       /*.bindings=*/binding_plan.data(),
       /*.binding_count=*/binding_plan.size(),
       /*.fixed_buffer_count=*/1,
-      /*.rebindable_binding_count=*/5,
+      /*.rebindable_binding_count=*/6,
       /*.executable_count=*/2,
       /*.entry_count=*/4,
+      /*.launch_graph=*/&launch_graph,
+      /*.launch_count_binding=*/{5, kLaunchCountOffset},
       /*.launches=*/launch_plan.data(),
-      /*.launch_count=*/launch_plan.size(),
   };
   loom_op_t* low_function = nullptr;
   IREE_ASSERT_OK(loom_cmd_lower_program_to_low(module.get(), source_program,
                                                &plan, &low_function));
-  iree_arena_deinitialize(&schedule_arena);
+  loom_cmd_launch_graph_deinitialize(&launch_graph);
 
   ASSERT_NE(low_function, nullptr);
   EXPECT_TRUE(loom_low_func_def_isa(low_function));
@@ -345,7 +403,7 @@ command.program.def public @attention() launch(%parameters: buffer, %input: buff
       reinterpret_cast<iree_hal_buffer_t*>(&fixed_buffer_storage), 64,
       kBufferLength);
   const loom_cmd_iree_hal_inputs_t inputs = {
-      /*.binding_count=*/5,
+      /*.binding_count=*/6,
       /*.fixed_buffer_count=*/1,
       /*.fixed_buffers=*/&fixed_buffer,
       /*.executable_count=*/executables.size(),
@@ -373,9 +431,21 @@ command.program.def public @attention() launch(%parameters: buffer, %input: buff
     ASSERT_EQ(dispatch.kind, CapturedCommandKind::kDispatch);
     EXPECT_EQ(dispatch.executable, executables[i == 0 ? 0 : 1]);
     EXPECT_EQ(dispatch.function.value, 100u + i);
-    EXPECT_EQ(dispatch.dispatch_config.workgroup_count[0], i == 0 ? 16u : 32u);
-    EXPECT_EQ(dispatch.dispatch_config.workgroup_count[1], 1u);
-    EXPECT_EQ(dispatch.dispatch_config.workgroup_count[2], 1u);
+    if (i == 0) {
+      EXPECT_EQ(dispatch.dispatch_flags, IREE_HAL_DISPATCH_FLAG_NONE);
+      EXPECT_EQ(dispatch.dispatch_config.workgroup_count[0], 16u);
+      EXPECT_EQ(dispatch.dispatch_config.workgroup_count[1], 1u);
+      EXPECT_EQ(dispatch.dispatch_config.workgroup_count[2], 1u);
+    } else {
+      EXPECT_EQ(dispatch.dispatch_flags,
+                IREE_HAL_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS);
+      EXPECT_EQ(dispatch.dispatch_config.workgroup_count_ref.buffer, nullptr);
+      EXPECT_EQ(dispatch.dispatch_config.workgroup_count_ref.buffer_slot, 5u);
+      EXPECT_EQ(dispatch.dispatch_config.workgroup_count_ref.offset,
+                kLaunchCountOffset);
+      EXPECT_EQ(dispatch.dispatch_config.workgroup_count_ref.length,
+                LOOM_CMD_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
+    }
     ASSERT_EQ(dispatch.bindings.size(), 3u);
     EXPECT_EQ(dispatch.bindings[0].buffer, fixed_buffer.buffer);
     EXPECT_EQ(dispatch.bindings[0].offset, fixed_buffer.offset);
@@ -398,12 +468,28 @@ command.program.def public @attention() launch(%parameters: buffer, %input: buff
       iree_make_const_byte_span(program_data.data, program_data.data_length),
       &program));
   EXPECT_EQ(program.requirements.fixed_buffer_count, 1u);
-  EXPECT_EQ(program.requirements.rebindable_binding_count, 5u);
+  EXPECT_EQ(program.requirements.rebindable_binding_count, 6u);
   EXPECT_EQ(program.requirements.executable_count, 2u);
   EXPECT_EQ(program.requirements.entry_count, 4u);
-  EXPECT_EQ(program.buffer_refs.count, 6u);
+  ASSERT_EQ(program.buffer_refs.count, 7u);
   EXPECT_EQ(program.arguments.count, 12u);
-  EXPECT_EQ(program.commands.count, 5u);
+  ASSERT_EQ(program.commands.count, 5u);
+  const loom_cmd_program_buffer_ref_t launch_count_ref =
+      loom_cmd_program_buffer_ref_at(&program, 6);
+  EXPECT_EQ(launch_count_ref.role, LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE);
+  EXPECT_EQ(launch_count_ref.root_index, 5u);
+  EXPECT_EQ(launch_count_ref.byte_offset, kLaunchCountOffset);
+  EXPECT_EQ(launch_count_ref.byte_length,
+            LOOM_CMD_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
+  EXPECT_EQ(loom_cmd_program_command_at(&program, 0).kind,
+            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT);
+  for (uint32_t i = 2; i < program.commands.count; ++i) {
+    const loom_cmd_program_command_t command =
+        loom_cmd_program_command_at(&program, i);
+    EXPECT_EQ(command.kind,
+              LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
+    EXPECT_EQ(command.payload.dispatch_indirect.workgroup_count_buffer_ref, 6u);
+  }
 
   module.reset();
   CaptureCommandBuffer artifact_command_buffer = {};
@@ -417,30 +503,58 @@ command.program.def public @attention() launch(%parameters: buffer, %input: buff
   iree_allocator_free(iree_allocator_system(), program_data.data);
 }
 
-TEST_F(CmdLowerTest, RejectsUnsupportedCommandWithoutMutation) {
+TEST_F(CmdLowerTest, RejectsUnsupportedKernelArgumentWithoutMutation) {
   ModulePtr module = ParseAndVerifySource(R"(
 target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
 
-command.program.def @leaf() launch() {
-  command.return
+kernel.def @unsupported() {
+  %one = index.constant 1 : index
+  kernel.launch.config workgroups(%one, %one, %one) workgroup_size(%one, %one, %one) : index
+} launch(%value: index) {
+  kernel.return
 }
 
-command.program.def @residual() launch() {
-  command.program.launch @leaf[]() : []()
+command.program.def @residual(%value: index) launch() {
+  kernel.launch @unsupported[](%value) : [](index)
   command.return
 }
 )");
 
   loom_op_t* source_program = FindSymbol(module.get(), IREE_SV("residual"));
+  const loom_func_like_t source_program_like =
+      loom_func_like_cast(module.get(), source_program);
+  iree_arena_allocator_t schedule_arena;
+  iree_arena_initialize(&block_pool_, &schedule_arena);
+  loom_cmd_schedule_plan_t schedule = {};
+  IREE_ASSERT_OK(loom_cmd_schedule_plan_build(
+      module.get(), loom_func_like_body(source_program_like), &schedule_arena,
+      &schedule));
+  loom_cmd_launch_graph_t launch_graph = {};
+  IREE_ASSERT_OK(loom_cmd_launch_graph_materialize(
+      module.get(), source_program, &schedule, &block_pool_,
+      iree_allocator_system(), &launch_graph));
+  iree_arena_deinitialize(&schedule_arena);
+
+  const loom_cmd_lower_launch_t launch = {0, 0};
   const loom_cmd_lower_plan_t plan = {
       /*.command_target=*/FindSymbolRef(module.get(),
                                         IREE_SV("command_target")),
+      /*.bindings=*/nullptr,
+      /*.binding_count=*/0,
+      /*.fixed_buffer_count=*/0,
+      /*.rebindable_binding_count=*/0,
+      /*.executable_count=*/1,
+      /*.entry_count=*/1,
+      /*.launch_graph=*/&launch_graph,
+      /*.launch_count_binding=*/{},
+      /*.launches=*/&launch,
   };
   loom_op_t* low_function = nullptr;
   IREE_EXPECT_STATUS_IS(
       IREE_STATUS_UNIMPLEMENTED,
       loom_cmd_lower_program_to_low(module.get(), source_program, &plan,
                                     &low_function));
+  loom_cmd_launch_graph_deinitialize(&launch_graph);
 
   EXPECT_EQ(low_function, nullptr);
   EXPECT_EQ(FindSymbol(module.get(), IREE_SV("residual")), source_program);

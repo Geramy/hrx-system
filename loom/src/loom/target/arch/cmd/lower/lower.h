@@ -11,7 +11,7 @@
 
 #include "iree/base/api.h"
 #include "loom/ir/ir.h"
-#include "loom/target/types.h"
+#include "loom/target/arch/cmd/lower/launch_graph.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,30 +37,34 @@ typedef struct loom_cmd_lower_binding_t {
   uint64_t byte_length;
 } loom_cmd_lower_binding_t;
 
-// Resolved direct-dispatch metadata for one source kernel.launch operation.
-typedef struct loom_cmd_lower_direct_launch_t {
-  // Source launch represented by this row.
-  const loom_op_t* source_op;
+// Resolved executable placement for one aggregate launch-graph row.
+typedef struct loom_cmd_lower_launch_t {
   // Dense executable-table index selected for the launch.
   uint32_t executable_index;
   // Dense program entry-table index selecting an executable-local token.
   uint32_t entry_index;
-  // Exact workgroup counts recorded into the command program.
-  loom_target_dispatch_workgroup_count_t workgroup_count;
-} loom_cmd_lower_direct_launch_t;
+} loom_cmd_lower_launch_t;
+
+// Issue-time binding placement of the aggregate host launch-count table.
+typedef struct loom_cmd_lower_launch_count_binding_t {
+  // Dense index in the rebindable binding table.
+  uint32_t resource_index;
+  // Root-relative byte offset of the first xyz tuple.
+  uint64_t byte_offset;
+} loom_cmd_lower_launch_count_binding_t;
 
 // Compiler-owned facts consumed by closed command-program conversion.
 //
 // Rows are already resolved by source specialization, kernel-product
-// extraction, binding placement, and aggregate launch analysis. Conversion
-// preserves these facts; it does not rediscover kernel identity or launch
-// arithmetic from the source module.
+// extraction, binding placement, aggregate launch analysis, and wave planning.
+// Conversion preserves these facts; it does not rediscover kernel identity,
+// launch arithmetic, or command ordering from the source module.
 typedef struct loom_cmd_lower_plan_t {
   // Derived cmd.core target referenced by the resulting low function.
   loom_symbol_ref_t command_target;
-  // Source binding rows in command-program signature order.
+  // Source launch-binding rows in command-program signature order.
   const loom_cmd_lower_binding_t* bindings;
-  // Number of source binding rows.
+  // Number of source launch-binding rows, excluding specialization arguments.
   iree_host_size_t binding_count;
   // Number of dense fixed-buffer ABI resources.
   uint32_t fixed_buffer_count;
@@ -70,19 +74,23 @@ typedef struct loom_cmd_lower_plan_t {
   uint32_t executable_count;
   // Number of dense executable-local entry ABI resources.
   uint32_t entry_count;
-  // Direct-launch rows in portable schedule traversal order.
-  const loom_cmd_lower_direct_launch_t* launches;
-  // Number of direct-launch rows.
-  iree_host_size_t launch_count;
+  // Aggregate launch graph defining direct and host-static count placement.
+  const loom_cmd_launch_graph_t* launch_graph;
+  // Host launch-count table placement, ignored when the graph has no tuples.
+  loom_cmd_lower_launch_count_binding_t launch_count_binding;
+  // Executable placements in aggregate launch-graph traversal order.
+  const loom_cmd_lower_launch_t* launches;
 } loom_cmd_lower_plan_t;
 
 // Replaces one specialized command.program.def with a zero-signature
 // command_program low.func.def using the cmd.core representation contract.
 //
-// The first closed slice accepts buffer-only launch arguments and exact direct
-// workgroup counts supplied by |plan|. Unsupported residual source semantics
-// fail without changing the source program. On success the replacement keeps
-// the source symbol identity and is returned in |out_low_function|.
+// The first issue-time slice accepts buffer-only kernel arguments and
+// workgroup counts classified by |plan->launch_graph|. Exact tuples become
+// direct dispatches. Host tuples become static-indirect dispatches referencing
+// one rebindable output table. Unsupported kernel-argument forms fail without
+// changing the source program. On success the replacement keeps the source
+// symbol identity and is returned in |out_low_function|.
 iree_status_t loom_cmd_lower_program_to_low(loom_module_t* module,
                                             loom_op_t* program_op,
                                             const loom_cmd_lower_plan_t* plan,
