@@ -188,6 +188,11 @@ command.program.def @prefill(%token_count: index) launch(%storage: buffer) where
   ASSERT_NE(graph.launches, nullptr);
   Verify(graph.module);
   EXPECT_EQ(graph.launch_count, 3u);
+  ASSERT_EQ(graph.wave_count, 2u);
+  EXPECT_EQ(graph.waves[0].command_offset, 0u);
+  EXPECT_EQ(graph.waves[0].command_count, 2u);
+  EXPECT_EQ(graph.waves[1].command_offset, 2u);
+  EXPECT_EQ(graph.waves[1].command_count, 1u);
   EXPECT_EQ(graph.host_tuple_count, 1u);
 
   EXPECT_EQ(graph.launches[0].kind, LOOM_CMD_LAUNCH_COUNT_KIND_HOST);
@@ -200,7 +205,8 @@ command.program.def @prefill(%token_count: index) launch(%storage: buffer) where
   EXPECT_EQ(graph.launches[2].payload.direct.z, 1u);
 
   ASSERT_TRUE(loom_func_def_isa(graph.host_function_op));
-  EXPECT_EQ(loom_func_def_results(graph.host_function_op).count, 3u);
+  EXPECT_EQ(loom_func_def_results(graph.host_function_op).count,
+            LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT);
   const loom_func_like_t host_function =
       loom_func_like_cast(graph.module, graph.host_function_op);
   uint16_t host_argument_count = 0;
@@ -218,7 +224,8 @@ command.program.def @prefill(%token_count: index) launch(%storage: buffer) where
       loom_region_entry_block(loom_func_like_body(host_function));
   ASSERT_NE(host_body->last_op, nullptr);
   ASSERT_TRUE(loom_func_return_isa(host_body->last_op));
-  EXPECT_EQ(loom_func_return_operands(host_body->last_op).count, 3u);
+  EXPECT_EQ(loom_func_return_operands(host_body->last_op).count,
+            LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT);
   EXPECT_EQ(CountOpKind(graph.host_function_op, LOOM_OP_INDEX_ADD), 1u);
   EXPECT_FALSE(WriteCanonicalModule(graph.module).empty());
 

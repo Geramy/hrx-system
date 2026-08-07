@@ -196,5 +196,32 @@ command.program.def @kernel_schedule(%workgroup_count: index) launch(%storage: b
   iree_arena_deinitialize(&arena);
 }
 
+TEST_F(CmdScheduleTest, RejectsResidualCommandOperations) {
+  ModulePtr module = Parse(R"(
+command.program.def @leaf() launch() {
+  command.return
+}
+
+command.program.def @residual() launch() {
+  command.program.launch @leaf[]() : []()
+  command.return
+}
+)");
+
+  iree_arena_allocator_t arena;
+  iree_arena_initialize(&block_pool_, &arena);
+  const loom_func_like_t program =
+      FindProgram(module.get(), IREE_SV("residual"));
+  loom_cmd_schedule_plan_t plan = {};
+  IREE_EXPECT_STATUS_IS(
+      IREE_STATUS_UNIMPLEMENTED,
+      loom_cmd_schedule_plan_build(module.get(), loom_func_like_body(program),
+                                   &arena, &plan));
+  EXPECT_EQ(plan.command_count, 0u);
+  EXPECT_EQ(plan.wave_count, 0u);
+
+  iree_arena_deinitialize(&arena);
+}
+
 }  // namespace
 }  // namespace loom

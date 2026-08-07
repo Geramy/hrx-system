@@ -19,6 +19,14 @@
 extern "C" {
 #endif
 
+enum {
+  // Number of u32 dimensions in one serialized workgroup-count tuple.
+  LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT = 3,
+  // Byte length of one serialized workgroup-count tuple.
+  LOOM_CMD_LAUNCH_COUNT_TUPLE_BYTE_LENGTH =
+      LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT * sizeof(uint32_t),
+};
+
 // Placement of one source launch's workgroup-count tuple.
 typedef enum loom_cmd_launch_count_kind_e {
   // All three dimensions are exact package values recorded directly.
@@ -49,7 +57,9 @@ typedef struct loom_cmd_launch_count_t {
 // no function results and remain in DIRECT launch rows.
 //
 // Launch rows retain source-op pointers, so the source module must outlive this
-// object. All other storage is owned by |module| and released together.
+// object. All other storage is owned by |module| and released together. Wave
+// rows are copied from the source schedule so later consumers do not need to
+// rediscover command ordering.
 typedef struct loom_cmd_launch_graph_t {
   // Owned module containing the aggregate host function.
   loom_module_t* module;
@@ -59,6 +69,10 @@ typedef struct loom_cmd_launch_graph_t {
   const loom_cmd_launch_count_t* launches;
   // Number of entries in |launches|.
   iree_host_size_t launch_count;
+  // Ordered wave table covering |launches|.
+  const loom_cmd_schedule_wave_t* waves;
+  // Number of ordered waves.
+  iree_host_size_t wave_count;
   // Number of unique dynamic xyz tuples returned by |host_function_op|.
   uint32_t host_tuple_count;
 } loom_cmd_launch_graph_t;
