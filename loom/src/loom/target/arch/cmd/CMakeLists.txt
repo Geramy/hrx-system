@@ -11,6 +11,33 @@ iree_add_all_subdirs()
 
 loom_cc_library(
   NAME
+    program
+  HDRS
+    "format.h"
+    "program.h"
+  SRCS
+    "program.c"
+  DEPS
+    iree::base
+    iree::base::core_headers
+  PUBLIC
+)
+
+loom_cc_test(
+  NAME
+    program_test
+  SRCS
+    "program_test.cc"
+  DEPS
+    ::program
+    iree::base
+    iree::base::core_headers
+    iree::testing::gtest
+    iree::testing::gtest_main
+)
+
+loom_cc_library(
+  NAME
     provider
   HDRS
     "provider.h"

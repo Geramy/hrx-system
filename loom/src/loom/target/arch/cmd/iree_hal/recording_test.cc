@@ -26,6 +26,7 @@
 #include "loom/ops/op_registry.h"
 #include "loom/target/arch/cmd/descriptors/low_registry.h"
 #include "loom/target/arch/cmd/iree_hal/recording_test_executable.h"
+#include "loom/target/arch/cmd/lower/serialize.h"
 #include "loom/testing/diagnostic_matchers.h"
 #include "loom/testing/module_ptr.h"
 
@@ -529,12 +530,21 @@ low.func.def target<cmd.core>(@command_target) abi(command_program) @packing() {
   inputs.entry_count = 1;
   inputs.entries = &entry;
 
+  iree_byte_span_t program_data = iree_byte_span_empty();
+  IREE_ASSERT_OK(loom_cmd_program_serialize_low(
+      module.get(), FindFunction(module.get(), IREE_SV("packing")),
+      &program_data, iree_allocator_system()));
+  loom_cmd_program_t program = {};
+  IREE_ASSERT_OK(loom_cmd_program_parse(
+      iree_make_const_byte_span(program_data.data, program_data.data_length),
+      &program));
+  module.reset();
+
   CaptureCommandBuffer command_buffer = {};
   InitializeCommandBuffer(inputs.binding_count, &command_buffer);
   IREE_ASSERT_OK(iree_hal_command_buffer_begin(&command_buffer.base));
-  IREE_ASSERT_OK(loom_cmd_iree_hal_record_function(
-      module.get(), FindFunction(module.get(), IREE_SV("packing")), &inputs,
-      &command_buffer.base, iree_allocator_system()));
+  IREE_ASSERT_OK(loom_cmd_iree_hal_record_program(
+      &program, &inputs, &command_buffer.base, iree_allocator_system()));
   IREE_ASSERT_OK(iree_hal_command_buffer_end(&command_buffer.base));
 
   ASSERT_EQ(command_buffer.commands.size(), 1u);
@@ -552,6 +562,7 @@ low.func.def target<cmd.core>(@command_target) abi(command_program) @packing() {
   EXPECT_EQ(dispatch.bindings[0].buffer, nullptr);
   EXPECT_EQ(dispatch.bindings[0].buffer_slot, 0u);
   EXPECT_EQ(dispatch.bindings[0].length, 64u);
+  iree_allocator_free(iree_allocator_system(), program_data.data);
 }
 
 TEST_F(CmdIreeHalRecordingTest, DispatchesWithReflectedEntryAbi) {
@@ -578,6 +589,16 @@ low.func.def target<cmd.core>(@command_target) abi(command_program) @add_u32() {
 }
 )");
 
+  iree_byte_span_t program_data = iree_byte_span_empty();
+  IREE_ASSERT_OK(loom_cmd_program_serialize_low(
+      module.get(), FindFunction(module.get(), IREE_SV("add_u32")),
+      &program_data, iree_allocator_system()));
+  loom_cmd_program_t program = {};
+  IREE_ASSERT_OK(loom_cmd_program_parse(
+      iree_make_const_byte_span(program_data.data, program_data.data_length),
+      &program));
+  module.reset();
+
   static constexpr iree_device_size_t kByteLength = 4 * sizeof(uint32_t);
   iree_hal_device_group_t* device_group = CreateSyncDeviceGroup();
   iree_hal_device_t* device = iree_hal_device_group_device_at(device_group, 0);
@@ -603,10 +624,10 @@ low.func.def target<cmd.core>(@command_target) abi(command_program) @add_u32() {
   inputs.entries = &entry;
 
   iree_hal_command_buffer_t* command_buffer = nullptr;
-  IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_function(
-      module.get(), FindFunction(module.get(), IREE_SV("add_u32")), &inputs,
-      device, IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT, IREE_HAL_QUEUE_AFFINITY_ANY,
-      &command_buffer, iree_allocator_system()));
+  IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program(
+      &program, &inputs, device, IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT,
+      IREE_HAL_QUEUE_AFFINITY_ANY, &command_buffer, iree_allocator_system()));
+  iree_allocator_free(iree_allocator_system(), program_data.data);
   iree_hal_executable_release(executable);
 
   const std::array<std::array<uint32_t, 4>, 2> source_values = {{
@@ -675,12 +696,21 @@ low.func.def target<cmd.core>(@command_target) abi(command_program) @indirect_mo
   inputs.entry_count = 1;
   inputs.entries = &entry;
 
+  iree_byte_span_t program_data = iree_byte_span_empty();
+  IREE_ASSERT_OK(loom_cmd_program_serialize_low(
+      module.get(), FindFunction(module.get(), IREE_SV("indirect_modes")),
+      &program_data, iree_allocator_system()));
+  loom_cmd_program_t program = {};
+  IREE_ASSERT_OK(loom_cmd_program_parse(
+      iree_make_const_byte_span(program_data.data, program_data.data_length),
+      &program));
+  module.reset();
+
   CaptureCommandBuffer command_buffer = {};
   InitializeCommandBuffer(inputs.binding_count, &command_buffer);
   IREE_ASSERT_OK(iree_hal_command_buffer_begin(&command_buffer.base));
-  IREE_ASSERT_OK(loom_cmd_iree_hal_record_function(
-      module.get(), FindFunction(module.get(), IREE_SV("indirect_modes")),
-      &inputs, &command_buffer.base, iree_allocator_system()));
+  IREE_ASSERT_OK(loom_cmd_iree_hal_record_program(
+      &program, &inputs, &command_buffer.base, iree_allocator_system()));
   IREE_ASSERT_OK(iree_hal_command_buffer_end(&command_buffer.base));
 
   ASSERT_EQ(command_buffer.commands.size(), 3u);
@@ -700,6 +730,7 @@ low.func.def target<cmd.core>(@command_target) abi(command_program) @indirect_mo
   EXPECT_EQ(static_dispatch.dispatch_config.workgroup_count_ref.length, 12u);
   EXPECT_EQ(dynamic_dispatch.dispatch_config.workgroup_count_ref.buffer_slot,
             0u);
+  iree_allocator_free(iree_allocator_system(), program_data.data);
 }
 
 TEST_F(CmdIreeHalRecordingTest, ReplaysWithDifferentBindingTables) {
@@ -725,6 +756,16 @@ low.func.def target<cmd.core>(@command_target) abi(command_program) @rebindable_
 }
 )");
 
+  iree_byte_span_t program_data = iree_byte_span_empty();
+  IREE_ASSERT_OK(loom_cmd_program_serialize_low(
+      module.get(), FindFunction(module.get(), IREE_SV("rebindable_copy")),
+      &program_data, iree_allocator_system()));
+  loom_cmd_program_t program = {};
+  IREE_ASSERT_OK(loom_cmd_program_parse(
+      iree_make_const_byte_span(program_data.data, program_data.data_length),
+      &program));
+  module.reset();
+
   static constexpr iree_device_size_t kByteLength = 64;
   static constexpr uint32_t kPattern = UINT32_C(0x11223344);
   iree_hal_device_group_t* device_group = CreateSyncDeviceGroup();
@@ -738,10 +779,10 @@ low.func.def target<cmd.core>(@command_target) abi(command_program) @rebindable_
   inputs.fixed_buffers = &fixed_ref;
 
   iree_hal_command_buffer_t* command_buffer = nullptr;
-  IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_function(
-      module.get(), FindFunction(module.get(), IREE_SV("rebindable_copy")),
-      &inputs, device, IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT,
+  IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program(
+      &program, &inputs, device, IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT,
       IREE_HAL_QUEUE_AFFINITY_ANY, &command_buffer, iree_allocator_system()));
+  iree_allocator_free(iree_allocator_system(), program_data.data);
   iree_hal_buffer_release(fixed_buffer);
 
   std::array<iree_hal_buffer_t*, 2> source_buffers = {

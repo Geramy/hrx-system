@@ -47,6 +47,25 @@ loom_cc_library(
     ],
 )
 
+loom_cc_library(
+    name = "serialize",
+    srcs = ["serialize.c"],
+    hdrs = ["serialize.h"],
+    visibility = ["//loom/src:__subpackages__"],
+    deps = [
+        "//loom/src/loom/codegen/low:function",
+        "//loom/src/loom/codegen/low:target_binding",
+        "//loom/src/loom/ir",
+        "//loom/src/loom/ops/low",
+        "//loom/src/loom/target:registers",
+        "//loom/src/loom/target/arch/cmd:program",
+        "//loom/src/loom/target/arch/cmd/descriptors",
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/base:core_headers",
+        "//runtime/src/iree/base/internal:arena",
+    ],
+)
+
 loom_cc_test(
     name = "schedule_test",
     srcs = ["schedule_test.cc"],
@@ -70,6 +89,7 @@ loom_cc_test(
     deps = [
         ":lower",
         ":schedule",
+        ":serialize",
         "//loom/src/loom/codegen/low:verify",
         "//loom/src/loom/format/text:parser",
         "//loom/src/loom/ir",

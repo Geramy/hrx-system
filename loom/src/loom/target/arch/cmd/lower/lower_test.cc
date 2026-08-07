@@ -22,6 +22,7 @@
 #include "loom/target/arch/cmd/descriptors/low_registry.h"
 #include "loom/target/arch/cmd/iree_hal/recording.h"
 #include "loom/target/arch/cmd/lower/schedule.h"
+#include "loom/target/arch/cmd/lower/serialize.h"
 #include "loom/testing/diagnostic_matchers.h"
 #include "loom/testing/module_ptr.h"
 #include "loom/verify/verify.h"
@@ -138,6 +139,41 @@ static void InitializeCommandBuffer(iree_host_size_t binding_count,
       IREE_HAL_COMMAND_CATEGORY_ANY, IREE_HAL_QUEUE_AFFINITY_ANY, binding_count,
       /*validation_state=*/nullptr, &kCaptureCommandBufferVtable,
       &command_buffer->base);
+}
+
+static void ExpectCapturedProgramsEqual(const CaptureCommandBuffer& expected,
+                                        const CaptureCommandBuffer& actual) {
+  EXPECT_EQ(actual.begin_count, expected.begin_count);
+  EXPECT_EQ(actual.end_count, expected.end_count);
+  ASSERT_EQ(actual.commands.size(), expected.commands.size());
+  for (iree_host_size_t i = 0; i < expected.commands.size(); ++i) {
+    const CapturedCommand& expected_command = expected.commands[i];
+    const CapturedCommand& actual_command = actual.commands[i];
+    ASSERT_EQ(actual_command.kind, expected_command.kind);
+    if (actual_command.kind != CapturedCommandKind::kDispatch) continue;
+    EXPECT_EQ(actual_command.executable, expected_command.executable);
+    EXPECT_EQ(actual_command.function.value, expected_command.function.value);
+    for (iree_host_size_t axis = 0; axis < 3; ++axis) {
+      EXPECT_EQ(actual_command.dispatch_config.workgroup_size[axis],
+                expected_command.dispatch_config.workgroup_size[axis]);
+      EXPECT_EQ(actual_command.dispatch_config.workgroup_count[axis],
+                expected_command.dispatch_config.workgroup_count[axis]);
+    }
+    EXPECT_EQ(actual_command.dispatch_config.dynamic_workgroup_local_memory,
+              expected_command.dispatch_config.dynamic_workgroup_local_memory);
+    ASSERT_EQ(actual_command.bindings.size(), expected_command.bindings.size());
+    for (iree_host_size_t binding = 0;
+         binding < expected_command.bindings.size(); ++binding) {
+      EXPECT_EQ(actual_command.bindings[binding].buffer,
+                expected_command.bindings[binding].buffer);
+      EXPECT_EQ(actual_command.bindings[binding].buffer_slot,
+                expected_command.bindings[binding].buffer_slot);
+      EXPECT_EQ(actual_command.bindings[binding].offset,
+                expected_command.bindings[binding].offset);
+      EXPECT_EQ(actual_command.bindings[binding].length,
+                expected_command.bindings[binding].length);
+    }
+  }
 }
 
 class CmdLowerTest : public ::testing::Test {
@@ -318,22 +354,22 @@ command.program.def public @attention() launch(%parameters: buffer, %input: buff
       /*.entries=*/entries.data(),
   };
 
-  CaptureCommandBuffer command_buffer = {};
-  InitializeCommandBuffer(inputs.binding_count, &command_buffer);
-  IREE_ASSERT_OK(iree_hal_command_buffer_begin(&command_buffer.base));
+  CaptureCommandBuffer low_command_buffer = {};
+  InitializeCommandBuffer(inputs.binding_count, &low_command_buffer);
+  IREE_ASSERT_OK(iree_hal_command_buffer_begin(&low_command_buffer.base));
   IREE_ASSERT_OK(loom_cmd_iree_hal_record_function(
-      module.get(), low_function, &inputs, &command_buffer.base,
+      module.get(), low_function, &inputs, &low_command_buffer.base,
       iree_allocator_system()));
-  IREE_ASSERT_OK(iree_hal_command_buffer_end(&command_buffer.base));
+  IREE_ASSERT_OK(iree_hal_command_buffer_end(&low_command_buffer.base));
 
-  EXPECT_EQ(command_buffer.begin_count, 1u);
-  EXPECT_EQ(command_buffer.end_count, 1u);
-  ASSERT_EQ(command_buffer.commands.size(), 5u);
-  EXPECT_EQ(command_buffer.commands[1].kind, CapturedCommandKind::kBarrier);
+  EXPECT_EQ(low_command_buffer.begin_count, 1u);
+  EXPECT_EQ(low_command_buffer.end_count, 1u);
+  ASSERT_EQ(low_command_buffer.commands.size(), 5u);
+  EXPECT_EQ(low_command_buffer.commands[1].kind, CapturedCommandKind::kBarrier);
   const std::array<iree_host_size_t, 4> command_indices = {0, 2, 3, 4};
   for (iree_host_size_t i = 0; i < command_indices.size(); ++i) {
     const CapturedCommand& dispatch =
-        command_buffer.commands[command_indices[i]];
+        low_command_buffer.commands[command_indices[i]];
     ASSERT_EQ(dispatch.kind, CapturedCommandKind::kDispatch);
     EXPECT_EQ(dispatch.executable, executables[i == 0 ? 0 : 1]);
     EXPECT_EQ(dispatch.function.value, 100u + i);
@@ -353,6 +389,32 @@ command.program.def public @attention() launch(%parameters: buffer, %input: buff
     EXPECT_EQ(dispatch.bindings[2].offset, 0u);
     EXPECT_EQ(dispatch.bindings[2].length, kBufferLength);
   }
+
+  iree_byte_span_t program_data = iree_byte_span_empty();
+  IREE_ASSERT_OK(loom_cmd_program_serialize_low(
+      module.get(), low_function, &program_data, iree_allocator_system()));
+  loom_cmd_program_t program = {};
+  IREE_ASSERT_OK(loom_cmd_program_parse(
+      iree_make_const_byte_span(program_data.data, program_data.data_length),
+      &program));
+  EXPECT_EQ(program.requirements.fixed_buffer_count, 1u);
+  EXPECT_EQ(program.requirements.rebindable_binding_count, 5u);
+  EXPECT_EQ(program.requirements.executable_count, 2u);
+  EXPECT_EQ(program.requirements.entry_count, 4u);
+  EXPECT_EQ(program.buffer_refs.count, 6u);
+  EXPECT_EQ(program.arguments.count, 12u);
+  EXPECT_EQ(program.commands.count, 5u);
+
+  module.reset();
+  CaptureCommandBuffer artifact_command_buffer = {};
+  InitializeCommandBuffer(inputs.binding_count, &artifact_command_buffer);
+  IREE_ASSERT_OK(iree_hal_command_buffer_begin(&artifact_command_buffer.base));
+  IREE_ASSERT_OK(loom_cmd_iree_hal_record_program(&program, &inputs,
+                                                  &artifact_command_buffer.base,
+                                                  iree_allocator_system()));
+  IREE_ASSERT_OK(iree_hal_command_buffer_end(&artifact_command_buffer.base));
+  ExpectCapturedProgramsEqual(low_command_buffer, artifact_command_buffer);
+  iree_allocator_free(iree_allocator_system(), program_data.data);
 }
 
 TEST_F(CmdLowerTest, RejectsResidualSourceOperationWithoutMutation) {

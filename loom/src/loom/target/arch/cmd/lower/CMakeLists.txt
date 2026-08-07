@@ -46,6 +46,27 @@ loom_cc_library(
   PUBLIC
 )
 
+loom_cc_library(
+  NAME
+    serialize
+  HDRS
+    "serialize.h"
+  SRCS
+    "serialize.c"
+  DEPS
+    iree::base
+    iree::base::core_headers
+    iree::base::internal::arena
+    loom::codegen::low::function
+    loom::codegen::low::target_binding
+    loom::ir
+    loom::ops::low
+    loom::target::arch::cmd::descriptors
+    loom::target::arch::cmd::program
+    loom::target::registers
+  PUBLIC
+)
+
 loom_cc_test(
   NAME
     schedule_test
@@ -72,6 +93,7 @@ loom_cc_test(
   DEPS
     ::lower
     ::schedule
+    ::serialize
     iree::base
     iree::base::internal::arena
     iree::hal
