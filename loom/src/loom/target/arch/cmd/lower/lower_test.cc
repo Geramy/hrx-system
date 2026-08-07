@@ -11,13 +11,11 @@
 #include <vector>
 
 #include "iree/hal/api.h"
-#include "iree/io/vec_stream.h"
 #include "iree/testing/gtest.h"
 #include "iree/testing/status_matchers.h"
 #include "loom/analysis/exact_function.h"
 #include "loom/codegen/low/verify.h"
 #include "loom/format/bytecode/reader.h"
-#include "loom/format/bytecode/writer.h"
 #include "loom/format/text/parser.h"
 #include "loom/ir/context.h"
 #include "loom/ir/module.h"
@@ -25,6 +23,7 @@
 #include "loom/ops/op_registry.h"
 #include "loom/target/arch/cmd/descriptors/low_registry.h"
 #include "loom/target/arch/cmd/iree_hal/recording.h"
+#include "loom/target/arch/cmd/lower/launch_artifact.h"
 #include "loom/target/arch/cmd/lower/schedule.h"
 #include "loom/target/arch/cmd/lower/serialize.h"
 #include "loom/testing/diagnostic_matchers.h"
@@ -260,29 +259,6 @@ class CmdLowerTest : public ::testing::Test {
     };
   }
 
-  std::vector<uint8_t> WriteCanonicalModule(const loom_module_t* module) {
-    iree_io_stream_t* stream = nullptr;
-    IREE_CHECK_OK(iree_io_vec_stream_create(
-        IREE_IO_STREAM_MODE_WRITABLE | IREE_IO_STREAM_MODE_SEEKABLE |
-            IREE_IO_STREAM_MODE_READABLE | IREE_IO_STREAM_MODE_RESIZABLE,
-        4096, iree_allocator_system(), &stream));
-    const loom_bytecode_write_options_t options = {
-        /*.producer=*/{},
-        /*.location_mode=*/LOOM_BYTECODE_LOCATION_MODE_NO_LOCATIONS,
-        /*.low_repr_environment=*/{},
-    };
-    IREE_CHECK_OK(
-        loom_bytecode_write_module(module, stream, &options, &block_pool_));
-
-    const iree_io_stream_pos_t length = iree_io_stream_length(stream);
-    std::vector<uint8_t> bytes(length);
-    IREE_CHECK_OK(iree_io_stream_seek(stream, IREE_IO_STREAM_SEEK_SET, 0));
-    IREE_CHECK_OK(
-        iree_io_stream_read(stream, bytes.size(), bytes.data(), nullptr));
-    iree_io_stream_release(stream);
-    return bytes;
-  }
-
   ModulePtr ReadAndVerifyModule(const std::vector<uint8_t>& bytes) {
     loom_bytecode_read_options_t options = {};
     options.verify_module = true;
@@ -378,8 +354,10 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
     ASSERT_EQ(launch_graph.launches[i].kind, LOOM_CMD_LAUNCH_COUNT_KIND_HOST);
     ASSERT_EQ(launch_graph.launches[i].payload.host_tuple_ordinal, 0u);
   }
-  const std::vector<uint8_t> launch_config_data =
-      WriteCanonicalModule(launch_graph.module);
+  iree_byte_span_t launch_config_data = iree_byte_span_empty();
+  IREE_ASSERT_OK(loom_cmd_launch_graph_serialize(&launch_graph, &block_pool_,
+                                                 iree_allocator_system(),
+                                                 &launch_config_data));
   iree_arena_deinitialize(&schedule_arena);
 
   static constexpr uint64_t kBufferLength = 4096;
@@ -535,7 +513,11 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
   }
 
   module.reset();
-  ModulePtr launch_config_module = ReadAndVerifyModule(launch_config_data);
+  const std::vector<uint8_t> launch_config_bytes(
+      launch_config_data.data,
+      launch_config_data.data + launch_config_data.data_length);
+  iree_allocator_free(iree_allocator_system(), launch_config_data.data);
+  ModulePtr launch_config_module = ReadAndVerifyModule(launch_config_bytes);
   ASSERT_NE(launch_config_module.get(), nullptr);
   loom_exact_function_t launch_config_function = {};
   IREE_ASSERT_OK(loom_exact_function_bind(
