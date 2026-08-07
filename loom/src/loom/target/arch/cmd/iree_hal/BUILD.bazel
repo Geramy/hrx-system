@@ -35,7 +35,11 @@ loom_cc_library(
 
 loom_cc_test(
     name = "recording_test",
-    srcs = ["recording_test.cc"],
+    srcs = [
+        "recording_test.cc",
+        "recording_test_executable.c",
+        "recording_test_executable.h",
+    ],
     deps = [
         ":recording",
         "//loom/src/loom/codegen/low:text_asm",
@@ -48,9 +52,12 @@ loom_cc_test(
         "//loom/src/loom/testing:module_ptr",
         "//runtime/src/iree/async",
         "//runtime/src/iree/async/util:proactor_pool",
+        "//runtime/src/iree/base",
         "//runtime/src/iree/base/internal:arena",
         "//runtime/src/iree/hal",
         "//runtime/src/iree/hal/drivers/local_sync:sync_driver",
+        "//runtime/src/iree/hal/local:executable_library",
+        "//runtime/src/iree/hal/local/loaders:static_library_loader",
         "//runtime/src/iree/testing:gtest",
         "//runtime/src/iree/testing:gtest_main",
     ],

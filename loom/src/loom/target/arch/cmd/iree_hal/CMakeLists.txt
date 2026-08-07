@@ -33,13 +33,18 @@ loom_cc_test(
     recording_test
   SRCS
     "recording_test.cc"
+    "recording_test_executable.c"
+    "recording_test_executable.h"
   DEPS
     ::recording
     iree::async
     iree::async::util::proactor_pool
+    iree::base
     iree::base::internal::arena
     iree::hal
     iree::hal::drivers::local_sync::sync_driver
+    iree::hal::local::executable_library
+    iree::hal::local::loaders::static_library_loader
     iree::testing::gtest
     iree::testing::gtest_main
     loom::codegen::low::text_asm

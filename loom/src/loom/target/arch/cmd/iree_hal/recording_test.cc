@@ -15,6 +15,7 @@
 #include "iree/async/util/proactor_pool.h"
 #include "iree/base/internal/arena.h"
 #include "iree/hal/drivers/local_sync/sync_device.h"
+#include "iree/hal/local/loaders/static_library_loader.h"
 #include "iree/testing/gtest.h"
 #include "iree/testing/status_matchers.h"
 #include "loom/codegen/low/text_asm.h"
@@ -24,6 +25,7 @@
 #include "loom/ir/module.h"
 #include "loom/ops/op_registry.h"
 #include "loom/target/arch/cmd/descriptors/low_registry.h"
+#include "loom/target/arch/cmd/iree_hal/recording_test_executable.h"
 #include "loom/testing/diagnostic_matchers.h"
 #include "loom/testing/module_ptr.h"
 
@@ -194,11 +196,21 @@ static iree_hal_device_t* CreateSyncDevice() {
       iree_hal_device_create_params_default();
   create_params.proactor_pool = proactor_pool;
 
+  const iree_hal_executable_library_query_fn_t library_queries[] = {
+      loom_cmd_recording_test_executable_query,
+  };
+  iree_hal_executable_loader_t* executable_loader = nullptr;
+  IREE_CHECK_OK(iree_hal_static_library_loader_create(
+      IREE_ARRAYSIZE(library_queries), library_queries,
+      iree_hal_executable_import_provider_null(), iree_allocator_system(),
+      &executable_loader));
+
   iree_hal_device_t* device = nullptr;
   iree_status_t status = iree_hal_sync_device_create(
       IREE_SV("command-program-test"), &sync_params, &create_params,
-      /*loader_count=*/0, /*loaders=*/nullptr, device_allocator,
+      /*loader_count=*/1, &executable_loader, device_allocator,
       iree_allocator_system(), &device);
+  iree_hal_executable_loader_release(executable_loader);
   iree_hal_allocator_release(device_allocator);
   iree_async_proactor_pool_release(proactor_pool);
   IREE_CHECK_OK(status);
@@ -228,11 +240,39 @@ static iree_hal_buffer_t* CreateTransferBuffer(iree_hal_device_t* device,
                                                iree_device_size_t byte_length) {
   iree_hal_buffer_params_t params = {0};
   params.type = IREE_HAL_MEMORY_TYPE_OPTIMAL_FOR_DEVICE;
-  params.usage = IREE_HAL_BUFFER_USAGE_TRANSFER;
+  params.usage =
+      IREE_HAL_BUFFER_USAGE_DISPATCH_STORAGE | IREE_HAL_BUFFER_USAGE_TRANSFER;
   iree_hal_buffer_t* buffer = nullptr;
   IREE_CHECK_OK(iree_hal_allocator_allocate_buffer(
       iree_hal_device_allocator(device), params, byte_length, &buffer));
   return buffer;
+}
+
+static iree_status_t LoadTestExecutable(
+    iree_hal_device_t* device, iree_hal_executable_t** out_executable) {
+  *out_executable = nullptr;
+  const iree_hal_executable_target_selection_t target_selection = {
+      /*.family=*/IREE_SV("cpu"),
+      /*.target_key=*/iree_string_view_empty(),
+      /*.kind_flags=*/IREE_HAL_EXECUTABLE_TARGET_KIND_FLAG_EXACT,
+      /*.physical_device_affinity=*/0,
+  };
+  const iree_hal_executable_target_selection_result_t target_result =
+      iree_hal_device_spec_select_executable_target(
+          iree_hal_device_spec(device), &target_selection);
+  if (target_result.outcome !=
+      IREE_HAL_EXECUTABLE_TARGET_SELECTION_OUTCOME_SELECTED) {
+    return iree_make_status(IREE_STATUS_NOT_FOUND,
+                            "local device has no exact CPU target");
+  }
+  static const char kExecutableName[] = "loom_cmd_recording_test";
+  iree_hal_executable_load_params_t load_params;
+  iree_hal_executable_load_params_initialize(&load_params);
+  load_params.executable_data = iree_make_const_byte_span(
+      kExecutableName, IREE_ARRAYSIZE(kExecutableName));
+  return iree_hal_device_load_executable(device, IREE_HAL_QUEUE_AFFINITY_ANY,
+                                         target_result.target, &load_params,
+                                         out_executable);
 }
 
 static iree_status_t SubmitAndWait(
@@ -512,6 +552,96 @@ low.func.def target<cmd.core>(@command_target) abi(command_program) @packing() {
   EXPECT_EQ(dispatch.bindings[0].buffer, nullptr);
   EXPECT_EQ(dispatch.bindings[0].buffer_slot, 0u);
   EXPECT_EQ(dispatch.bindings[0].length, 64u);
+}
+
+TEST_F(CmdIreeHalRecordingTest, DispatchesWithReflectedEntryAbi) {
+  ModulePtr module = ParseAndVerify(R"(
+target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
+low.func.def target<cmd.core>(@command_target) abi(command_program) @add_u32() {
+  %source = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
+  %target = low.resource<command_input> {index = 1, source_type = buffer} : reg<cmd.binding>
+  %executable = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.executable>
+  %entry = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.entry>
+  %addend = low.const<cmd.constant.u32> {value = 7} : reg<cmd.u32>
+  %workgroup_count = low.const<cmd.constant.u32> {value = 4} : reg<cmd.u32>
+  %one = low.const<cmd.constant.u32> {value = 1} : reg<cmd.u32>
+  %zero = low.const<cmd.constant.u64> {value = 0} : reg<cmd.u64>
+  %length = low.const<cmd.constant.u64> {value = 16} : reg<cmd.u64>
+  %source_ref = low.op<cmd.buffer.ref.binding>(%source, %zero, %length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
+  %target_ref = low.op<cmd.buffer.ref.binding>(%target, %zero, %length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
+  %args0 = low.op<cmd.arguments.empty>() : () -> reg<cmd.arguments>
+  %args1 = low.op<cmd.arguments.append.u32>(%args0, %addend) : (reg<cmd.arguments>, reg<cmd.u32>) -> reg<cmd.arguments>
+  %args2 = low.op<cmd.arguments.append.buffer_ref>(%args1, %source_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
+  %args3 = low.op<cmd.arguments.append.buffer_ref>(%args2, %target_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
+  low.op<cmd.dispatch.direct>(%executable, %entry, %workgroup_count, %one, %one, %args3) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.arguments>)
+  low.return
+}
+)");
+
+  static constexpr iree_device_size_t kByteLength = 4 * sizeof(uint32_t);
+  iree_hal_device_group_t* device_group = CreateSyncDeviceGroup();
+  iree_hal_device_t* device = iree_hal_device_group_device_at(device_group, 0);
+  iree_hal_executable_t* executable = nullptr;
+  IREE_ASSERT_OK(LoadTestExecutable(device, &executable));
+  const iree_hal_executable_function_t function =
+      iree_hal_executable_function_from_index(0);
+  loom_cmd_iree_hal_entry_t entry = {};
+  entry.executable_index = 0;
+  entry.function = function;
+  IREE_ASSERT_OK(
+      iree_hal_executable_function_info(executable, function, &entry.info));
+  std::vector<iree_hal_executable_function_parameter_t> parameters(
+      entry.info.parameter_count);
+  IREE_ASSERT_OK(iree_hal_executable_function_parameters(
+      executable, function, parameters.size(), parameters.data()));
+  entry.parameters = parameters.data();
+  loom_cmd_iree_hal_inputs_t inputs = {};
+  inputs.binding_count = 2;
+  inputs.executable_count = 1;
+  inputs.executables = &executable;
+  inputs.entry_count = 1;
+  inputs.entries = &entry;
+
+  iree_hal_command_buffer_t* command_buffer = nullptr;
+  IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_function(
+      module.get(), FindFunction(module.get(), IREE_SV("add_u32")), &inputs,
+      device, IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT, IREE_HAL_QUEUE_AFFINITY_ANY,
+      &command_buffer, iree_allocator_system()));
+  iree_hal_executable_release(executable);
+
+  const std::array<std::array<uint32_t, 4>, 2> source_values = {{
+      {{1, 2, 3, 4}},
+      {{10, 20, 30, 40}},
+  }};
+  for (const std::array<uint32_t, 4>& source_value : source_values) {
+    iree_hal_buffer_t* source_buffer =
+        CreateTransferBuffer(device, kByteLength);
+    iree_hal_buffer_t* target_buffer =
+        CreateTransferBuffer(device, kByteLength);
+    IREE_ASSERT_OK(iree_hal_device_transfer_h2d(
+        device, source_value.data(), source_buffer, 0, kByteLength,
+        IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT, iree_infinite_timeout()));
+    const iree_hal_buffer_binding_t bindings[] = {
+        /*source=*/{source_buffer, 0, kByteLength},
+        /*target=*/{target_buffer, 0, kByteLength},
+    };
+    IREE_ASSERT_OK(SubmitAndWait(device, command_buffer,
+                                 {/*.count=*/IREE_ARRAYSIZE(bindings),
+                                  /*.bindings=*/bindings}));
+
+    std::array<uint32_t, 4> actual = {};
+    IREE_ASSERT_OK(iree_hal_device_transfer_d2h(
+        device, target_buffer, 0, actual.data(), kByteLength,
+        IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT, iree_infinite_timeout()));
+    for (iree_host_size_t i = 0; i < actual.size(); ++i) {
+      EXPECT_EQ(actual[i], source_value[i] + 7);
+    }
+    iree_hal_buffer_release(target_buffer);
+    iree_hal_buffer_release(source_buffer);
+  }
+
+  iree_hal_command_buffer_release(command_buffer);
+  iree_hal_device_group_release(device_group);
 }
 
 TEST_F(CmdIreeHalRecordingTest, PreservesStaticAndDynamicIndirectModes) {
