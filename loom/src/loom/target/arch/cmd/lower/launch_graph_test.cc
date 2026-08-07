@@ -6,11 +6,14 @@
 
 #include "loom/target/arch/cmd/lower/launch_graph.h"
 
+#include <array>
 #include <vector>
 
 #include "iree/io/vec_stream.h"
 #include "iree/testing/gtest.h"
 #include "iree/testing/status_matchers.h"
+#include "loom/analysis/exact_function.h"
+#include "loom/format/bytecode/reader.h"
 #include "loom/format/bytecode/writer.h"
 #include "loom/format/text/parser.h"
 #include "loom/ir/context.h"
@@ -134,6 +137,20 @@ class CmdLaunchGraphTest : public ::testing::Test {
     return bytes;
   }
 
+  ModulePtr ReadAndVerifyModule(const std::vector<uint8_t>& bytes) {
+    loom_bytecode_read_options_t options = {};
+    options.verify_module = true;
+    loom_bytecode_read_result_t result = {};
+    loom_module_t* module = nullptr;
+    IREE_CHECK_OK(loom_bytecode_read_module(
+        iree_make_const_byte_span(bytes.data(), bytes.size()),
+        IREE_SV("command_launch_config.loombc"), &context_, &block_pool_,
+        &options, &result, &module, iree_allocator_system()));
+    EXPECT_EQ(result.error_count, 0u);
+    EXPECT_NE(module, nullptr);
+    return ModulePtr(module);
+  }
+
   // Shared arena block pool backing source and derived modules.
   iree_arena_block_pool_t block_pool_;
   // Source dialect context used by parsing and launch-graph materialization.
@@ -227,10 +244,40 @@ command.program.def @prefill(%token_count: index) launch(%storage: buffer) where
   EXPECT_EQ(loom_func_return_operands(host_body->last_op).count,
             LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT);
   EXPECT_EQ(CountOpKind(graph.host_function_op, LOOM_OP_INDEX_ADD), 1u);
-  EXPECT_FALSE(WriteCanonicalModule(graph.module).empty());
+  const std::vector<uint8_t> host_bytecode = WriteCanonicalModule(graph.module);
+  EXPECT_FALSE(host_bytecode.empty());
 
   EXPECT_EQ(WriteCanonicalModule(source_module.get()), source_before);
   loom_cmd_launch_graph_deinitialize(&graph);
+  source_module.reset();
+
+  ModulePtr loaded_host_module = ReadAndVerifyModule(host_bytecode);
+  ASSERT_NE(loaded_host_module.get(), nullptr);
+  loom_exact_function_t loaded_host_function = {};
+  IREE_ASSERT_OK(loom_exact_function_bind(
+      loaded_host_module.get(),
+      FindSymbol(loaded_host_module.get(), IREE_SV("prefill")),
+      &loaded_host_function));
+  EXPECT_EQ(loaded_host_function.argument_count, 1u);
+  EXPECT_EQ(loaded_host_function.result_count, 3u);
+
+  loom_exact_function_context_t evaluation_context = {};
+  loom_exact_function_context_initialize(loaded_host_module.get(), &block_pool_,
+                                         &evaluation_context);
+  std::array<uint32_t, 3> count_table = {};
+  const int64_t first_arguments[] = {1};
+  IREE_ASSERT_OK(loom_exact_function_evaluate_u32(
+      &evaluation_context, &loaded_host_function, first_arguments,
+      IREE_ARRAYSIZE(first_arguments), count_table.data(), count_table.size()));
+  EXPECT_EQ(count_table, (std::array<uint32_t, 3>{2, 1, 1}));
+
+  const int64_t second_arguments[] = {127};
+  IREE_ASSERT_OK(loom_exact_function_evaluate_u32(
+      &evaluation_context, &loaded_host_function, second_arguments,
+      IREE_ARRAYSIZE(second_arguments), count_table.data(),
+      count_table.size()));
+  EXPECT_EQ(count_table, (std::array<uint32_t, 3>{128, 1, 1}));
+  loom_exact_function_context_deinitialize(&evaluation_context);
 }
 
 }  // namespace

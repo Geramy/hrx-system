@@ -11,9 +11,13 @@
 #include <vector>
 
 #include "iree/hal/api.h"
+#include "iree/io/vec_stream.h"
 #include "iree/testing/gtest.h"
 #include "iree/testing/status_matchers.h"
+#include "loom/analysis/exact_function.h"
 #include "loom/codegen/low/verify.h"
+#include "loom/format/bytecode/reader.h"
+#include "loom/format/bytecode/writer.h"
 #include "loom/format/text/parser.h"
 #include "loom/ir/context.h"
 #include "loom/ir/module.h"
@@ -256,6 +260,43 @@ class CmdLowerTest : public ::testing::Test {
     };
   }
 
+  std::vector<uint8_t> WriteCanonicalModule(const loom_module_t* module) {
+    iree_io_stream_t* stream = nullptr;
+    IREE_CHECK_OK(iree_io_vec_stream_create(
+        IREE_IO_STREAM_MODE_WRITABLE | IREE_IO_STREAM_MODE_SEEKABLE |
+            IREE_IO_STREAM_MODE_READABLE | IREE_IO_STREAM_MODE_RESIZABLE,
+        4096, iree_allocator_system(), &stream));
+    const loom_bytecode_write_options_t options = {
+        /*.producer=*/{},
+        /*.location_mode=*/LOOM_BYTECODE_LOCATION_MODE_NO_LOCATIONS,
+        /*.low_repr_environment=*/{},
+    };
+    IREE_CHECK_OK(
+        loom_bytecode_write_module(module, stream, &options, &block_pool_));
+
+    const iree_io_stream_pos_t length = iree_io_stream_length(stream);
+    std::vector<uint8_t> bytes(length);
+    IREE_CHECK_OK(iree_io_stream_seek(stream, IREE_IO_STREAM_SEEK_SET, 0));
+    IREE_CHECK_OK(
+        iree_io_stream_read(stream, bytes.size(), bytes.data(), nullptr));
+    iree_io_stream_release(stream);
+    return bytes;
+  }
+
+  ModulePtr ReadAndVerifyModule(const std::vector<uint8_t>& bytes) {
+    loom_bytecode_read_options_t options = {};
+    options.verify_module = true;
+    loom_bytecode_read_result_t result = {};
+    loom_module_t* module = nullptr;
+    IREE_CHECK_OK(loom_bytecode_read_module(
+        iree_make_const_byte_span(bytes.data(), bytes.size()),
+        IREE_SV("command_launch_config.loombc"), &context_, &block_pool_,
+        &options, &result, &module, iree_allocator_system()));
+    EXPECT_EQ(result.error_count, 0u);
+    EXPECT_NE(module, nullptr);
+    return ModulePtr(module);
+  }
+
   // Shared arena block pool backing each parsed test module.
   iree_arena_block_pool_t block_pool_;
   // Source dialect context used by the text parser and verifier.
@@ -337,6 +378,8 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
     ASSERT_EQ(launch_graph.launches[i].kind, LOOM_CMD_LAUNCH_COUNT_KIND_HOST);
     ASSERT_EQ(launch_graph.launches[i].payload.host_tuple_ordinal, 0u);
   }
+  const std::vector<uint8_t> launch_config_data =
+      WriteCanonicalModule(launch_graph.module);
   iree_arena_deinitialize(&schedule_arena);
 
   static constexpr uint64_t kBufferLength = 4096;
@@ -492,6 +535,25 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
   }
 
   module.reset();
+  ModulePtr launch_config_module = ReadAndVerifyModule(launch_config_data);
+  ASSERT_NE(launch_config_module.get(), nullptr);
+  loom_exact_function_t launch_config_function = {};
+  IREE_ASSERT_OK(loom_exact_function_bind(
+      launch_config_module.get(),
+      FindSymbol(launch_config_module.get(), IREE_SV("attention")),
+      &launch_config_function));
+  loom_exact_function_context_t launch_config_context = {};
+  loom_exact_function_context_initialize(launch_config_module.get(),
+                                         &block_pool_, &launch_config_context);
+  std::array<uint32_t, LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT>
+      launch_count_table = {};
+  const int64_t first_arguments[] = {1};
+  IREE_ASSERT_OK(loom_exact_function_evaluate_u32(
+      &launch_config_context, &launch_config_function, first_arguments,
+      IREE_ARRAYSIZE(first_arguments), launch_count_table.data(),
+      launch_count_table.size()));
+  EXPECT_EQ(launch_count_table, (std::array<uint32_t, 3>{2u, 1u, 1u}));
+
   CaptureCommandBuffer artifact_command_buffer = {};
   InitializeCommandBuffer(inputs.binding_count, &artifact_command_buffer);
   IREE_ASSERT_OK(iree_hal_command_buffer_begin(&artifact_command_buffer.base));
@@ -500,6 +562,17 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
                                                   iree_allocator_system()));
   IREE_ASSERT_OK(iree_hal_command_buffer_end(&artifact_command_buffer.base));
   ExpectCapturedProgramsEqual(low_command_buffer, artifact_command_buffer);
+
+  const int64_t second_arguments[] = {127};
+  IREE_ASSERT_OK(loom_exact_function_evaluate_u32(
+      &launch_config_context, &launch_config_function, second_arguments,
+      IREE_ARRAYSIZE(second_arguments), launch_count_table.data(),
+      launch_count_table.size()));
+  EXPECT_EQ(launch_count_table, (std::array<uint32_t, 3>{128u, 1u, 1u}));
+  EXPECT_EQ(artifact_command_buffer.begin_count, 1u);
+  EXPECT_EQ(artifact_command_buffer.end_count, 1u);
+
+  loom_exact_function_context_deinitialize(&launch_config_context);
   iree_allocator_free(iree_allocator_system(), program_data.data);
 }
 

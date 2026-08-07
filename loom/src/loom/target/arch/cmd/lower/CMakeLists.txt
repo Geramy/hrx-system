@@ -149,6 +149,8 @@ loom_cc_test(
     iree::io::stream
     iree::testing::gtest
     iree::testing::gtest_main
+    loom::analysis::exact_function
+    loom::format::bytecode::reader
     loom::format::bytecode::writer
     loom::format::text::parser
     loom::ir
@@ -200,9 +202,13 @@ loom_cc_test(
     iree::base
     iree::base::internal::arena
     iree::hal
+    iree::io::stream
     iree::testing::gtest
     iree::testing::gtest_main
+    loom::analysis::exact_function
     loom::codegen::low::verify
+    loom::format::bytecode::reader
+    loom::format::bytecode::writer
     loom::format::text::parser
     loom::ir
     loom::ops::low

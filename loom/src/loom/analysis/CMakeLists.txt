@@ -354,6 +354,42 @@ loom_cc_library(
   PUBLIC
 )
 
+loom_cc_library(
+  NAME
+    exact_function
+  HDRS
+    "exact_function.h"
+  SRCS
+    "exact_function.c"
+  DEPS
+    ::symbol_value_constraints
+    iree::base
+    iree::base::internal::arena
+    loom::ir
+    loom::ir::facts
+    loom::ops::func
+    loom::ops::op_defs
+    loom::pass::value_facts
+  PUBLIC
+)
+
+loom_cc_test(
+  NAME
+    exact_function_test
+  SRCS
+    "exact_function_test.cc"
+  DEPS
+    ::exact_function
+    iree::base::internal::arena
+    iree::testing::gtest
+    iree::testing::gtest_main
+    loom::format::text::parser
+    loom::ir
+    loom::ops::op_registry
+    loom::testing::module_ptr
+    loom::verify
+)
+
 loom_cc_test(
   NAME
     kernel_launch_config_test
