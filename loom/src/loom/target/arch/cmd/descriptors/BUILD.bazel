@@ -23,6 +23,7 @@ loom_low_descriptor_cc_library(
     visibility = [
         "//loom/src/loom/target/arch/cmd:__pkg__",
         "//loom/src/loom/target/arch/cmd/iree_hal:__pkg__",
+        "//loom/src/loom/target/arch/cmd/lower:__pkg__",
     ],
     deps = ["//loom/src/loom/codegen/low:descriptors"],
 )
@@ -34,6 +35,7 @@ loom_cc_library(
     visibility = [
         "//loom/src/loom/target/arch/cmd:__pkg__",
         "//loom/src/loom/target/arch/cmd/iree_hal:__pkg__",
+        "//loom/src/loom/target/arch/cmd/lower:__pkg__",
     ],
     deps = [
         ":descriptors",

@@ -25,6 +25,27 @@ loom_cc_library(
   PUBLIC
 )
 
+loom_cc_library(
+  NAME
+    lower
+  HDRS
+    "lower.h"
+  SRCS
+    "lower.c"
+  DEPS
+    ::schedule
+    iree::base
+    iree::base::internal::arena
+    loom::codegen::low::builder
+    loom::ir
+    loom::ops::command
+    loom::ops::kernel
+    loom::ops::low
+    loom::target::arch::cmd::descriptors
+    loom::target::types
+  PUBLIC
+)
+
 loom_cc_test(
   NAME
     schedule_test
@@ -41,6 +62,31 @@ loom_cc_test(
     loom::ops::kernel
     loom::ops::op_registry
     loom::testing::module_ptr
+)
+
+loom_cc_test(
+  NAME
+    lower_test
+  SRCS
+    "lower_test.cc"
+  DEPS
+    ::lower
+    ::schedule
+    iree::base
+    iree::base::internal::arena
+    iree::hal
+    iree::testing::gtest
+    iree::testing::gtest_main
+    loom::codegen::low::verify
+    loom::format::text::parser
+    loom::ir
+    loom::ops::low
+    loom::ops::op_registry
+    loom::target::arch::cmd::descriptors::low_registry
+    loom::target::arch::cmd::iree_hal::recording
+    loom::testing::diagnostic_matchers
+    loom::testing::module_ptr
+    loom::verify
 )
 
 ### BAZEL_TO_CMAKE_PRESERVES_ALL_CONTENT_BELOW_THIS_LINE ###

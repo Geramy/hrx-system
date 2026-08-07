@@ -69,7 +69,9 @@ class CmdScheduleTest : public ::testing::Test {
             .size);
   }
 
+  // Shared arena block pool backing each parsed test module.
   iree_arena_block_pool_t block_pool_;
+  // Source dialect context used by the text parser.
   loom_context_t context_;
 };
 
