@@ -312,6 +312,38 @@ loom_cc_library(
     ],
 )
 
+loom_cc_library(
+    name = "exact_function",
+    srcs = ["exact_function.c"],
+    hdrs = ["exact_function.h"],
+    deps = [
+        ":symbol_value_constraints",
+        "//loom/src/loom/ir",
+        "//loom/src/loom/ir:facts",
+        "//loom/src/loom/ops:op_defs",
+        "//loom/src/loom/ops/func",
+        "//loom/src/loom/pass:value_facts",
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/base/internal:arena",
+    ],
+)
+
+loom_cc_test(
+    name = "exact_function_test",
+    srcs = ["exact_function_test.cc"],
+    deps = [
+        ":exact_function",
+        "//loom/src/loom/format/text:parser",
+        "//loom/src/loom/ir",
+        "//loom/src/loom/ops:op_registry",
+        "//loom/src/loom/testing:module_ptr",
+        "//loom/src/loom/verify",
+        "//runtime/src/iree/base/internal:arena",
+        "//runtime/src/iree/testing:gtest",
+        "//runtime/src/iree/testing:gtest_main",
+    ],
+)
+
 loom_cc_test(
     name = "kernel_launch_config_test",
     srcs = ["kernel_launch_config_test.cc"],
