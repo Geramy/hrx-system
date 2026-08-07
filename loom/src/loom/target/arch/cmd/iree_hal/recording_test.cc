@@ -11,7 +11,10 @@
 #include <cstring>
 #include <vector>
 
+#include "iree/async/frontier_tracker.h"
+#include "iree/async/util/proactor_pool.h"
 #include "iree/base/internal/arena.h"
+#include "iree/hal/drivers/local_sync/sync_device.h"
 #include "iree/testing/gtest.h"
 #include "iree/testing/status_matchers.h"
 #include "loom/codegen/low/text_asm.h"
@@ -172,6 +175,90 @@ static void InitializeCommandBuffer(iree_host_size_t binding_count,
       IREE_HAL_COMMAND_CATEGORY_ANY, IREE_HAL_QUEUE_AFFINITY_ANY, binding_count,
       /*validation_state=*/nullptr, &kCaptureCommandBufferVtable,
       &command_buffer->base);
+}
+
+static iree_hal_device_t* CreateSyncDevice() {
+  iree_async_proactor_pool_t* proactor_pool = nullptr;
+  IREE_CHECK_OK(iree_async_proactor_pool_create(
+      1, /*node_ids=*/nullptr, iree_async_proactor_pool_options_default(),
+      iree_allocator_system(), &proactor_pool));
+
+  iree_hal_allocator_t* device_allocator = nullptr;
+  IREE_CHECK_OK(iree_hal_allocator_create_heap(
+      IREE_SV("command-program-test"), iree_allocator_system(),
+      iree_allocator_system(), &device_allocator));
+
+  iree_hal_sync_device_params_t sync_params;
+  iree_hal_sync_device_params_initialize(&sync_params);
+  iree_hal_device_create_params_t create_params =
+      iree_hal_device_create_params_default();
+  create_params.proactor_pool = proactor_pool;
+
+  iree_hal_device_t* device = nullptr;
+  iree_status_t status = iree_hal_sync_device_create(
+      IREE_SV("command-program-test"), &sync_params, &create_params,
+      /*loader_count=*/0, /*loaders=*/nullptr, device_allocator,
+      iree_allocator_system(), &device);
+  iree_hal_allocator_release(device_allocator);
+  iree_async_proactor_pool_release(proactor_pool);
+  IREE_CHECK_OK(status);
+  return device;
+}
+
+static iree_hal_device_group_t* CreateSyncDeviceGroup() {
+  iree_async_frontier_tracker_t* frontier_tracker = nullptr;
+  IREE_CHECK_OK(iree_async_frontier_tracker_create(
+      iree_async_frontier_tracker_options_default(), iree_allocator_system(),
+      &frontier_tracker));
+  iree_hal_device_group_builder_t builder;
+  iree_hal_device_group_builder_initialize(&builder, frontier_tracker);
+  iree_async_frontier_tracker_release(frontier_tracker);
+
+  iree_hal_device_t* device = CreateSyncDevice();
+  IREE_CHECK_OK(iree_hal_device_group_builder_add_device(&builder, device));
+
+  iree_hal_device_group_t* device_group = nullptr;
+  IREE_CHECK_OK(iree_hal_device_group_builder_finalize(
+      &builder, iree_allocator_system(), &device_group));
+  iree_hal_device_release(device);
+  return device_group;
+}
+
+static iree_hal_buffer_t* CreateTransferBuffer(iree_hal_device_t* device,
+                                               iree_device_size_t byte_length) {
+  iree_hal_buffer_params_t params = {0};
+  params.type = IREE_HAL_MEMORY_TYPE_OPTIMAL_FOR_DEVICE;
+  params.usage = IREE_HAL_BUFFER_USAGE_TRANSFER;
+  iree_hal_buffer_t* buffer = nullptr;
+  IREE_CHECK_OK(iree_hal_allocator_allocate_buffer(
+      iree_hal_device_allocator(device), params, byte_length, &buffer));
+  return buffer;
+}
+
+static iree_status_t SubmitAndWait(
+    iree_hal_device_t* device, iree_hal_command_buffer_t* command_buffer,
+    iree_hal_buffer_binding_table_t binding_table) {
+  iree_hal_semaphore_t* semaphore = nullptr;
+  IREE_RETURN_IF_ERROR(iree_hal_semaphore_create(
+      device, IREE_HAL_QUEUE_AFFINITY_ANY, /*initial_value=*/0,
+      IREE_HAL_SEMAPHORE_FLAG_DEFAULT, &semaphore));
+  uint64_t target_value = 1;
+  const iree_hal_semaphore_list_t signal_semaphores = {
+      /*.count=*/1,
+      /*.semaphores=*/&semaphore,
+      /*.payload_values=*/&target_value,
+  };
+  iree_status_t status = iree_hal_device_queue_execute(
+      device, IREE_HAL_QUEUE_AFFINITY_ANY, iree_hal_semaphore_list_empty(),
+      signal_semaphores, command_buffer, binding_table,
+      IREE_HAL_EXECUTE_FLAG_NONE);
+  if (iree_status_is_ok(status)) {
+    status = iree_hal_semaphore_wait(semaphore, target_value,
+                                     iree_infinite_timeout(),
+                                     IREE_ASYNC_WAIT_FLAG_NONE);
+  }
+  iree_hal_semaphore_release(semaphore);
+  return status;
 }
 
 class CmdIreeHalRecordingTest : public ::testing::Test {
@@ -483,6 +570,88 @@ low.func.def target<cmd.core>(@command_target) abi(command_program) @indirect_mo
   EXPECT_EQ(static_dispatch.dispatch_config.workgroup_count_ref.length, 12u);
   EXPECT_EQ(dynamic_dispatch.dispatch_config.workgroup_count_ref.buffer_slot,
             0u);
+}
+
+TEST_F(CmdIreeHalRecordingTest, ReplaysWithDifferentBindingTables) {
+  ModulePtr module = ParseAndVerify(R"(
+target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
+low.func.def target<cmd.core>(@command_target) abi(command_program) @rebindable_copy() {
+  %fixed = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.buffer>
+  %source = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
+  %target = low.resource<command_input> {index = 1, source_type = buffer} : reg<cmd.binding>
+  %pattern = low.const<cmd.constant.u32> {value = 287454020} : reg<cmd.u32>
+  %pattern_length = low.const<cmd.constant.u32> {value = 4} : reg<cmd.u32>
+  %zero = low.const<cmd.constant.u64> {value = 0} : reg<cmd.u64>
+  %length = low.const<cmd.constant.u64> {value = 64} : reg<cmd.u64>
+  %fixed_ref = low.op<cmd.buffer.ref.direct>(%fixed, %zero, %length) : (reg<cmd.buffer>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
+  %source_ref = low.op<cmd.buffer.ref.binding>(%source, %zero, %length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
+  %target_ref = low.op<cmd.buffer.ref.binding>(%target, %zero, %length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
+  low.op<cmd.fill>(%source_ref, %pattern, %pattern_length) : (reg<cmd.buffer_ref>, reg<cmd.u32>, reg<cmd.u32>)
+  low.op<cmd.execution.barrier>() : ()
+  low.op<cmd.copy>(%source_ref, %fixed_ref) : (reg<cmd.buffer_ref>, reg<cmd.buffer_ref>)
+  low.op<cmd.execution.barrier>() : ()
+  low.op<cmd.copy>(%fixed_ref, %target_ref) : (reg<cmd.buffer_ref>, reg<cmd.buffer_ref>)
+  low.return
+}
+)");
+
+  static constexpr iree_device_size_t kByteLength = 64;
+  static constexpr uint32_t kPattern = UINT32_C(0x11223344);
+  iree_hal_device_group_t* device_group = CreateSyncDeviceGroup();
+  iree_hal_device_t* device = iree_hal_device_group_device_at(device_group, 0);
+  iree_hal_buffer_t* fixed_buffer = CreateTransferBuffer(device, kByteLength);
+  const iree_hal_buffer_ref_t fixed_ref =
+      iree_hal_make_buffer_ref(fixed_buffer, 0, kByteLength);
+  loom_cmd_iree_hal_inputs_t inputs = {};
+  inputs.binding_count = 2;
+  inputs.fixed_buffer_count = 1;
+  inputs.fixed_buffers = &fixed_ref;
+
+  iree_hal_command_buffer_t* command_buffer = nullptr;
+  IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_function(
+      module.get(), FindFunction(module.get(), IREE_SV("rebindable_copy")),
+      &inputs, device, IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT,
+      IREE_HAL_QUEUE_AFFINITY_ANY, &command_buffer, iree_allocator_system()));
+  iree_hal_buffer_release(fixed_buffer);
+
+  std::array<iree_hal_buffer_t*, 2> source_buffers = {
+      CreateTransferBuffer(device, kByteLength),
+      CreateTransferBuffer(device, kByteLength),
+  };
+  std::array<iree_hal_buffer_t*, 2> target_buffers = {
+      CreateTransferBuffer(device, kByteLength),
+      CreateTransferBuffer(device, kByteLength),
+  };
+  for (iree_host_size_t i = 0; i < target_buffers.size(); ++i) {
+    const std::array<uint32_t, kByteLength / sizeof(uint32_t)> sentinel = {};
+    IREE_ASSERT_OK(iree_hal_device_transfer_h2d(
+        device, sentinel.data(), target_buffers[i], 0, kByteLength,
+        IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT, iree_infinite_timeout()));
+    const iree_hal_buffer_binding_t bindings[] = {
+        /*source=*/{source_buffers[i], 0, kByteLength},
+        /*target=*/{target_buffers[i], 0, kByteLength},
+    };
+    IREE_ASSERT_OK(SubmitAndWait(device, command_buffer,
+                                 {/*.count=*/IREE_ARRAYSIZE(bindings),
+                                  /*.bindings=*/bindings}));
+  }
+
+  for (iree_hal_buffer_t* target_buffer : target_buffers) {
+    std::array<uint32_t, kByteLength / sizeof(uint32_t)> actual = {};
+    IREE_ASSERT_OK(iree_hal_device_transfer_d2h(
+        device, target_buffer, 0, actual.data(), kByteLength,
+        IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT, iree_infinite_timeout()));
+    for (uint32_t value : actual) EXPECT_EQ(value, kPattern);
+  }
+
+  for (iree_hal_buffer_t* target_buffer : target_buffers) {
+    iree_hal_buffer_release(target_buffer);
+  }
+  for (iree_hal_buffer_t* source_buffer : source_buffers) {
+    iree_hal_buffer_release(source_buffer);
+  }
+  iree_hal_command_buffer_release(command_buffer);
+  iree_hal_device_group_release(device_group);
 }
 
 }  // namespace
