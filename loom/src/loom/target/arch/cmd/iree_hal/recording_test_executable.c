@@ -28,6 +28,22 @@ static int loom_cmd_recording_test_add_u32(
   return 0;
 }
 
+static int loom_cmd_recording_test_increment_u32(
+    const iree_hal_executable_environment_v0_t* environment,
+    const iree_hal_executable_dispatch_state_v0_t* dispatch_state,
+    const iree_hal_executable_workgroup_state_v0_t* workgroup_state) {
+  (void)environment;
+  const uint32_t index = workgroup_state->workgroup_id_x;
+  if ((index + 1) * sizeof(uint32_t) > dispatch_state->binding_lengths[0] ||
+      (index + 1) * sizeof(uint32_t) > dispatch_state->binding_lengths[1]) {
+    return 1;
+  }
+  const uint32_t* source = (const uint32_t*)dispatch_state->binding_ptrs[0];
+  uint32_t* target = (uint32_t*)dispatch_state->binding_ptrs[1];
+  target[index] = source[index] + 7;
+  return 0;
+}
+
 static const iree_hal_executable_library_header_t kLibraryHeader = {
     .version = IREE_HAL_EXECUTABLE_LIBRARY_VERSION_LATEST,
     .name = "loom_cmd_recording_test",
@@ -37,6 +53,7 @@ static const iree_hal_executable_library_header_t kLibraryHeader = {
 
 static const iree_hal_executable_dispatch_v0_t kEntryPoints[] = {
     loom_cmd_recording_test_add_u32,
+    loom_cmd_recording_test_increment_u32,
 };
 
 static const iree_hal_executable_dispatch_parameter_v0_t kAddU32Parameters[] = {
@@ -61,8 +78,25 @@ static const iree_hal_executable_dispatch_parameter_v0_t kAddU32Parameters[] = {
     },
 };
 
+static const iree_hal_executable_dispatch_parameter_v0_t
+    kIncrementU32Parameters[] = {
+        {
+            .type = IREE_HAL_EXECUTABLE_DISPATCH_PARAM_TYPE_V0_BINDING,
+            .flags = IREE_HAL_EXECUTABLE_DISPATCH_PARAM_FLAG_V0_NONE,
+            .name = 1,
+            .offset = 0,
+        },
+        {
+            .type = IREE_HAL_EXECUTABLE_DISPATCH_PARAM_TYPE_V0_BINDING,
+            .flags = IREE_HAL_EXECUTABLE_DISPATCH_PARAM_FLAG_V0_NONE,
+            .name = 2,
+            .offset = 1,
+        },
+};
+
 static const iree_hal_executable_dispatch_parameter_v0_t* kEntryParameters[] = {
     kAddU32Parameters,
+    kIncrementU32Parameters,
 };
 
 static const char* kParameterNames[] = {
@@ -81,10 +115,20 @@ static const iree_hal_executable_dispatch_attrs_v0_t kEntryAttributes[] = {
         .workgroup_size_z = 1,
         .parameter_count = IREE_ARRAYSIZE(kAddU32Parameters),
     },
+    {
+        .flags = IREE_HAL_EXECUTABLE_DISPATCH_FLAG_V0_NONE,
+        .constant_byte_length = 0,
+        .binding_count = 2,
+        .workgroup_size_x = 1,
+        .workgroup_size_y = 1,
+        .workgroup_size_z = 1,
+        .parameter_count = IREE_ARRAYSIZE(kIncrementU32Parameters),
+    },
 };
 
 static const char* kEntryPointNames[] = {
     "add_u32",
+    "increment_u32",
 };
 
 static const iree_hal_executable_library_v0_t kLibrary = {

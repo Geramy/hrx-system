@@ -236,4 +236,38 @@ loom_cc_test(
     loom::verify
 )
 
+loom_cc_test(
+  NAME
+    lifecycle_test
+  SRCS
+    "lifecycle_test.cc"
+  DEPS
+    ::launch_artifact
+    ::lower
+    ::schedule
+    ::serialize
+    iree::async
+    iree::async::util::proactor_pool
+    iree::base
+    iree::base::internal::arena
+    iree::hal
+    iree::hal::drivers::local_sync::sync_driver
+    iree::hal::local::loaders::static_library_loader
+    iree::testing::gtest
+    iree::testing::gtest_main
+    loom::binding::c::loomc
+    loom::binding::c::test::test_util
+    loom::codegen::low::verify
+    loom::format::text::parser
+    loom::ir
+    loom::ops::op_registry
+    loom::target::arch::cmd::descriptors::low_registry
+    loom::target::arch::cmd::iree_hal::recording
+    loom::target::arch::cmd::iree_hal::recording_test_executable
+    loom::target::arch::cmd::program
+    loom::testing::diagnostic_matchers
+    loom::testing::module_ptr
+    loom::verify
+)
+
 ### BAZEL_TO_CMAKE_PRESERVES_ALL_CONTENT_BELOW_THIS_LINE ###
