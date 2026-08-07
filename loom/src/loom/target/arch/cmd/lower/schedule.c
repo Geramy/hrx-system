@@ -129,7 +129,8 @@ static iree_status_t loom_cmd_schedule_append_command(
 }
 
 static bool loom_cmd_schedule_is_terminator(const loom_op_t* op) {
-  return loom_command_return_isa(op) || loom_command_yield_isa(op);
+  return loom_command_return_isa(op) || loom_command_yield_isa(op) ||
+         loom_kernel_launch_yield_isa(op);
 }
 
 static iree_status_t loom_cmd_schedule_build_commands(
@@ -170,11 +171,23 @@ static iree_status_t loom_cmd_schedule_build_commands(
     loom_cmd_schedule_mode_t child_mode = LOOM_CMD_SCHEDULE_MODE_SERIAL;
     if (loom_command_serial_isa(op)) {
       child_region = loom_command_serial_body(op);
+    } else if (loom_kernel_launch_serial_isa(op)) {
+      child_region = loom_kernel_launch_serial_body(op);
     } else if (loom_command_concurrent_isa(op)) {
       child_region = loom_command_concurrent_body(op);
       child_mode = LOOM_CMD_SCHEDULE_MODE_CONCURRENT;
+    } else if (loom_kernel_launch_concurrent_isa(op)) {
+      child_region = loom_kernel_launch_concurrent_body(op);
+      child_mode = LOOM_CMD_SCHEDULE_MODE_CONCURRENT;
     } else if (loom_kernel_launch_isa(op)) {
       IREE_RETURN_IF_ERROR(loom_cmd_schedule_append_command(build, frame, op));
+      continue;
+    } else if (op->region_count == 0 &&
+               iree_any_bit_set(loom_op_effective_traits(build->module, op),
+                                LOOM_TRAIT_PURE)) {
+      // Pure leaf dataflow may feed launch workloads but does not itself emit
+      // a command. The launch plan owns any value it contributes to dispatch
+      // metadata.
       continue;
     } else {
       const iree_string_view_t op_name = loom_op_name(build->module, op);

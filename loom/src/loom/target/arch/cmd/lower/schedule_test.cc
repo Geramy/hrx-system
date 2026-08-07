@@ -159,5 +159,42 @@ command.program.def @nested() launch() {
   iree_arena_deinitialize(&arena);
 }
 
+TEST_F(CmdScheduleTest, PreservesKernelLaunchSchedulingForms) {
+  ModulePtr module = Parse(R"(
+kernel.decl @a(%workgroup_count: index) launch(%storage: buffer)
+kernel.decl @b(%workgroup_count: index) launch(%storage: buffer)
+
+command.program.def @kernel_schedule(%workgroup_count: index) launch(%storage: buffer) {
+  %one = index.constant 1 : index
+  kernel.launch.serial {
+    kernel.launch.concurrent {
+      kernel.launch @a[%workgroup_count](%storage) : [index](buffer)
+      kernel.launch @b[%workgroup_count](%storage) : [index](buffer)
+    }
+    kernel.launch @a[%one](%storage) : [index](buffer)
+  }
+  command.return
+}
+)");
+
+  iree_arena_allocator_t arena;
+  iree_arena_initialize(&block_pool_, &arena);
+  const loom_func_like_t program =
+      FindProgram(module.get(), IREE_SV("kernel_schedule"));
+  loom_cmd_schedule_plan_t plan = {};
+  IREE_ASSERT_OK(loom_cmd_schedule_plan_build(
+      module.get(), loom_func_like_body(program), &arena, &plan));
+
+  ASSERT_EQ(plan.wave_count, 2u);
+  ASSERT_EQ(plan.command_count, 3u);
+  EXPECT_EQ(plan.waves[0].command_count, 2u);
+  EXPECT_EQ(plan.waves[1].command_count, 1u);
+  EXPECT_EQ(CalleeName(module.get(), plan.commands[0]), "a");
+  EXPECT_EQ(CalleeName(module.get(), plan.commands[1]), "b");
+  EXPECT_EQ(CalleeName(module.get(), plan.commands[2]), "a");
+
+  iree_arena_deinitialize(&arena);
+}
+
 }  // namespace
 }  // namespace loom

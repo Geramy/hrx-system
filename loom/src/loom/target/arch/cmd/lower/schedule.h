@@ -44,11 +44,14 @@ typedef struct loom_cmd_schedule_plan_t {
 
 // Builds the portable wave schedule for a command-program body.
 //
-// Lexical operations in |program_body| and command.serial regions are ordered.
-// Siblings in command.concurrent regions begin in the same wave; nested serial
-// spans are aligned by wave index, which may conservatively add cross-sibling
-// dependencies. The closed planner currently accepts kernel.launch leaves and
-// rejects any residual source operation that must have been specialized away.
+// Lexical operations in |program_body| and serial launch-schedule regions are
+// ordered. Siblings in concurrent launch-schedule regions begin in the same
+// wave; nested serial spans are aligned by wave index, which may conservatively
+// add cross-sibling dependencies. The kernel.launch and command schedule ops
+// are equivalent structured scheduling forms. Pure leaf dataflow is ignored
+// because it emits no command; the launch plan owns any values it contributes
+// to dispatch metadata. Other residual source operations must have been
+// specialized away and are rejected.
 iree_status_t loom_cmd_schedule_plan_build(const loom_module_t* module,
                                            loom_region_t* program_body,
                                            iree_arena_allocator_t* arena,

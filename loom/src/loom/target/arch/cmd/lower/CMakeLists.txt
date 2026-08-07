@@ -27,6 +27,34 @@ loom_cc_library(
 
 loom_cc_library(
   NAME
+    launch_graph
+  HDRS
+    "launch_graph.h"
+  SRCS
+    "launch_graph.c"
+  DEPS
+    ::schedule
+    iree::base
+    iree::base::internal::arena
+    loom::ir
+    loom::ir::facts
+    loom::ops::command
+    loom::ops::func
+    loom::ops::kernel
+    loom::ops::op_defs
+    loom::ops::type_registry
+    loom::pass::value_facts
+    loom::rewrite::materialize
+    loom::rewrite::remap
+    loom::rewrite::rewriter
+    loom::target::types
+    loom::transforms::cleanup::canonicalize
+    loom::transforms::cleanup::cse
+  PUBLIC
+)
+
+loom_cc_library(
+  NAME
     lower
   HDRS
     "lower.h"
@@ -106,6 +134,30 @@ loom_cc_test(
     loom::ops::kernel
     loom::ops::op_registry
     loom::testing::module_ptr
+)
+
+loom_cc_test(
+  NAME
+    launch_graph_test
+  SRCS
+    "launch_graph_test.cc"
+  DEPS
+    ::launch_graph
+    ::schedule
+    iree::base
+    iree::base::internal::arena
+    iree::io::stream
+    iree::testing::gtest
+    iree::testing::gtest_main
+    loom::format::bytecode::writer
+    loom::format::text::parser
+    loom::ir
+    loom::ops::func
+    loom::ops::index
+    loom::ops::op_registry
+    loom::testing::diagnostic_matchers
+    loom::testing::module_ptr
+    loom::verify
 )
 
 loom_cc_test(
