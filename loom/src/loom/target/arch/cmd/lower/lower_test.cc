@@ -417,12 +417,16 @@ command.program.def public @attention() launch(%parameters: buffer, %input: buff
   iree_allocator_free(iree_allocator_system(), program_data.data);
 }
 
-TEST_F(CmdLowerTest, RejectsResidualSourceOperationWithoutMutation) {
+TEST_F(CmdLowerTest, RejectsUnsupportedCommandWithoutMutation) {
   ModulePtr module = ParseAndVerifySource(R"(
 target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
 
+command.program.def @leaf() launch() {
+  command.return
+}
+
 command.program.def @residual() launch() {
-  %unit = index.constant 1 : index
+  command.program.launch @leaf[]() : []()
   command.return
 }
 )");

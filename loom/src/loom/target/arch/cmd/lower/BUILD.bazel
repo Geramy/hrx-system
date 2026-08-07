@@ -30,6 +30,31 @@ loom_cc_library(
 )
 
 loom_cc_library(
+    name = "launch_graph",
+    srcs = ["launch_graph.c"],
+    hdrs = ["launch_graph.h"],
+    deps = [
+        ":schedule",
+        "//loom/src/loom/ir",
+        "//loom/src/loom/ir:facts",
+        "//loom/src/loom/ops:op_defs",
+        "//loom/src/loom/ops:type_registry",
+        "//loom/src/loom/ops/command",
+        "//loom/src/loom/ops/func",
+        "//loom/src/loom/ops/kernel",
+        "//loom/src/loom/pass:value_facts",
+        "//loom/src/loom/rewrite:materialize",
+        "//loom/src/loom/rewrite:remap",
+        "//loom/src/loom/rewrite:rewriter",
+        "//loom/src/loom/target:types",
+        "//loom/src/loom/transforms/cleanup:canonicalize",
+        "//loom/src/loom/transforms/cleanup:cse",
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/base/internal:arena",
+    ],
+)
+
+loom_cc_library(
     name = "lower",
     srcs = ["lower.c"],
     hdrs = ["lower.h"],
@@ -98,6 +123,29 @@ loom_cc_test(
         "//loom/src/loom/testing:module_ptr",
         "//runtime/src/iree/base",
         "//runtime/src/iree/base/internal:arena",
+        "//runtime/src/iree/testing:gtest",
+        "//runtime/src/iree/testing:gtest_main",
+    ],
+)
+
+loom_cc_test(
+    name = "launch_graph_test",
+    srcs = ["launch_graph_test.cc"],
+    deps = [
+        ":launch_graph",
+        ":schedule",
+        "//loom/src/loom/format/bytecode:writer",
+        "//loom/src/loom/format/text:parser",
+        "//loom/src/loom/ir",
+        "//loom/src/loom/ops:op_registry",
+        "//loom/src/loom/ops/func",
+        "//loom/src/loom/ops/index",
+        "//loom/src/loom/testing:diagnostic_matchers",
+        "//loom/src/loom/testing:module_ptr",
+        "//loom/src/loom/verify",
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/base/internal:arena",
+        "//runtime/src/iree/io:stream",
         "//runtime/src/iree/testing:gtest",
         "//runtime/src/iree/testing:gtest_main",
     ],
