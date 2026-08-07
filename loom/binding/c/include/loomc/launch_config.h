@@ -15,12 +15,11 @@
 /// @file
 /// Kernel launch configuration evaluation.
 ///
-/// Launch configuration evaluation answers the host-side question "which launch
-/// parameters resolve to concrete values under this invocation config?" It is a
-/// cold-path convenience API for embedders that compile kernel shape sets and
-/// launch the resulting executable themselves. The result uses ordinary Loom C
-/// API versioned structs and presence flags; serialized launch config artifacts
-/// use a separate compact binary format.
+/// Launch configuration evaluation answers the compiler-side question "which
+/// launch parameters resolve to concrete values under this invocation config?"
+/// This source-module API is a convenience for inspecting kernel shape sets.
+/// Repeated runtime evaluation of compiler-produced artifacts uses the prepared
+/// module API in `loomc/launch_config_module.h`.
 
 #ifdef __cplusplus
 extern "C" {
@@ -77,7 +76,6 @@ typedef struct loomc_launch_config_t {
   /// Optional concrete workgroup-local storage byte count.
   uint64_t workgroup_storage_bytes;
 } loomc_launch_config_t;
-
 /// Launch configuration evaluation options.
 ///
 /// Callers zero-initialize this descriptor, set `type` to

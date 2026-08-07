@@ -84,6 +84,14 @@ void loom_exact_function_context_initialize(
 void loom_exact_function_context_deinitialize(
     loom_exact_function_context_t* context);
 
+// Prepares reusable fact storage for |function| without evaluating it.
+//
+// This moves storage growth to context preparation so subsequent evaluations
+// of functions from the same module can remain allocation-free.
+iree_status_t loom_exact_function_context_prepare(
+    loom_exact_function_context_t* context,
+    const loom_exact_function_t* function);
+
 // Evaluates |function| and writes exact signed results positionally.
 //
 // Invocation values are checked against their scalar domains and authored

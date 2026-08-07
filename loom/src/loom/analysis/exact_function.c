@@ -164,6 +164,26 @@ void loom_exact_function_context_deinitialize(
   memset(context, 0, sizeof(*context));
 }
 
+iree_status_t loom_exact_function_context_prepare(
+    loom_exact_function_context_t* context,
+    const loom_exact_function_t* function) {
+  if (context == NULL || function == NULL) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "context and function must not be NULL");
+  }
+  if (context->module != function->module) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "exact host function belongs to a different evaluation module");
+  }
+  loom_value_fact_table_t* fact_table = NULL;
+  IREE_RETURN_IF_ERROR(loom_pass_value_fact_owner_prepare(
+      &context->fact_owner, context->module,
+      loom_pass_value_fact_scope_function(function->function), &fact_table));
+  loom_pass_value_fact_owner_invalidate(&context->fact_owner);
+  return iree_ok_status();
+}
+
 static iree_status_t loom_exact_function_check_argument(
     const loom_exact_function_t* function, uint16_t argument_ordinal,
     int64_t value) {

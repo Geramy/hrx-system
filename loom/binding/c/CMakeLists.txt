@@ -27,6 +27,7 @@ loom_cc_library(
     "include/loomc/emit.h"
     "include/loomc/iree.h"
     "include/loomc/launch_config.h"
+    "include/loomc/launch_config_module.h"
     "include/loomc/link.h"
     "include/loomc/link_index.h"
     "include/loomc/loomc.h"
@@ -62,6 +63,7 @@ loom_cc_library(
     "src/diagnostic.c"
     "src/emit.c"
     "src/launch_config.c"
+    "src/launch_config_module.c"
     "src/link.c"
     "src/link_index.c"
     "src/module.c"
@@ -76,10 +78,12 @@ loom_cc_library(
     "src/workspace.c"
   DEPS
     iree::base
+    iree::base::core_headers
     iree::base::internal
     iree::base::internal::arena
     iree::io::file_handle
     iree::io::stream
+    loom::analysis::exact_function
     loom::analysis::kernel_launch_config
     loom::codegen::low::pipeline::pass_environment
     loom::codegen::low::repr
@@ -94,6 +98,7 @@ loom_cc_library(
     loom::format::text::parser
     loom::format::text::printer
     loom::ir
+    loom::ir::facts
     loom::link::linker
     loom::link::module_index
     loom::link::planner
@@ -152,6 +157,7 @@ loom_cc_library(
     "include/loomc/emit.h"
     "include/loomc/iree.h"
     "include/loomc/launch_config.h"
+    "include/loomc/launch_config_module.h"
     "include/loomc/link.h"
     "include/loomc/link_index.h"
     "include/loomc/loomc.h"
