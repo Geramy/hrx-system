@@ -11,6 +11,7 @@
 #include "loom/ir/attribute.h"
 #include "loom/ir/module.h"
 #include "loom/link/linker.h"
+#include "loom/ops/index/ops.h"
 #include "loom/ops/kernel/ops.h"
 #include "loom/ops/op_defs.h"
 #include "loom/ops/special_values.h"
@@ -119,8 +120,15 @@ static bool loom_cmd_kernel_unit_argument_is_unused(const loom_module_t* module,
          !loom_module_value_has_type_uses(module, argument);
 }
 
-// Reifies exact boundary facts inside their owning region so the derived unit
-// remains independently compilable after the transient fact table is gone.
+static bool loom_cmd_kernel_unit_select_operand_use(const loom_op_t* user_op,
+                                                    void* user_data) {
+  (void)user_op;
+  (void)user_data;
+  return true;
+}
+
+// Reifies exact device-ABI facts inside the body so the derived unit remains
+// independently compilable after the transient fact table is gone.
 static iree_status_t loom_cmd_kernel_unit_materialize_exact_arguments(
     loom_module_t* module, loom_func_like_t kernel,
     const loom_value_id_t* arguments, uint16_t argument_count,
@@ -154,7 +162,123 @@ static iree_status_t loom_cmd_kernel_unit_materialize_exact_arguments(
     IREE_RETURN_IF_ERROR(
         loom_module_copy_value_name(module, argument, replacement));
     IREE_RETURN_IF_ERROR(
-        loom_value_replace_all_uses_with(module, argument, replacement));
+        loom_module_replace_value_type_uses(module, argument, replacement));
+    // Keep function-contract predicates on the formal argument. Moving their
+    // references to a body-local constant would make the serialized function
+    // metadata depend on a value that is not in scope until its body is read.
+    IREE_RETURN_IF_ERROR(loom_value_replace_uses_if(
+        module, argument, replacement, loom_cmd_kernel_unit_select_operand_use,
+        NULL));
+  }
+  return iree_ok_status();
+}
+
+#define LOOM_CMD_KERNEL_UNIT_PREDICATE_CAPACITY 4
+
+static uint16_t loom_cmd_kernel_unit_predicates_from_facts(
+    loom_value_id_t value, loom_type_t type, loom_value_facts_t facts,
+    loom_predicate_t* predicates) {
+  if (!loom_type_is_scalar(type) || loom_value_facts_is_exact(facts) ||
+      loom_value_facts_is_float(facts) || loom_value_facts_is_unknown(facts)) {
+    return 0;
+  }
+  const loom_scalar_type_t scalar_type = loom_type_element_type(type);
+  if (scalar_type != LOOM_SCALAR_TYPE_INDEX &&
+      scalar_type != LOOM_SCALAR_TYPE_OFFSET) {
+    return 0;
+  }
+
+  int64_t domain_lo = 0;
+  int64_t domain_hi = 0;
+  const bool has_domain =
+      loom_value_facts_scalar_type_domain(scalar_type, &domain_lo, &domain_hi);
+  IREE_ASSERT(has_domain);
+  (void)has_domain;
+  uint16_t count = 0;
+  if (facts.range_lo > domain_lo || facts.range_hi < domain_hi) {
+    predicates[count++] = (loom_predicate_t){
+        .kind = LOOM_PREDICATE_RANGE,
+        .arg_count = 3,
+        .arg_tags = {LOOM_PRED_ARG_VALUE, LOOM_PRED_ARG_CONST,
+                     LOOM_PRED_ARG_CONST},
+        .args = {value, facts.range_lo, facts.range_hi},
+    };
+  }
+  if (facts.known_divisor > 1) {
+    predicates[count++] = (loom_predicate_t){
+        .kind = LOOM_PREDICATE_MUL,
+        .arg_count = 2,
+        .arg_tags = {LOOM_PRED_ARG_VALUE, LOOM_PRED_ARG_CONST,
+                     LOOM_PRED_ARG_NONE},
+        .args = {value, facts.known_divisor, 0},
+    };
+  }
+  if (loom_value_facts_is_power_of_two(facts)) {
+    predicates[count++] = (loom_predicate_t){
+        .kind = LOOM_PREDICATE_POW2,
+        .arg_count = 1,
+        .arg_tags = {LOOM_PRED_ARG_VALUE, LOOM_PRED_ARG_NONE,
+                     LOOM_PRED_ARG_NONE},
+        .args = {value, 0, 0},
+    };
+  }
+  if (loom_value_facts_is_non_zero(facts) && facts.range_lo <= 0 &&
+      facts.range_hi >= 0) {
+    predicates[count++] = (loom_predicate_t){
+        .kind = LOOM_PREDICATE_NE,
+        .arg_count = 2,
+        .arg_tags = {LOOM_PRED_ARG_VALUE, LOOM_PRED_ARG_CONST,
+                     LOOM_PRED_ARG_NONE},
+        .args = {value, 0, 0},
+    };
+  }
+  IREE_ASSERT_LE(count, LOOM_CMD_KERNEL_UNIT_PREDICATE_CAPACITY);
+  return count;
+}
+
+// Persists abstract address facts as ordinary identity assumptions in the
+// derived body. Consumers use the assumed result while the formal remains
+// available as the unit's dynamic device ABI input.
+static iree_status_t loom_cmd_kernel_unit_materialize_abstract_arguments(
+    loom_module_t* module, loom_func_like_t kernel,
+    const loom_value_id_t* arguments, uint16_t argument_count,
+    const loom_value_fact_table_t* seed_facts) {
+  if (argument_count == 0) return iree_ok_status();
+
+  const loom_value_t* first_argument = loom_module_value(module, arguments[0]);
+  IREE_ASSERT(loom_value_is_block_arg(first_argument));
+  loom_block_t* entry_block = loom_value_def_block(first_argument);
+  loom_builder_t builder;
+  loom_builder_initialize(module, &module->arena, entry_block, &builder);
+  if (entry_block->first_op) {
+    loom_builder_set_before(&builder, entry_block->first_op);
+  } else {
+    builder.ip.parent_op = kernel.op;
+  }
+
+  for (uint16_t i = 0; i < argument_count; ++i) {
+    const loom_value_id_t argument = arguments[i];
+    IREE_ASSERT_EQ(loom_value_def_block(loom_module_value(module, argument)),
+                   entry_block);
+    if (loom_cmd_kernel_unit_argument_is_unused(module, argument)) continue;
+    const loom_value_facts_t facts =
+        loom_value_fact_table_lookup(seed_facts, argument);
+    const loom_type_t type = loom_module_value_type(module, argument);
+    loom_predicate_t predicates[LOOM_CMD_KERNEL_UNIT_PREDICATE_CAPACITY] = {0};
+    const uint16_t predicate_count = loom_cmd_kernel_unit_predicates_from_facts(
+        argument, type, facts, predicates);
+    if (predicate_count == 0) continue;
+
+    loom_op_t* assume_op = NULL;
+    IREE_RETURN_IF_ERROR(loom_index_assume_build(
+        &builder, &argument, 1, predicates, predicate_count, &type, 1,
+        kernel.op->location, &assume_op));
+    const loom_value_id_t replacement =
+        loom_index_assume_results(assume_op).values[0];
+    IREE_RETURN_IF_ERROR(
+        loom_module_copy_value_name(module, argument, replacement));
+    IREE_RETURN_IF_ERROR(loom_value_replace_all_uses_except(
+        module, argument, replacement, assume_op));
   }
   return iree_ok_status();
 }
@@ -294,17 +418,18 @@ iree_status_t loom_cmd_kernel_unit_materialize(
         source_launch_op, source_facts, unit_module, unit_kernel, &seed_facts);
   }
   if (iree_status_is_ok(status)) {
-    const loom_value_slice_t unit_workloads =
-        loom_kernel_workload_arg_ids(unit_module, unit_kernel.op);
+    uint16_t unit_argument_count = 0;
+    const loom_value_id_t* unit_arguments =
+        loom_func_like_arg_ids(unit_kernel, &unit_argument_count);
     status = loom_cmd_kernel_unit_materialize_exact_arguments(
-        unit_module, unit_kernel, unit_workloads.values, unit_workloads.count,
+        unit_module, unit_kernel, unit_arguments, unit_argument_count,
         &seed_facts);
   }
   if (iree_status_is_ok(status)) {
     uint16_t unit_argument_count = 0;
     const loom_value_id_t* unit_arguments =
         loom_func_like_arg_ids(unit_kernel, &unit_argument_count);
-    status = loom_cmd_kernel_unit_materialize_exact_arguments(
+    status = loom_cmd_kernel_unit_materialize_abstract_arguments(
         unit_module, unit_kernel, unit_arguments, unit_argument_count,
         &seed_facts);
   }

@@ -58,6 +58,7 @@ loom_cc_library(
     iree::base::internal::arena
     loom::ir
     loom::link::linker
+    loom::ops::index
     loom::ops::kernel
     loom::ops::op_defs
     loom::ops::special_values
@@ -116,11 +117,14 @@ loom_cc_test(
     ::kernel_unit
     iree::base
     iree::base::internal::arena
+    iree::io::stream
     iree::testing::gtest
     iree::testing::gtest_main
+    loom::format::bytecode::writer
     loom::format::text::parser
     loom::ir
     loom::ops::buffer
+    loom::ops::index
     loom::ops::kernel
     loom::ops::op_registry
     loom::ops::scf
