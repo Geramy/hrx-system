@@ -34,15 +34,24 @@ loom_cc_library(
     ],
 )
 
+loom_cc_library(
+    name = "recording_test_executable",
+    testonly = True,
+    srcs = ["recording_test_executable.c"],
+    hdrs = ["recording_test_executable.h"],
+    visibility = ["//loom/src/loom/target/arch/cmd/lower:__pkg__"],
+    deps = [
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/hal/local:executable_library",
+    ],
+)
+
 loom_cc_test(
     name = "recording_test",
-    srcs = [
-        "recording_test.cc",
-        "recording_test_executable.c",
-        "recording_test_executable.h",
-    ],
+    srcs = ["recording_test.cc"],
     deps = [
         ":recording",
+        ":recording_test_executable",
         "//loom/src/loom/codegen/low:text_asm",
         "//loom/src/loom/codegen/low:verify",
         "//loom/src/loom/format/text:parser",

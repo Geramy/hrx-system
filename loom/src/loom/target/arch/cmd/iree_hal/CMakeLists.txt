@@ -29,15 +29,28 @@ loom_cc_library(
   PUBLIC
 )
 
+loom_cc_library(
+  NAME
+    recording_test_executable
+  HDRS
+    "recording_test_executable.h"
+  SRCS
+    "recording_test_executable.c"
+  DEPS
+    iree::base
+    iree::hal::local::executable_library
+  TESTONLY
+  PUBLIC
+)
+
 loom_cc_test(
   NAME
     recording_test
   SRCS
     "recording_test.cc"
-    "recording_test_executable.c"
-    "recording_test_executable.h"
   DEPS
     ::recording
+    ::recording_test_executable
     iree::async
     iree::async::util::proactor_pool
     iree::base
