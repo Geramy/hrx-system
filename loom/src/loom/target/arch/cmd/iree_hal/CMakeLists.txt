@@ -24,6 +24,7 @@ loom_cc_library(
     loom::ir
     loom::ops::low
     loom::target::arch::cmd::descriptors
+    loom::target::arch::cmd::program
     loom::target::registers
   PUBLIC
 )
@@ -53,6 +54,7 @@ loom_cc_test(
     loom::ir
     loom::ops::op_registry
     loom::target::arch::cmd::descriptors::low_registry
+    loom::target::arch::cmd::lower::serialize
     loom::testing::diagnostic_matchers
     loom::testing::module_ptr
 )

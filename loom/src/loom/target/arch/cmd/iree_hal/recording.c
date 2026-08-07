@@ -404,6 +404,31 @@ static iree_status_t loom_cmd_iree_hal_dispatch(
       constants, bindings, flags);
 }
 
+static iree_status_t loom_cmd_iree_hal_record_execution_barrier(
+    iree_hal_command_buffer_t* command_buffer) {
+  const iree_hal_memory_barrier_t memory_barrier = {
+      .source_scope = IREE_HAL_ACCESS_SCOPE_DISPATCH_WRITE |
+                      IREE_HAL_ACCESS_SCOPE_TRANSFER_WRITE |
+                      IREE_HAL_ACCESS_SCOPE_MEMORY_WRITE,
+      .target_scope = IREE_HAL_ACCESS_SCOPE_INDIRECT_COMMAND_READ |
+                      IREE_HAL_ACCESS_SCOPE_CONSTANT_READ |
+                      IREE_HAL_ACCESS_SCOPE_DISPATCH_READ |
+                      IREE_HAL_ACCESS_SCOPE_DISPATCH_WRITE |
+                      IREE_HAL_ACCESS_SCOPE_TRANSFER_READ |
+                      IREE_HAL_ACCESS_SCOPE_TRANSFER_WRITE |
+                      IREE_HAL_ACCESS_SCOPE_MEMORY_READ |
+                      IREE_HAL_ACCESS_SCOPE_MEMORY_WRITE,
+  };
+  return iree_hal_command_buffer_execution_barrier(
+      command_buffer,
+      IREE_HAL_EXECUTION_STAGE_DISPATCH | IREE_HAL_EXECUTION_STAGE_TRANSFER |
+          IREE_HAL_EXECUTION_STAGE_COMMAND_RETIRE,
+      IREE_HAL_EXECUTION_STAGE_COMMAND_ISSUE |
+          IREE_HAL_EXECUTION_STAGE_COMMAND_PROCESS |
+          IREE_HAL_EXECUTION_STAGE_DISPATCH | IREE_HAL_EXECUTION_STAGE_TRANSFER,
+      IREE_HAL_EXECUTION_BARRIER_FLAG_NONE, 1, &memory_barrier, 0, NULL);
+}
+
 static iree_status_t loom_cmd_iree_hal_record_packet(
     loom_cmd_iree_hal_workspace_t* workspace,
     const loom_low_descriptor_packet_t* packet) {
@@ -502,28 +527,8 @@ static iree_status_t loom_cmd_iree_hal_record_packet(
   }
   if (loom_cmd_iree_hal_packet_is(workspace, packet,
                                   CMD_CORE_DESCRIPTOR_REF_EXECUTION_BARRIER)) {
-    const iree_hal_memory_barrier_t memory_barrier = {
-        .source_scope = IREE_HAL_ACCESS_SCOPE_DISPATCH_WRITE |
-                        IREE_HAL_ACCESS_SCOPE_TRANSFER_WRITE |
-                        IREE_HAL_ACCESS_SCOPE_MEMORY_WRITE,
-        .target_scope = IREE_HAL_ACCESS_SCOPE_INDIRECT_COMMAND_READ |
-                        IREE_HAL_ACCESS_SCOPE_CONSTANT_READ |
-                        IREE_HAL_ACCESS_SCOPE_DISPATCH_READ |
-                        IREE_HAL_ACCESS_SCOPE_DISPATCH_WRITE |
-                        IREE_HAL_ACCESS_SCOPE_TRANSFER_READ |
-                        IREE_HAL_ACCESS_SCOPE_TRANSFER_WRITE |
-                        IREE_HAL_ACCESS_SCOPE_MEMORY_READ |
-                        IREE_HAL_ACCESS_SCOPE_MEMORY_WRITE,
-    };
-    return iree_hal_command_buffer_execution_barrier(
-        workspace->command_buffer,
-        IREE_HAL_EXECUTION_STAGE_DISPATCH | IREE_HAL_EXECUTION_STAGE_TRANSFER |
-            IREE_HAL_EXECUTION_STAGE_COMMAND_RETIRE,
-        IREE_HAL_EXECUTION_STAGE_COMMAND_ISSUE |
-            IREE_HAL_EXECUTION_STAGE_COMMAND_PROCESS |
-            IREE_HAL_EXECUTION_STAGE_DISPATCH |
-            IREE_HAL_EXECUTION_STAGE_TRANSFER,
-        IREE_HAL_EXECUTION_BARRIER_FLAG_NONE, 1, &memory_barrier, 0, NULL);
+    return loom_cmd_iree_hal_record_execution_barrier(
+        workspace->command_buffer);
   }
   const iree_string_view_t descriptor_key =
       loom_low_descriptor_packet_diagnostic_key(workspace->descriptor_set,
@@ -532,6 +537,222 @@ static iree_status_t loom_cmd_iree_hal_record_packet(
       IREE_STATUS_UNIMPLEMENTED,
       "cmd low descriptor `%.*s` cannot be recorded as an IREE HAL command",
       (int)descriptor_key.size, descriptor_key.data);
+}
+
+typedef struct loom_cmd_iree_hal_program_workspace_t {
+  // Parsed artifact being recorded.
+  const loom_cmd_program_t* program;
+  // Package resources supplied by the application.
+  const loom_cmd_iree_hal_inputs_t* inputs;
+  // Begun command buffer receiving portable commands.
+  iree_hal_command_buffer_t* command_buffer;
+  // Resolved direct and indirect buffer-reference table.
+  iree_hal_buffer_ref_t* buffer_refs;
+  // Scratch storage for one dispatch constant block.
+  uint8_t* constants;
+  // Scratch storage for one dispatch binding table.
+  iree_hal_buffer_ref_t* bindings;
+} loom_cmd_iree_hal_program_workspace_t;
+
+static iree_status_t loom_cmd_iree_hal_validate_program_inputs(
+    const loom_cmd_program_t* program, const loom_cmd_iree_hal_inputs_t* inputs,
+    iree_host_size_t* out_max_constant_byte_length,
+    iree_host_size_t* out_max_binding_count) {
+  iree_host_size_t max_parameter_count = 0;
+  IREE_RETURN_IF_ERROR(loom_cmd_iree_hal_validate_inputs(
+      inputs, &max_parameter_count, out_max_constant_byte_length,
+      out_max_binding_count));
+  if (inputs->fixed_buffer_count != program->requirements.fixed_buffer_count ||
+      inputs->binding_count != program->requirements.rebindable_binding_count ||
+      inputs->executable_count != program->requirements.executable_count ||
+      inputs->entry_count != program->requirements.entry_count) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "command program requires fixed/binding/executable/entry counts "
+        "(%" PRIu32 ", %" PRIu32 ", %" PRIu32 ", %" PRIu32
+        ") but received (%" PRIhsz ", %" PRIhsz ", %" PRIhsz ", %" PRIhsz ")",
+        program->requirements.fixed_buffer_count,
+        program->requirements.rebindable_binding_count,
+        program->requirements.executable_count,
+        program->requirements.entry_count, inputs->fixed_buffer_count,
+        inputs->binding_count, inputs->executable_count, inputs->entry_count);
+  }
+  return iree_ok_status();
+}
+
+static iree_status_t loom_cmd_iree_hal_resolve_program_buffer_refs(
+    loom_cmd_iree_hal_program_workspace_t* workspace) {
+  for (uint32_t i = 0; i < workspace->program->buffer_refs.count; ++i) {
+    const loom_cmd_program_buffer_ref_t source =
+        loom_cmd_program_buffer_ref_at(workspace->program, i);
+    if (source.role == LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE) {
+      workspace->buffer_refs[i] = iree_hal_make_indirect_buffer_ref(
+          source.root_index, source.byte_offset, source.byte_length);
+      continue;
+    }
+
+    const iree_hal_buffer_ref_t root =
+        workspace->inputs->fixed_buffers[source.root_index];
+    if (root.buffer == NULL) {
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                              "fixed-buffer root %" PRIu32
+                              " is not a direct buffer",
+                              source.root_index);
+    }
+    iree_device_size_t adjusted_offset = 0;
+    iree_device_size_t adjusted_length = 0;
+    IREE_RETURN_IF_ERROR(iree_hal_buffer_calculate_range(
+        root.offset, root.length, source.byte_offset, source.byte_length,
+        &adjusted_offset, &adjusted_length));
+    workspace->buffer_refs[i] =
+        iree_hal_make_buffer_ref(root.buffer, adjusted_offset, adjusted_length);
+  }
+  return iree_ok_status();
+}
+
+static iree_status_t loom_cmd_iree_hal_pack_program_arguments(
+    loom_cmd_iree_hal_program_workspace_t* workspace,
+    const loom_cmd_program_command_t* command,
+    const loom_cmd_iree_hal_entry_t* entry,
+    iree_const_byte_span_t* out_constants,
+    iree_hal_buffer_ref_list_t* out_bindings) {
+  if (command->argument_count != entry->info.parameter_count) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "command dispatch has %" PRIu32
+                            " logical arguments but its entry expects %" PRIu16,
+                            command->argument_count,
+                            entry->info.parameter_count);
+  }
+
+  memset(workspace->constants, 0, entry->info.constant_byte_length);
+  memset(workspace->bindings, 0,
+         entry->info.binding_count * sizeof(*workspace->bindings));
+  for (uint16_t i = 0; i < entry->info.parameter_count; ++i) {
+    const loom_cmd_program_argument_t argument = loom_cmd_program_argument_at(
+        workspace->program, command->argument_offset + i);
+    const iree_hal_executable_function_parameter_t* parameter =
+        &entry->parameters[i];
+    switch (parameter->type) {
+      case IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_CONSTANT:
+        if (argument.kind == LOOM_CMD_PROGRAM_ARGUMENT_KIND_U32 &&
+            parameter->size == sizeof(uint32_t)) {
+          const uint32_t value = (uint32_t)argument.payload;
+          memcpy(workspace->constants + parameter->offset, &value,
+                 sizeof(value));
+        } else if (argument.kind == LOOM_CMD_PROGRAM_ARGUMENT_KIND_U64 &&
+                   parameter->size == sizeof(uint64_t)) {
+          memcpy(workspace->constants + parameter->offset, &argument.payload,
+                 sizeof(argument.payload));
+        } else {
+          return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                                  "command argument %" PRIu16
+                                  " does not match its %" PRIu16
+                                  "-byte constant parameter",
+                                  i, parameter->size);
+        }
+        break;
+      case IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_BINDING:
+        if (argument.kind != LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF) {
+          return iree_make_status(
+              IREE_STATUS_INVALID_ARGUMENT,
+              "command argument %" PRIu16 " is not a buffer reference", i);
+        }
+        workspace->bindings[parameter->offset] =
+            workspace->buffer_refs[(uint32_t)argument.payload];
+        break;
+      case IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_BUFFER_PTR:
+        return iree_make_status(
+            IREE_STATUS_UNIMPLEMENTED,
+            "command entry raw buffer-pointer parameters cannot preserve "
+            "issue-time buffer rebinding");
+      default:
+        IREE_ASSERT_UNREACHABLE("entry parameter types were validated");
+    }
+  }
+
+  *out_constants = iree_make_const_byte_span(workspace->constants,
+                                             entry->info.constant_byte_length);
+  *out_bindings = (iree_hal_buffer_ref_list_t){
+      .count = entry->info.binding_count,
+      .values = workspace->bindings,
+  };
+  return iree_ok_status();
+}
+
+static iree_status_t loom_cmd_iree_hal_record_program_dispatch(
+    loom_cmd_iree_hal_program_workspace_t* workspace,
+    const loom_cmd_program_command_t* command) {
+  const bool is_direct =
+      command->kind == LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT;
+  const uint32_t executable_index =
+      is_direct ? command->payload.dispatch_direct.executable_index
+                : command->payload.dispatch_indirect.executable_index;
+  const uint32_t entry_index =
+      is_direct ? command->payload.dispatch_direct.entry_index
+                : command->payload.dispatch_indirect.entry_index;
+  const loom_cmd_iree_hal_entry_t* entry =
+      &workspace->inputs->entries[entry_index];
+  if (entry->executable_index != executable_index) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "command dispatch pairs executable %" PRIu32 " with entry %" PRIu32
+        " owned by executable %" PRIu32,
+        executable_index, entry_index, entry->executable_index);
+  }
+
+  iree_const_byte_span_t constants = iree_const_byte_span_empty();
+  iree_hal_buffer_ref_list_t bindings = iree_hal_buffer_ref_list_empty();
+  IREE_RETURN_IF_ERROR(loom_cmd_iree_hal_pack_program_arguments(
+      workspace, command, entry, &constants, &bindings));
+  iree_hal_dispatch_config_t config = {0};
+  iree_hal_dispatch_flags_t flags = IREE_HAL_DISPATCH_FLAG_NONE;
+  if (is_direct) {
+    config = iree_hal_make_static_dispatch_config(
+        command->payload.dispatch_direct.workgroup_count_x,
+        command->payload.dispatch_direct.workgroup_count_y,
+        command->payload.dispatch_direct.workgroup_count_z);
+  } else {
+    config.workgroup_count_ref =
+        workspace->buffer_refs[command->payload.dispatch_indirect
+                                   .workgroup_count_buffer_ref];
+    flags =
+        command->kind == LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC
+            ? IREE_HAL_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS
+            : IREE_HAL_DISPATCH_FLAG_DYNAMIC_INDIRECT_PARAMETERS;
+  }
+  return iree_hal_command_buffer_dispatch(
+      workspace->command_buffer,
+      workspace->inputs->executables[executable_index], entry->function, config,
+      constants, bindings, flags);
+}
+
+static iree_status_t loom_cmd_iree_hal_record_program_command(
+    loom_cmd_iree_hal_program_workspace_t* workspace,
+    const loom_cmd_program_command_t* command) {
+  switch (command->kind) {
+    case LOOM_CMD_PROGRAM_COMMAND_KIND_FILL: {
+      const uint32_t pattern = command->payload.fill.pattern;
+      return iree_hal_command_buffer_fill_buffer(
+          workspace->command_buffer,
+          workspace->buffer_refs[command->payload.fill.target_buffer_ref],
+          &pattern, command->payload.fill.pattern_length,
+          IREE_HAL_FILL_FLAG_NONE);
+    }
+    case LOOM_CMD_PROGRAM_COMMAND_KIND_COPY:
+      return iree_hal_command_buffer_copy_buffer(
+          workspace->command_buffer,
+          workspace->buffer_refs[command->payload.copy.source_buffer_ref],
+          workspace->buffer_refs[command->payload.copy.target_buffer_ref],
+          IREE_HAL_COPY_FLAG_NONE);
+    case LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT:
+    case LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC:
+    case LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_DYNAMIC:
+      return loom_cmd_iree_hal_record_program_dispatch(workspace, command);
+    case LOOM_CMD_PROGRAM_COMMAND_KIND_EXECUTION_BARRIER:
+      return loom_cmd_iree_hal_record_execution_barrier(
+          workspace->command_buffer);
+  }
+  IREE_ASSERT_UNREACHABLE("parsed command kinds are exhaustive");
 }
 
 iree_status_t loom_cmd_iree_hal_record_function(
@@ -672,6 +893,101 @@ iree_status_t loom_cmd_iree_hal_materialize_function(
   if (iree_status_is_ok(status)) {
     status = loom_cmd_iree_hal_record_function(module, function_op, inputs,
                                                command_buffer, host_allocator);
+  }
+  if (iree_status_is_ok(status)) {
+    status = iree_hal_command_buffer_end(command_buffer);
+  }
+  if (iree_status_is_ok(status)) {
+    *out_command_buffer = command_buffer;
+  } else {
+    iree_hal_command_buffer_release(command_buffer);
+  }
+  return status;
+}
+
+iree_status_t loom_cmd_iree_hal_record_program(
+    const loom_cmd_program_t* program, const loom_cmd_iree_hal_inputs_t* inputs,
+    iree_hal_command_buffer_t* command_buffer,
+    iree_allocator_t host_allocator) {
+  IREE_ASSERT_ARGUMENT(program);
+  IREE_ASSERT_ARGUMENT(inputs);
+  IREE_ASSERT_ARGUMENT(command_buffer);
+
+  iree_host_size_t max_constant_byte_length = 0;
+  iree_host_size_t max_binding_count = 0;
+  IREE_RETURN_IF_ERROR(loom_cmd_iree_hal_validate_program_inputs(
+      program, inputs, &max_constant_byte_length, &max_binding_count));
+
+  iree_host_size_t total_size = 0;
+  iree_host_size_t buffer_refs_offset = 0;
+  iree_host_size_t constants_offset = 0;
+  iree_host_size_t bindings_offset = 0;
+  IREE_RETURN_IF_ERROR(IREE_STRUCT_LAYOUT(
+      0, &total_size,
+      IREE_STRUCT_FIELD_ALIGNED(
+          program->buffer_refs.count, iree_hal_buffer_ref_t,
+          iree_alignof(iree_hal_buffer_ref_t), &buffer_refs_offset),
+      IREE_STRUCT_FIELD_ALIGNED(max_binding_count, iree_hal_buffer_ref_t,
+                                iree_alignof(iree_hal_buffer_ref_t),
+                                &bindings_offset),
+      IREE_STRUCT_FIELD(max_constant_byte_length, uint8_t, &constants_offset)));
+
+  uint8_t* storage = NULL;
+  iree_status_t status = iree_ok_status();
+  if (total_size != 0) {
+    status =
+        iree_allocator_malloc(host_allocator, total_size, (void**)&storage);
+  }
+  if (iree_status_is_ok(status) && total_size != 0) {
+    memset(storage, 0, total_size);
+  }
+  loom_cmd_iree_hal_program_workspace_t workspace = {
+      .program = program,
+      .inputs = inputs,
+      .command_buffer = command_buffer,
+      .buffer_refs =
+          storage ? (iree_hal_buffer_ref_t*)(storage + buffer_refs_offset)
+                  : NULL,
+      .constants = storage ? storage + constants_offset : NULL,
+      .bindings =
+          storage ? (iree_hal_buffer_ref_t*)(storage + bindings_offset) : NULL,
+  };
+  if (iree_status_is_ok(status)) {
+    status = loom_cmd_iree_hal_resolve_program_buffer_refs(&workspace);
+  }
+  for (uint32_t i = 0; i < program->commands.count && iree_status_is_ok(status);
+       ++i) {
+    const loom_cmd_program_command_t command =
+        loom_cmd_program_command_at(program, i);
+    status = loom_cmd_iree_hal_record_program_command(&workspace, &command);
+  }
+
+  iree_allocator_free(host_allocator, storage);
+  return status;
+}
+
+iree_status_t loom_cmd_iree_hal_materialize_program(
+    const loom_cmd_program_t* program, const loom_cmd_iree_hal_inputs_t* inputs,
+    iree_hal_device_t* device, iree_hal_command_buffer_mode_t mode,
+    iree_hal_queue_affinity_t queue_affinity,
+    iree_hal_command_buffer_t** out_command_buffer,
+    iree_allocator_t host_allocator) {
+  IREE_ASSERT_ARGUMENT(program);
+  IREE_ASSERT_ARGUMENT(inputs);
+  IREE_ASSERT_ARGUMENT(device);
+  IREE_ASSERT_ARGUMENT(out_command_buffer);
+  *out_command_buffer = NULL;
+
+  iree_hal_command_buffer_t* command_buffer = NULL;
+  iree_status_t status = iree_hal_command_buffer_create(
+      device, mode, IREE_HAL_COMMAND_CATEGORY_ANY, queue_affinity,
+      program->requirements.rebindable_binding_count, &command_buffer);
+  if (iree_status_is_ok(status)) {
+    status = iree_hal_command_buffer_begin(command_buffer);
+  }
+  if (iree_status_is_ok(status)) {
+    status = loom_cmd_iree_hal_record_program(program, inputs, command_buffer,
+                                              host_allocator);
   }
   if (iree_status_is_ok(status)) {
     status = iree_hal_command_buffer_end(command_buffer);

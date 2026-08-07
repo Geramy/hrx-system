@@ -12,6 +12,7 @@
 #include "iree/base/api.h"
 #include "iree/hal/api.h"
 #include "loom/ir/ir.h"
+#include "loom/target/arch/cmd/program.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -79,6 +80,29 @@ iree_status_t loom_cmd_iree_hal_materialize_function(
     const loom_module_t* module, const loom_op_t* function_op,
     const loom_cmd_iree_hal_inputs_t* inputs, iree_hal_device_t* device,
     iree_hal_command_buffer_mode_t mode,
+    iree_hal_queue_affinity_t queue_affinity,
+    iree_hal_command_buffer_t** out_command_buffer,
+    iree_allocator_t host_allocator);
+
+// Records one parsed portable command program into a begun command buffer.
+//
+// Package input counts must exactly match the program requirements. All
+// buffer references and reflected kernel arguments are resolved through one
+// temporary |host_allocator| allocation. Recording performs no per-command
+// allocation, executable query, symbol lookup, or compiler IR traversal.
+iree_status_t loom_cmd_iree_hal_record_program(
+    const loom_cmd_program_t* program, const loom_cmd_iree_hal_inputs_t* inputs,
+    iree_hal_command_buffer_t* command_buffer, iree_allocator_t host_allocator);
+
+// Creates and records a reusable command buffer for one parsed program.
+//
+// The returned command buffer has the rebindable slot count declared by the
+// program artifact. Unless ONE_SHOT is present in |mode| it may be replayed
+// with different binding tables while retaining the package executables and
+// fixed buffers supplied during materialization.
+iree_status_t loom_cmd_iree_hal_materialize_program(
+    const loom_cmd_program_t* program, const loom_cmd_iree_hal_inputs_t* inputs,
+    iree_hal_device_t* device, iree_hal_command_buffer_mode_t mode,
     iree_hal_queue_affinity_t queue_affinity,
     iree_hal_command_buffer_t** out_command_buffer,
     iree_allocator_t host_allocator);
