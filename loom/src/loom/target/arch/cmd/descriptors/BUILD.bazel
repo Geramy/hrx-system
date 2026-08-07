@@ -20,7 +20,10 @@ loom_low_descriptor_cc_library(
     name = "descriptors",
     args = ["--descriptor-set=cmd_core"],
     generator = "//loom/py/loom/gen/target/low:cmd_low_descriptor_shard",
-    visibility = ["//loom/src/loom/target/arch/cmd:__pkg__"],
+    visibility = [
+        "//loom/src/loom/target/arch/cmd:__pkg__",
+        "//loom/src/loom/target/arch/cmd/iree_hal:__pkg__",
+    ],
     deps = ["//loom/src/loom/codegen/low:descriptors"],
 )
 
@@ -28,7 +31,10 @@ loom_cc_library(
     name = "low_registry",
     srcs = ["low_registry.c"],
     hdrs = ["low_registry.h"],
-    visibility = ["//loom/src/loom/target/arch/cmd:__pkg__"],
+    visibility = [
+        "//loom/src/loom/target/arch/cmd:__pkg__",
+        "//loom/src/loom/target/arch/cmd/iree_hal:__pkg__",
+    ],
     deps = [
         ":descriptors",
         "//loom/src/loom/codegen/low:descriptors",
