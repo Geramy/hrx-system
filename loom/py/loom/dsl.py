@@ -554,6 +554,7 @@ _VALID_SYMBOL_INTERFACES = frozenset(
         "target",
         "config",
         "kernel",
+        "command_program",
     }
 )
 
@@ -735,6 +736,14 @@ class SymbolDefinition:
             raise ValueError(
                 f"SymbolDefinition '{name}': the callable interface requires "
                 "the func_like interface for its call ABI"
+            )
+        if (
+            "command_program" in frozen_interfaces
+            and "func_like" not in frozen_interfaces
+        ):
+            raise ValueError(
+                f"SymbolDefinition '{name}': the command_program interface "
+                "requires the func_like interface for its launch ABI"
             )
         object.__setattr__(self, "field", field)
         object.__setattr__(self, "name", name)
@@ -4109,6 +4118,9 @@ class CallLikeKind(Enum):
     LOW_INTERNAL = "low_internal"
     # Explicit semantic-to-target-low invocation of an already selected low function.
     LOW_INVOKE = "low_invoke"
+    # Command-program materialization edge. Its operands are compile-time
+    # specialization values followed by issue-time buffer bindings.
+    COMMAND_PROGRAM = "command_program"
 
 
 class InlinePolicy(Enum):
@@ -4195,6 +4207,10 @@ class FuncLikeInterface(NamedTuple):
     inline_policy: str | None = None
     # Predicate list attr for where-clause constraints. None if absent.
     predicates: str | None = None
+    # Optional i64 attr containing the number of leading arguments consumed
+    # while materializing the function-like artifact. Remaining arguments are
+    # part of its issue-time ABI. None means every argument is issue-time.
+    specialization_count: str | None = None
     # Region name for the function body. None for bodyless ops that
     # only declare a signature without providing an implementation.
     body: str | None = None

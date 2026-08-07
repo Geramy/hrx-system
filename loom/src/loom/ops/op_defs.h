@@ -1383,6 +1383,11 @@ loom_value_slice_t loom_kernel_workload_arg_ids(const loom_module_t* module,
 const loom_predicate_t* loom_func_like_predicates(loom_func_like_t func,
                                                   uint16_t* out_count);
 
+// Returns the number of leading function arguments consumed while
+// materializing the function-like artifact. Returns zero when the function
+// has no distinct specialization arguments or |func| is invalid.
+int64_t loom_func_like_specialization_count(loom_func_like_t func);
+
 // Returns the implements string ID for template/ukernel ops — the name of the
 // op kind this function provides an implementation for. Returns
 // LOOM_STRING_ID_INVALID for def/decl ops, ops with no implements attr, or

@@ -186,6 +186,7 @@ loom_generated_cc_library(
     loom::ops::buffer
     loom::ops::cfg
     loom::ops::check
+    loom::ops::command
     loom::ops::config
     loom::ops::encoding
     loom::ops::func
@@ -262,6 +263,7 @@ loom_cc_test(
     iree::testing::gtest
     iree::testing::gtest_main
     loom::ir
+    loom::ops::command
     loom::ops::kernel
     loom::ops::scalar
     loom::ops::scf

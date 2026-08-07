@@ -1171,6 +1171,15 @@ const loom_predicate_t* loom_func_like_predicates(loom_func_like_t func,
   return attr.predicate_list;
 }
 
+int64_t loom_func_like_specialization_count(loom_func_like_t func) {
+  if (!func.vtable ||
+      func.vtable->specialization_count_attr_index == LOOM_ATTR_INDEX_NONE) {
+    return 0;
+  }
+  return loom_attr_as_i64(
+      loom_op_attrs(func.op)[func.vtable->specialization_count_attr_index]);
+}
+
 loom_string_id_t loom_func_like_implements(loom_func_like_t func) {
   if (!func.vtable) return LOOM_STRING_ID_INVALID;
   if (func.vtable->implements_attr_index == LOOM_ATTR_INDEX_NONE) {
