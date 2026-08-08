@@ -634,7 +634,6 @@ iree_status_t loom_cmd_launch_graph_materialize(
   IREE_ASSERT_ARGUMENT(block_pool);
   IREE_ASSERT_ARGUMENT(out_graph);
   memset(out_graph, 0, sizeof(*out_graph));
-  IREE_ASSERT(loom_command_program_def_isa(source_program_op));
 
   loom_module_t* graph_module = NULL;
   iree_status_t status = loom_module_allocate(

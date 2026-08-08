@@ -215,6 +215,8 @@ kernel.def @add_eleven(%element_count: index) {
   kernel.return
 }
 
+command.program.decl public target(@command_target) @external_program() launch(%parameters: buffer)
+
 command.program.def public target(@command_target) @add_seven_once(%element_count: index) launch(%source: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
   kernel.launch @add_seven[%element_count](%source, %target) : [index](buffer, buffer)
   command.return

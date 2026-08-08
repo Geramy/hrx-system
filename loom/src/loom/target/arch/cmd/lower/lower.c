@@ -598,10 +598,6 @@ iree_status_t loom_cmd_lower_program_to_low(loom_module_t* module,
   IREE_ASSERT_ARGUMENT(plan);
   IREE_ASSERT_ARGUMENT(out_low_function);
   *out_low_function = NULL;
-  if (!loom_command_program_def_isa(program_op)) {
-    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                            "expected a command.program.def");
-  }
 
   loom_func_like_t source_program = loom_func_like_cast(module, program_op);
   IREE_ASSERT(loom_func_like_isa(source_program));

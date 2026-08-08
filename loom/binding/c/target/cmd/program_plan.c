@@ -17,7 +17,6 @@
 #include "loom/binding/c/src/program_plan.h"
 #include "loom/binding/c/src/result.h"
 #include "loom/binding/c/src/workspace.h"
-#include "loom/ops/command/ops.h"
 #include "loom/ops/op_defs.h"
 #include "loom/target/arch/cmd/lower/launch_artifact.h"
 #include "loom/target/arch/cmd/lower/program_plan.h"
@@ -74,6 +73,17 @@ static loomc_string_view_t loomc_cmd_program_plan_dependency_name(
       loomc_module_const_loom_module(
           storage->dependency_modules[dependency_index]),
       storage->plan.dependency_units[dependency_index].kernel_op));
+}
+
+static bool loomc_cmd_program_plan_symbol_is_root(const loom_module_t* module,
+                                                  const loom_symbol_t* symbol) {
+  if (!loom_symbol_implements(symbol, LOOM_SYMBOL_INTERFACE_COMMAND_PROGRAM) ||
+      loom_symbol_definition_is_declaration(symbol->definition)) {
+    return false;
+  }
+  const loom_func_like_t function =
+      loom_func_like_cast(module, symbol->defining_op);
+  return loom_func_like_visibility(function) != 0;
 }
 
 static const loomc_artifact_t* loomc_cmd_program_find_artifact(
@@ -837,10 +847,8 @@ loomc_status_t loomc_cmd_program_plan_prepare_module(
   const loom_op_t** root_ops = NULL;
   iree_host_size_t root_count = 0;
   for (loom_symbol_id_t i = 0; i < internal_module->symbols.count; ++i) {
-    const loom_op_t* op = internal_module->symbols.entries[i].defining_op;
-    if (op != NULL && loom_command_program_def_isa(op) &&
-        loom_func_like_visibility(
-            loom_func_like_cast(internal_module, (loom_op_t*)op)) != 0) {
+    const loom_symbol_t* symbol = &internal_module->symbols.entries[i];
+    if (loomc_cmd_program_plan_symbol_is_root(internal_module, symbol)) {
       ++root_count;
     }
   }
@@ -855,11 +863,9 @@ loomc_status_t loomc_cmd_program_plan_prepare_module(
   if (loomc_status_is_ok(status)) {
     iree_host_size_t root_index = 0;
     for (loom_symbol_id_t i = 0; i < internal_module->symbols.count; ++i) {
-      const loom_op_t* op = internal_module->symbols.entries[i].defining_op;
-      if (op != NULL && loom_command_program_def_isa(op) &&
-          loom_func_like_visibility(
-              loom_func_like_cast(internal_module, (loom_op_t*)op)) != 0) {
-        root_ops[root_index++] = op;
+      const loom_symbol_t* symbol = &internal_module->symbols.entries[i];
+      if (loomc_cmd_program_plan_symbol_is_root(internal_module, symbol)) {
+        root_ops[root_index++] = symbol->defining_op;
       }
     }
     IREE_ASSERT_EQ(root_index, root_count);

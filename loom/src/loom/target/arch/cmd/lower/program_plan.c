@@ -10,7 +10,6 @@
 
 #include "loom/ir/module.h"
 #include "loom/link/linker.h"
-#include "loom/ops/command/ops.h"
 #include "loom/ops/op_defs.h"
 #include "loom/ops/type_registry.h"
 #include "loom/target/arch/cmd/lower/lower.h"
@@ -180,7 +179,7 @@ static iree_status_t loom_cmd_program_plan_build_lower_plan(
 
   const bool has_host_launch_counts = launch_graph->host_tuple_count > 0;
   *out_lower_plan = (loom_cmd_lower_plan_t){
-      .command_target = loom_command_program_def_target(root_program_op),
+      .command_target = loom_func_like_target(root_program),
       .bindings = bindings,
       .binding_count = binding_count,
       .fixed_buffer_count = 0,
@@ -233,9 +232,11 @@ iree_status_t loom_cmd_program_plan_prepare(
     memset(root_builds, 0, source_program_count * sizeof(*root_builds));
     for (iree_host_size_t i = 0; i < source_program_count; ++i) {
       IREE_ASSERT_ARGUMENT(source_program_ops[i]);
-      IREE_ASSERT(loom_command_program_def_isa(source_program_ops[i]));
+      const loom_func_like_t source_program =
+          loom_func_like_cast(source_module, (loom_op_t*)source_program_ops[i]);
+      IREE_ASSERT(loom_func_like_isa(source_program));
       const loom_symbol_ref_t source_program_ref =
-          loom_command_program_def_callee(source_program_ops[i]);
+          loom_func_like_callee(source_program);
       root_names[i] =
           loom_cmd_program_plan_symbol_name(source_module, source_program_ref);
       root_builds[i].name = root_names[i];
@@ -266,8 +267,7 @@ iree_status_t loom_cmd_program_plan_prepare(
         loom_cmd_program_plan_find_symbol(preparation_module, root->name);
     root->program = loom_func_like_cast(preparation_module, root->program_op);
     IREE_ASSERT(loom_func_like_isa(root->program));
-    if (!loom_symbol_ref_is_valid(
-            loom_command_program_def_target(root->program_op))) {
+    if (!loom_symbol_ref_is_valid(loom_func_like_target(root->program))) {
       status = iree_make_status(
           IREE_STATUS_FAILED_PRECONDITION,
           "command root `%.*s` must have a selected target before preparation",
