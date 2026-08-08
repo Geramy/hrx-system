@@ -13,6 +13,7 @@
 #include "loom/ops/op_defs.h"
 #include "loom/ops/type_registry.h"
 #include "loom/target/arch/cmd/lower/lower.h"
+#include "loom/target/arch/cmd/lower/parameters.h"
 #include "loom/target/arch/cmd/lower/schedule.h"
 #include "loom/util/fact_table.h"
 
@@ -45,6 +46,7 @@ typedef struct loom_cmd_program_root_build_t {
   loom_cmd_schedule_plan_t schedule;
   loom_cmd_launch_graph_t launch_graph;
   loom_cmd_lower_plan_t lower_plan;
+  loom_cmd_parameter_requirement_table_t parameters;
   uint32_t* dependency_unit_indices;
   uint32_t dependency_count;
 } loom_cmd_program_root_build_t;
@@ -80,6 +82,7 @@ static iree_status_t loom_cmd_program_plan_build_lower_plan(
     const loom_cmd_launch_graph_t* launch_graph,
     const loom_op_t** dependency_launches,
     iree_arena_allocator_t* scratch_arena, iree_arena_block_pool_t* block_pool,
+    loom_cmd_parameter_requirement_table_t* out_parameters,
     loom_cmd_lower_plan_t* out_lower_plan,
     uint32_t** out_dependency_unit_indices, uint32_t* out_dependency_count) {
   *out_dependency_unit_indices = NULL;
@@ -136,22 +139,6 @@ static iree_status_t loom_cmd_program_plan_build_lower_plan(
     };
   }
 
-  uint32_t* owned_dependency_unit_indices = NULL;
-  if (dependency_count > 0) {
-    iree_host_size_t dependency_table_size = 0;
-    if (!iree_host_size_checked_mul(dependency_count,
-                                    sizeof(*owned_dependency_unit_indices),
-                                    &dependency_table_size)) {
-      return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
-                              "command root dependency table is too large");
-    }
-    IREE_RETURN_IF_ERROR(
-        iree_allocator_malloc(plan->host_allocator, dependency_table_size,
-                              (void**)&owned_dependency_unit_indices));
-    memcpy(owned_dependency_unit_indices, dependency_unit_indices,
-           dependency_count * sizeof(*owned_dependency_unit_indices));
-  }
-
   const loom_func_like_t root_program =
       loom_func_like_cast(preparation_module, root_program_op);
   uint16_t argument_count = 0;
@@ -168,13 +155,26 @@ static iree_status_t loom_cmd_program_plan_build_lower_plan(
     IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
         scratch_arena, binding_count, sizeof(*bindings), (void**)&bindings));
   }
-  for (uint16_t i = 0; i < binding_count; ++i) {
-    bindings[i] = (loom_cmd_lower_binding_t){
-        .role = LOOM_CMD_LOWER_BUFFER_ROLE_REBINDABLE,
-        .resource_index = i,
-        .byte_offset = 0,
-        .byte_length = UINT64_MAX,
-    };
+  loom_cmd_parameter_layout_t parameter_layout = {0};
+  IREE_RETURN_IF_ERROR(loom_cmd_parameter_layout_build(
+      preparation_module, root_program, source_facts, scratch_arena,
+      plan->host_allocator, bindings, binding_count, out_parameters,
+      &parameter_layout));
+
+  uint32_t* owned_dependency_unit_indices = NULL;
+  if (dependency_count > 0) {
+    iree_host_size_t dependency_table_size = 0;
+    if (!iree_host_size_checked_mul(dependency_count,
+                                    sizeof(*owned_dependency_unit_indices),
+                                    &dependency_table_size)) {
+      return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
+                              "command root dependency table is too large");
+    }
+    IREE_RETURN_IF_ERROR(
+        iree_allocator_malloc(plan->host_allocator, dependency_table_size,
+                              (void**)&owned_dependency_unit_indices));
+    memcpy(owned_dependency_unit_indices, dependency_unit_indices,
+           dependency_count * sizeof(*owned_dependency_unit_indices));
   }
 
   const bool has_host_launch_counts = launch_graph->host_tuple_count > 0;
@@ -182,15 +182,17 @@ static iree_status_t loom_cmd_program_plan_build_lower_plan(
       .command_target = loom_func_like_target(root_program),
       .bindings = bindings,
       .binding_count = binding_count,
-      .fixed_buffer_count = 0,
-      .rebindable_binding_count =
-          (uint32_t)binding_count + (has_host_launch_counts ? 1u : 0u),
+      .buffer_ranges = parameter_layout.buffer_ranges,
+      .buffer_range_count = parameter_layout.buffer_range_count,
+      .fixed_buffer_count = parameter_layout.fixed_buffer_count,
+      .rebindable_binding_count = parameter_layout.rebindable_binding_count +
+                                  (has_host_launch_counts ? 1u : 0u),
       .executable_count = dependency_count,
       .entry_count = dependency_count,
       .launch_graph = launch_graph,
       .launch_count_binding =
           {
-              .resource_index = binding_count,
+              .resource_index = parameter_layout.rebindable_binding_count,
               .byte_offset = 0,
           },
       .launches = launches,
@@ -326,8 +328,8 @@ iree_status_t loom_cmd_program_plan_prepare(
     status = loom_cmd_program_plan_build_lower_plan(
         &plan, preparation_module, root->program_op, &root->schedule,
         &source_facts, &root->launch_graph, dependency_launches, &scratch_arena,
-        block_pool, &root->lower_plan, &root->dependency_unit_indices,
-        &root->dependency_count);
+        block_pool, &root->parameters, &root->lower_plan,
+        &root->dependency_unit_indices, &root->dependency_count);
   }
   for (iree_host_size_t i = 0;
        i < source_program_count && iree_status_is_ok(status); ++i) {
@@ -383,14 +385,18 @@ iree_status_t loom_cmd_program_plan_prepare(
       root->launch_tuple_count = build->launch_graph.host_tuple_count;
       root->dependency_unit_indices = build->dependency_unit_indices;
       root->dependency_count = build->dependency_count;
+      root->parameters = build->parameters;
       build->dependency_unit_indices = NULL;
       build->dependency_count = 0;
+      memset(&build->parameters, 0, sizeof(build->parameters));
     }
   }
 
   if (root_builds) {
     for (iree_host_size_t i = 0; i < source_program_count; ++i) {
       loom_cmd_launch_graph_deinitialize(&root_builds[i].launch_graph);
+      loom_cmd_parameter_requirement_table_deinitialize(
+          &root_builds[i].parameters, host_allocator);
       iree_allocator_free(host_allocator,
                           root_builds[i].dependency_unit_indices);
     }
@@ -409,6 +415,8 @@ iree_status_t loom_cmd_program_plan_prepare(
 void loom_cmd_program_plan_deinitialize(loom_cmd_program_plan_t* plan) {
   if (!plan) return;
   for (iree_host_size_t i = 0; i < plan->root_count; ++i) {
+    loom_cmd_parameter_requirement_table_deinitialize(
+        &plan->roots[i].parameters, plan->host_allocator);
     iree_allocator_free(plan->host_allocator,
                         plan->roots[i].dependency_unit_indices);
   }

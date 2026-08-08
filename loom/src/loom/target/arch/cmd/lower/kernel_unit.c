@@ -11,6 +11,7 @@
 #include "loom/ir/attribute.h"
 #include "loom/ir/module.h"
 #include "loom/link/linker.h"
+#include "loom/ops/buffer/ops.h"
 #include "loom/ops/index/ops.h"
 #include "loom/ops/kernel/ops.h"
 #include "loom/ops/op_defs.h"
@@ -393,6 +394,53 @@ static iree_status_t loom_cmd_kernel_unit_prune_arguments(
   return iree_ok_status();
 }
 
+// Converts typed source views into the opaque buffer roots carried by native
+// device ABIs. The command descriptor retains the exact view subrange, so the
+// derived kernel reconstructs the source view at byte offset zero without
+// changing the source kernel contract.
+static iree_status_t loom_cmd_kernel_unit_materialize_view_arguments(
+    loom_module_t* module, loom_func_like_t kernel) {
+  uint16_t argument_count = 0;
+  const loom_value_id_t* arguments =
+      loom_func_like_arg_ids(kernel, &argument_count);
+  if (argument_count == 0) return iree_ok_status();
+
+  loom_block_t* entry_block =
+      loom_region_entry_block(loom_func_like_body(kernel));
+  loom_builder_t builder;
+  loom_builder_initialize(module, &module->arena, entry_block, &builder);
+  if (entry_block->first_op) {
+    loom_builder_set_before(&builder, entry_block->first_op);
+  } else {
+    builder.ip.parent_op = kernel.op;
+  }
+
+  loom_value_id_t zero = LOOM_VALUE_ID_INVALID;
+  for (uint16_t i = 0; i < argument_count; ++i) {
+    const loom_value_id_t argument = arguments[i];
+    const loom_type_t view_type = loom_module_value_type(module, argument);
+    if (!loom_type_is_view(view_type)) continue;
+
+    IREE_RETURN_IF_ERROR(
+        loom_module_set_value_type(module, argument, loom_type_buffer()));
+    if (zero == LOOM_VALUE_ID_INVALID) {
+      loom_op_t* zero_op = NULL;
+      IREE_RETURN_IF_ERROR(loom_index_constant_build(
+          &builder, loom_attr_i64(0), loom_type_scalar(LOOM_SCALAR_TYPE_OFFSET),
+          kernel.op->location, &zero_op));
+      zero = loom_index_constant_result(zero_op);
+    }
+    loom_op_t* view_op = NULL;
+    IREE_RETURN_IF_ERROR(loom_buffer_view_build(
+        &builder, argument, zero, view_type, kernel.op->location, &view_op));
+    const loom_value_id_t view = loom_buffer_view_result(view_op);
+    IREE_RETURN_IF_ERROR(loom_module_move_value_name(module, argument, view));
+    IREE_RETURN_IF_ERROR(
+        loom_value_replace_all_uses_except(module, argument, view, view_op));
+  }
+  return iree_ok_status();
+}
+
 iree_status_t loom_cmd_kernel_unit_materialize(
     const loom_module_t* source_module, const loom_op_t* source_launch_op,
     const loom_value_fact_table_t* source_facts,
@@ -448,6 +496,11 @@ iree_status_t loom_cmd_kernel_unit_materialize(
     status = loom_canonicalizer_initialize(unit_module, &scratch_arena,
                                            &fact_owner, &canonicalizer);
     canonicalizer_initialized = iree_status_is_ok(status);
+  }
+
+  if (iree_status_is_ok(status)) {
+    status = loom_cmd_kernel_unit_materialize_view_arguments(unit_module,
+                                                             unit_kernel);
   }
 
   loom_value_fact_table_t seed_facts;

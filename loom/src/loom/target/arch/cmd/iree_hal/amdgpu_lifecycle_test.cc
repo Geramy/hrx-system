@@ -71,28 +71,30 @@ kernel.def @add_seven(%element_count: index) {
   %one = index.constant 1 : index
   %bounded_count = index.assume %element_count [range(%element_count, 1, 128)] : index
   kernel.launch.config workgroups(%bounded_count, %one, %one) workgroup_size(%one, %one, %one) : index
-} launch(%source: buffer, %target: buffer) {
+} launch(%source: view<128xi32, #dense>, %target: buffer) {
   %base = index.constant 0 : offset
   %workgroup = kernel.workgroup.id<x> : index
   %seven = scalar.constant 7 : i32
-  %source_aligned = buffer.assume.alignment %source {minimum_alignment = 4} : buffer
   %target_aligned = buffer.assume.alignment %target {minimum_alignment = 4} : buffer
-  %source_view = buffer.view %source_aligned[%base] : buffer -> view<128xi32, #dense>
   %target_view = buffer.view %target_aligned[%base] : buffer -> view<128xi32, #dense>
-  %value = view.load %source_view[%workgroup] : view<128xi32, #dense> -> i32
+  %value = view.load %source[%workgroup] : view<128xi32, #dense> -> i32
   %result = scalar.addi %value, %seven : i32
   view.store %result, %target_view[%workgroup] : i32, view<128xi32, #dense>
   kernel.return
 }
 
-command.program.def public target(@command_target) @add_seven_once(%element_count: index) launch(%source: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
-  kernel.launch @add_seven[%element_count](%source, %target) : [index](buffer, buffer)
+command.program.def public target(@command_target) @add_seven_once(%element_count: index) launch(%parameters: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+  %source = command.parameter %parameters, "source_values"[] : view<128xi32, #dense>
+  kernel.launch @add_seven[%element_count](%source, %target) : [index](view<128xi32, #dense>, buffer)
   command.return
 }
 
-command.program.def public target(@command_target) @add_seven_twice(%element_count: index) launch(%source: buffer, %intermediate: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
-  kernel.launch @add_seven[%element_count](%source, %intermediate) : [index](buffer, buffer)
-  kernel.launch @add_seven[%element_count](%intermediate, %target) : [index](buffer, buffer)
+command.program.def public target(@command_target) @add_seven_twice(%element_count: index) launch(%parameters: buffer, %intermediate: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+  %source = command.parameter %parameters, "source_values"[] : view<128xi32, #dense>
+  kernel.launch @add_seven[%element_count](%source, %intermediate) : [index](view<128xi32, #dense>, buffer)
+  %zero = index.constant 0 : offset
+  %intermediate_view = buffer.view %intermediate[%zero] : buffer -> view<128xi32, #dense>
+  kernel.launch @add_seven[%element_count](%intermediate_view, %target) : [index](view<128xi32, #dense>, buffer)
   command.return
 }
 )";
@@ -513,7 +515,8 @@ TEST(CommandAmdgpuLifecycleTest,
       iree_make_const_byte_span(once_command_artifact->contents.data,
                                 once_command_artifact->contents.data_length),
       &once_command_program));
-  ASSERT_EQ(once_command_program.requirements.rebindable_binding_count, 3u);
+  ASSERT_EQ(once_command_program.requirements.fixed_buffer_count, 1u);
+  ASSERT_EQ(once_command_program.requirements.rebindable_binding_count, 2u);
   ASSERT_EQ(once_command_program.requirements.executable_count, 1u);
   ASSERT_EQ(once_command_program.requirements.entry_count, 1u);
   ASSERT_EQ(once_command_program.commands.count, 1u);
@@ -529,7 +532,8 @@ TEST(CommandAmdgpuLifecycleTest,
       iree_make_const_byte_span(twice_command_artifact->contents.data,
                                 twice_command_artifact->contents.data_length),
       &twice_command_program));
-  ASSERT_EQ(twice_command_program.requirements.rebindable_binding_count, 4u);
+  ASSERT_EQ(twice_command_program.requirements.fixed_buffer_count, 1u);
+  ASSERT_EQ(twice_command_program.requirements.rebindable_binding_count, 3u);
   ASSERT_EQ(twice_command_program.requirements.executable_count, 1u);
   ASSERT_EQ(twice_command_program.requirements.entry_count, 1u);
   ASSERT_EQ(twice_command_program.commands.count, 3u);
@@ -551,38 +555,6 @@ TEST(CommandAmdgpuLifecycleTest,
           /*.parameters=*/parameters.data(),
       },
   }};
-  const loom_cmd_iree_hal_inputs_t once_materialization_inputs = {
-      /*.binding_count=*/3,
-      /*.fixed_buffer_count=*/0,
-      /*.fixed_buffers=*/nullptr,
-      /*.executable_count=*/executables.size(),
-      /*.executables=*/executables.data(),
-      /*.entry_count=*/entries.size(),
-      /*.entries=*/entries.data(),
-  };
-  iree_hal_command_buffer_t* raw_once_command_buffer = nullptr;
-  IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program(
-      &once_command_program, &once_materialization_inputs, device.get(),
-      IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT, IREE_HAL_QUEUE_AFFINITY_ANY,
-      &raw_once_command_buffer, iree_allocator_system()));
-  HalCommandBufferPtr once_command_buffer(raw_once_command_buffer);
-
-  const loom_cmd_iree_hal_inputs_t twice_materialization_inputs = {
-      /*.binding_count=*/4,
-      /*.fixed_buffer_count=*/0,
-      /*.fixed_buffers=*/nullptr,
-      /*.executable_count=*/executables.size(),
-      /*.executables=*/executables.data(),
-      /*.entry_count=*/entries.size(),
-      /*.entries=*/entries.data(),
-  };
-  iree_hal_command_buffer_t* raw_twice_command_buffer = nullptr;
-  IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program(
-      &twice_command_program, &twice_materialization_inputs, device.get(),
-      IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT, IREE_HAL_QUEUE_AFFINITY_ANY,
-      &raw_twice_command_buffer, iree_allocator_system()));
-  HalCommandBufferPtr twice_command_buffer(raw_twice_command_buffer);
-
   const loomc_artifact_t* launch_artifact = FindArtifact(
       program.get(), LOOMC_ARTIFACT_KIND_LAUNCH_CONFIG,
       LOOMC_ARTIFACT_FORMAT_LOOM_BYTECODE, "command-program-launch.loombc");
@@ -629,12 +601,6 @@ TEST(CommandAmdgpuLifecycleTest,
   ASSERT_EQ(twice_launch_function_info.output_byte_length,
             once_launch_function_info.output_byte_length);
 
-  program.reset();
-  for (ProgramPtr& unit_program : unit_programs) unit_program.reset();
-  plan.reset();
-  coordinator_workspace.reset();
-  executable.reset();
-
   static constexpr iree_host_size_t kElementCount = 128;
   static constexpr iree_host_size_t kWorkload = 73;
   static constexpr iree_device_size_t kBufferByteLength =
@@ -645,6 +611,46 @@ TEST(CommandAmdgpuLifecycleTest,
   IREE_ASSERT_OK(AllocateStorageBuffer(device.get(), kBufferByteLength,
                                        &raw_source_buffer));
   HalBufferPtr source_buffer(raw_source_buffer);
+  const iree_hal_buffer_ref_t fixed_source =
+      iree_hal_make_buffer_ref(source_buffer.get(), 0, IREE_HAL_WHOLE_BUFFER);
+  const loom_cmd_iree_hal_inputs_t once_materialization_inputs = {
+      /*.binding_count=*/2,
+      /*.fixed_buffer_count=*/1,
+      /*.fixed_buffers=*/&fixed_source,
+      /*.executable_count=*/executables.size(),
+      /*.executables=*/executables.data(),
+      /*.entry_count=*/entries.size(),
+      /*.entries=*/entries.data(),
+  };
+  iree_hal_command_buffer_t* raw_once_command_buffer = nullptr;
+  IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program(
+      &once_command_program, &once_materialization_inputs, device.get(),
+      IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT, IREE_HAL_QUEUE_AFFINITY_ANY,
+      &raw_once_command_buffer, iree_allocator_system()));
+  HalCommandBufferPtr once_command_buffer(raw_once_command_buffer);
+
+  const loom_cmd_iree_hal_inputs_t twice_materialization_inputs = {
+      /*.binding_count=*/3,
+      /*.fixed_buffer_count=*/1,
+      /*.fixed_buffers=*/&fixed_source,
+      /*.executable_count=*/executables.size(),
+      /*.executables=*/executables.data(),
+      /*.entry_count=*/entries.size(),
+      /*.entries=*/entries.data(),
+  };
+  iree_hal_command_buffer_t* raw_twice_command_buffer = nullptr;
+  IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program(
+      &twice_command_program, &twice_materialization_inputs, device.get(),
+      IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT, IREE_HAL_QUEUE_AFFINITY_ANY,
+      &raw_twice_command_buffer, iree_allocator_system()));
+  HalCommandBufferPtr twice_command_buffer(raw_twice_command_buffer);
+
+  program.reset();
+  for (ProgramPtr& unit_program : unit_programs) unit_program.reset();
+  plan.reset();
+  coordinator_workspace.reset();
+  executable.reset();
+
   iree_hal_buffer_t* raw_intermediate_buffer = nullptr;
   IREE_ASSERT_OK(AllocateStorageBuffer(device.get(), kBufferByteLength,
                                        &raw_intermediate_buffer));
@@ -710,7 +716,6 @@ TEST(CommandAmdgpuLifecycleTest,
       &launch_count_mapping, /*byte_offset=*/0, launch_count_byte_length));
 
   const iree_hal_buffer_binding_t once_bindings[] = {
-      /*source=*/{source_buffer.get(), 0, IREE_HAL_WHOLE_BUFFER},
       /*target=*/{once_target_buffer.get(), 0, IREE_HAL_WHOLE_BUFFER},
       /*launch_count=*/
       {launch_count_buffer.get(), 0, launch_count_byte_length},
@@ -732,7 +737,6 @@ TEST(CommandAmdgpuLifecycleTest,
       &launch_count_mapping, /*byte_offset=*/0, launch_count_byte_length));
 
   const iree_hal_buffer_binding_t twice_bindings[] = {
-      /*source=*/{source_buffer.get(), 0, IREE_HAL_WHOLE_BUFFER},
       /*intermediate=*/
       {intermediate_buffer.get(), 0, IREE_HAL_WHOLE_BUFFER},
       /*target=*/{twice_target_buffer.get(), 0, IREE_HAL_WHOLE_BUFFER},

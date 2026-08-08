@@ -14,6 +14,7 @@
 #include "loom/ir/ir.h"
 #include "loom/target/arch/cmd/lower/kernel_unit.h"
 #include "loom/target/arch/cmd/lower/launch_graph.h"
+#include "loom/target/arch/cmd/lower/parameters.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,6 +40,9 @@ typedef struct loom_cmd_program_root_t {
 
   // Number of entries in |dependency_unit_indices|.
   uint32_t dependency_count;
+
+  // Concrete immutable parameter requirements and their fixed placement.
+  loom_cmd_parameter_requirement_table_t parameters;
 } loom_cmd_program_root_t;
 
 // Immutable command roots and their union dependency graph.
