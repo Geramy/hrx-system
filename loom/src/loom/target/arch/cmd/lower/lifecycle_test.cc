@@ -259,14 +259,19 @@ kernel.def @increment(%element_count: index) {
   kernel.return
 }
 
-command.program.def public target(@command_target) @increment_once(%element_count: index) launch(%source: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+command.program.def target(@command_target) @increment_stage(%element_count: index) launch(%source: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
   kernel.launch @increment[%element_count](%source, %target) : [index](buffer, buffer)
   command.return
 }
 
+command.program.def public target(@command_target) @increment_once(%element_count: index) launch(%source: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+  command.program.launch @increment_stage[%element_count](%source, %target) : [index](buffer, buffer)
+  command.return
+}
+
 command.program.def public target(@command_target) @increment_twice(%element_count: index) launch(%source: buffer, %intermediate: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
-  kernel.launch @increment[%element_count](%source, %intermediate) : [index](buffer, buffer)
-  kernel.launch @increment[%element_count](%intermediate, %target) : [index](buffer, buffer)
+  command.program.launch @increment_stage[%element_count](%source, %intermediate) : [index](buffer, buffer)
+  command.program.launch @increment_stage[%element_count](%intermediate, %target) : [index](buffer, buffer)
   command.return
 }
 )";
@@ -432,7 +437,7 @@ command.program.def public target(@command_target) @increment_twice(%element_cou
 };
 
 TEST_F(CommandLifecycleTest,
-       CompilesSharedDependenciesAndReplaysAssembledRoots) {
+       CompilesComposedDependenciesAndReplaysAssembledRoots) {
   ProgramPtr program;
   CompileProgram(&program);
   ASSERT_EQ(loomc_program_export_count(program.get()), 2u);
