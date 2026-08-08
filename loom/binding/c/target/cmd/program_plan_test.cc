@@ -631,7 +631,7 @@ command.program.def public target(@command_target) @add_eleven_once(%element_cou
       command_info.name, loomc_make_cstring_view("add_eleven_once")));
 }
 
-TEST(CmdProgramPlanTest, MapsParameterViewToOpaqueKernelBufferAbi) {
+TEST(CmdProgramPlanTest, IncludesDerivedFixedViewInRootRequirement) {
   ContextPtr context = CreateContext();
   WorkspacePtr coordinator_workspace = CreateWorkspace();
   SourcePtr source = CreateSource(R"(
@@ -655,8 +655,11 @@ kernel.def target(@kernel_target) @consume_parameter() {
 }
 
 command.program.def public target(@command_target) @parameter_root() launch(%parameters: buffer, %target: buffer) {
+  %auxiliary_offset = index.constant 1024 : offset
   %source = command.parameter %parameters, "source_values"[] : view<128xi32, #dense>
+  %auxiliary = buffer.view %parameters[%auxiliary_offset] : buffer -> view<4xi32, #dense>
   kernel.launch @consume_parameter[](%source, %target) : [](view<128xi32, #dense>, buffer)
+  kernel.launch @consume_parameter[](%auxiliary, %target) : [](view<4xi32, #dense>, buffer)
   command.return
 }
 )");
@@ -732,7 +735,7 @@ command.program.def public target(@command_target) @parameter_root() launch(%par
   LOOMC_ASSERT_OK(loomc_cmd_program_parameter_root_info(command_program.get(),
                                                         0, &root_info));
   EXPECT_EQ(root_info.fixed_buffer_index, 0u);
-  EXPECT_EQ(root_info.required_byte_length, 512u);
+  EXPECT_EQ(root_info.required_byte_length, 1040u);
   EXPECT_EQ(root_info.minimum_alignment, 256u);
 
   loomc_cmd_program_parameter_info_t parameter_info = {
