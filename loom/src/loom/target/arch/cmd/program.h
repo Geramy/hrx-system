@@ -132,6 +132,30 @@ typedef struct loom_cmd_program_requirements_t {
   uint32_t entry_count;
 } loom_cmd_program_requirements_t;
 
+// Aggregate storage requirement for one fixed parameter-buffer root.
+typedef struct loom_cmd_program_parameter_root_t {
+  // Dense fixed-buffer table index populated by this root.
+  uint32_t fixed_buffer_index;
+  // Minimum byte length required by all parameters assigned to the root.
+  uint64_t required_byte_length;
+  // Minimum required alignment of the supplied fixed-buffer range.
+  uint64_t minimum_alignment;
+} loom_cmd_program_parameter_root_t;
+
+// One concrete immutable parameter placed in a fixed buffer root.
+typedef struct loom_cmd_program_parameter_t {
+  // Fully substituted parameter key borrowed from program storage.
+  iree_string_view_t key;
+  // Dense fixed-buffer table index containing the parameter.
+  uint32_t fixed_buffer_index;
+  // Root-relative byte offset of the parameter payload.
+  uint64_t byte_offset;
+  // Exact byte length of the parameter payload.
+  uint64_t byte_length;
+  // Minimum required alignment of the placed parameter payload.
+  uint64_t minimum_alignment;
+} loom_cmd_program_parameter_t;
+
 // Borrowed table within a parsed command-program artifact.
 typedef struct loom_cmd_program_table_t {
   // First byte of the canonical fixed-size records.
@@ -155,6 +179,12 @@ typedef struct loom_cmd_program_t {
   loom_cmd_program_table_t arguments;
   // Ordered command table.
   loom_cmd_program_table_t commands;
+  // Fixed parameter-buffer roots in canonical ascending root order.
+  loom_cmd_program_table_t parameter_roots;
+  // Concrete immutable parameter requirements.
+  loom_cmd_program_table_t parameters;
+  // Concatenated parameter-key bytes referenced by |parameters|.
+  iree_const_byte_span_t parameter_keys;
 } loom_cmd_program_t;
 
 // Dependency relocation applied while assembling command program roots.
@@ -191,6 +221,14 @@ loom_cmd_program_argument_t loom_cmd_program_argument_at(
 
 // Returns one validated command table entry.
 loom_cmd_program_command_t loom_cmd_program_command_at(
+    const loom_cmd_program_t* program, uint32_t index);
+
+// Returns one validated fixed parameter-buffer root requirement.
+loom_cmd_program_parameter_root_t loom_cmd_program_parameter_root_at(
+    const loom_cmd_program_t* program, uint32_t index);
+
+// Returns one validated concrete parameter requirement.
+loom_cmd_program_parameter_t loom_cmd_program_parameter_at(
     const loom_cmd_program_t* program, uint32_t index);
 
 // Clones |program| and relocates dependency indices into assembled tables.

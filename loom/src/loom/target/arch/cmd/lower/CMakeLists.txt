@@ -166,6 +166,7 @@ loom_cc_library(
   SRCS
     "serialize.c"
   DEPS
+    ::parameters
     iree::base
     iree::base::core_headers
     iree::base::internal::arena

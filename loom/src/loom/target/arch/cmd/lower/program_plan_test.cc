@@ -200,9 +200,9 @@ command.program.def public target(@command_target) @pipeline(%element_count: ind
   EXPECT_GT(launch_data.data_length, 0u);
 
   iree_byte_span_t program_data = iree_byte_span_empty();
-  IREE_ASSERT_OK(loom_cmd_program_serialize_low(plan.root_module,
-                                                root.function_op, &program_data,
-                                                iree_allocator_system()));
+  IREE_ASSERT_OK(loom_cmd_program_serialize_low(
+      plan.root_module, root.function_op, &root.parameters, &program_data,
+      iree_allocator_system()));
   loom_cmd_program_t program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
       iree_make_const_byte_span(program_data.data, program_data.data_length),
@@ -299,9 +299,9 @@ command.program.def public target(@command_target) @parameterized() launch(%para
   EXPECT_EQ(rhs.minimum_alignment, 256u);
 
   iree_byte_span_t program_data = iree_byte_span_empty();
-  IREE_ASSERT_OK(loom_cmd_program_serialize_low(plan.root_module,
-                                                root.function_op, &program_data,
-                                                iree_allocator_system()));
+  IREE_ASSERT_OK(loom_cmd_program_serialize_low(
+      plan.root_module, root.function_op, &root.parameters, &program_data,
+      iree_allocator_system()));
   loom_cmd_program_t program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
       iree_make_const_byte_span(program_data.data, program_data.data_length),
@@ -310,6 +310,28 @@ command.program.def public target(@command_target) @parameterized() launch(%para
   EXPECT_EQ(program.requirements.rebindable_binding_count, 1u);
   EXPECT_EQ(program.requirements.executable_count, 1u);
   EXPECT_EQ(program.requirements.entry_count, 1u);
+  ASSERT_EQ(program.parameter_roots.count, 1u);
+  const loom_cmd_program_parameter_root_t serialized_root =
+      loom_cmd_program_parameter_root_at(&program, 0);
+  EXPECT_EQ(serialized_root.fixed_buffer_index, 0u);
+  EXPECT_EQ(serialized_root.required_byte_length, 272u);
+  EXPECT_EQ(serialized_root.minimum_alignment, 256u);
+  ASSERT_EQ(program.parameters.count, 2u);
+  const loom_cmd_program_parameter_t serialized_lhs =
+      loom_cmd_program_parameter_at(&program, 0);
+  EXPECT_TRUE(iree_string_view_equal(serialized_lhs.key, IREE_SV("blk.3.lhs")));
+  EXPECT_EQ(serialized_lhs.fixed_buffer_index, 0u);
+  EXPECT_EQ(serialized_lhs.byte_offset, 0u);
+  EXPECT_EQ(serialized_lhs.byte_length, 12u);
+  EXPECT_EQ(serialized_lhs.minimum_alignment, 256u);
+  const loom_cmd_program_parameter_t serialized_rhs =
+      loom_cmd_program_parameter_at(&program, 1);
+  EXPECT_TRUE(
+      iree_string_view_equal(serialized_rhs.key, IREE_SV("shared.rhs")));
+  EXPECT_EQ(serialized_rhs.fixed_buffer_index, 0u);
+  EXPECT_EQ(serialized_rhs.byte_offset, 256u);
+  EXPECT_EQ(serialized_rhs.byte_length, 16u);
+  EXPECT_EQ(serialized_rhs.minimum_alignment, 256u);
   ASSERT_EQ(program.commands.count, 1u);
   const loom_cmd_program_command_t dispatch =
       loom_cmd_program_command_at(&program, 0);
@@ -398,8 +420,8 @@ command.program.def public target(@command_target) @pipeline(%element_count: ind
 
   iree_byte_span_t program_data = iree_byte_span_empty();
   IREE_ASSERT_OK(loom_cmd_program_serialize_low(
-      plan.root_module, plan.roots[0].function_op, &program_data,
-      iree_allocator_system()));
+      plan.root_module, plan.roots[0].function_op, &plan.roots[0].parameters,
+      &program_data, iree_allocator_system()));
   loom_cmd_program_t program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
       iree_make_const_byte_span(program_data.data, program_data.data_length),
@@ -541,8 +563,8 @@ command.program.def public target(@command_target) @increment_twice(%element_cou
 
   iree_byte_span_t twice_program_data = iree_byte_span_empty();
   IREE_ASSERT_OK(loom_cmd_program_serialize_low(
-      plan.root_module, twice.function_op, &twice_program_data,
-      iree_allocator_system()));
+      plan.root_module, twice.function_op, &twice.parameters,
+      &twice_program_data, iree_allocator_system()));
   loom_cmd_program_t twice_program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
       iree_make_const_byte_span(twice_program_data.data,
@@ -561,8 +583,8 @@ command.program.def public target(@command_target) @increment_twice(%element_cou
 
   iree_byte_span_t mixed_program_data = iree_byte_span_empty();
   IREE_ASSERT_OK(loom_cmd_program_serialize_low(
-      plan.root_module, mixed.function_op, &mixed_program_data,
-      iree_allocator_system()));
+      plan.root_module, mixed.function_op, &mixed.parameters,
+      &mixed_program_data, iree_allocator_system()));
   loom_cmd_program_t mixed_program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
       iree_make_const_byte_span(mixed_program_data.data,

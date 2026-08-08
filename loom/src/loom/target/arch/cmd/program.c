@@ -14,6 +14,8 @@
 
 iree_status_t loom_cmd_program_format_calculate_layout(
     uint32_t buffer_ref_count, uint32_t argument_count, uint32_t command_count,
+    uint32_t parameter_root_count, uint32_t parameter_count,
+    uint32_t parameter_key_length,
     loom_cmd_program_format_layout_t* out_layout) {
   uint64_t offset = LOOM_CMD_PROGRAM_HEADER_SIZE;
   const uint64_t buffer_ref_offset = offset;
@@ -34,15 +36,38 @@ iree_status_t loom_cmd_program_format_calculate_layout(
   const uint64_t command_offset = offset;
   if (!iree_checked_mul_u64(command_count, LOOM_CMD_PROGRAM_COMMAND_SIZE,
                             &table_length) ||
-      !iree_checked_add_u64(offset, table_length, &offset) ||
-      offset > UINT32_MAX) {
+      !iree_checked_add_u64(offset, table_length, &offset)) {
     return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
                             "command table is too large");
+  }
+  const uint64_t parameter_root_offset = offset;
+  if (!iree_checked_mul_u64(parameter_root_count,
+                            LOOM_CMD_PROGRAM_PARAMETER_ROOT_SIZE,
+                            &table_length) ||
+      !iree_checked_add_u64(offset, table_length, &offset)) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                            "command parameter-root table is too large");
+  }
+  const uint64_t parameter_offset = offset;
+  if (!iree_checked_mul_u64(parameter_count, LOOM_CMD_PROGRAM_PARAMETER_SIZE,
+                            &table_length) ||
+      !iree_checked_add_u64(offset, table_length, &offset)) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                            "command parameter table is too large");
+  }
+  const uint64_t parameter_key_offset = offset;
+  if (!iree_checked_add_u64(offset, parameter_key_length, &offset) ||
+      offset > UINT32_MAX) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                            "command parameter keys are too large");
   }
   *out_layout = (loom_cmd_program_format_layout_t){
       .buffer_ref_offset = (uint32_t)buffer_ref_offset,
       .argument_offset = (uint32_t)argument_offset,
       .command_offset = (uint32_t)command_offset,
+      .parameter_root_offset = (uint32_t)parameter_root_offset,
+      .parameter_offset = (uint32_t)parameter_offset,
+      .parameter_key_offset = (uint32_t)parameter_key_offset,
       .total_length = (uint32_t)offset,
   };
   return iree_ok_status();
@@ -133,6 +158,48 @@ loom_cmd_program_command_t loom_cmd_program_command_at(
       break;
   }
   return command;
+}
+
+loom_cmd_program_parameter_root_t loom_cmd_program_parameter_root_at(
+    const loom_cmd_program_t* program, uint32_t index) {
+  IREE_ASSERT_ARGUMENT(program);
+  IREE_ASSERT_LT(index, program->parameter_roots.count);
+  const uint8_t* record = program->parameter_roots.data +
+                          index * LOOM_CMD_PROGRAM_PARAMETER_ROOT_SIZE;
+  return (loom_cmd_program_parameter_root_t){
+      .fixed_buffer_index = iree_unaligned_load_le_u32(
+          record + LOOM_CMD_PROGRAM_PARAMETER_ROOT_FIXED_BUFFER_INDEX_OFFSET),
+      .required_byte_length = iree_unaligned_load_le_u64(
+          record + LOOM_CMD_PROGRAM_PARAMETER_ROOT_REQUIRED_BYTE_LENGTH_OFFSET),
+      .minimum_alignment = iree_unaligned_load_le_u64(
+          record + LOOM_CMD_PROGRAM_PARAMETER_ROOT_MINIMUM_ALIGNMENT_OFFSET),
+  };
+}
+
+loom_cmd_program_parameter_t loom_cmd_program_parameter_at(
+    const loom_cmd_program_t* program, uint32_t index) {
+  IREE_ASSERT_ARGUMENT(program);
+  IREE_ASSERT_LT(index, program->parameters.count);
+  const uint8_t* record =
+      program->parameters.data + index * LOOM_CMD_PROGRAM_PARAMETER_SIZE;
+  const uint32_t key_offset = iree_unaligned_load_le_u32(
+      record + LOOM_CMD_PROGRAM_PARAMETER_KEY_OFFSET_OFFSET);
+  const uint32_t key_length = iree_unaligned_load_le_u32(
+      record + LOOM_CMD_PROGRAM_PARAMETER_KEY_LENGTH_OFFSET);
+  IREE_ASSERT_LE(key_offset, program->parameter_keys.data_length);
+  IREE_ASSERT_LE(key_length, program->parameter_keys.data_length - key_offset);
+  return (loom_cmd_program_parameter_t){
+      .key = iree_make_string_view(
+          (const char*)program->parameter_keys.data + key_offset, key_length),
+      .fixed_buffer_index = iree_unaligned_load_le_u32(
+          record + LOOM_CMD_PROGRAM_PARAMETER_FIXED_BUFFER_INDEX_OFFSET),
+      .byte_offset = iree_unaligned_load_le_u64(
+          record + LOOM_CMD_PROGRAM_PARAMETER_BYTE_OFFSET_OFFSET),
+      .byte_length = iree_unaligned_load_le_u64(
+          record + LOOM_CMD_PROGRAM_PARAMETER_BYTE_LENGTH_OFFSET),
+      .minimum_alignment = iree_unaligned_load_le_u64(
+          record + LOOM_CMD_PROGRAM_PARAMETER_MINIMUM_ALIGNMENT_OFFSET),
+  };
 }
 
 iree_status_t loom_cmd_program_relocate_dependencies(
@@ -402,6 +469,127 @@ static iree_status_t loom_cmd_program_validate_commands(
   return iree_ok_status();
 }
 
+static iree_status_t loom_cmd_program_validate_parameter_roots(
+    const loom_cmd_program_t* program) {
+  uint32_t previous_fixed_buffer_index = 0;
+  for (uint32_t i = 0; i < program->parameter_roots.count; ++i) {
+    const uint8_t* record = program->parameter_roots.data +
+                            i * LOOM_CMD_PROGRAM_PARAMETER_ROOT_SIZE;
+    const loom_cmd_program_parameter_root_t root =
+        loom_cmd_program_parameter_root_at(program, i);
+    if (iree_unaligned_load_le_u32(
+            record + LOOM_CMD_PROGRAM_PARAMETER_ROOT_RESERVED_OFFSET) != 0) {
+      return iree_make_status(
+          IREE_STATUS_INVALID_ARGUMENT,
+          "command parameter root %" PRIu32 " has reserved fields set", i);
+    }
+    if (root.fixed_buffer_index >= program->requirements.fixed_buffer_count) {
+      return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                              "command parameter root %" PRIu32
+                              " selects fixed buffer %" PRIu32
+                              " outside the fixed-buffer table",
+                              i, root.fixed_buffer_index);
+    }
+    if (i != 0 && root.fixed_buffer_index <= previous_fixed_buffer_index) {
+      return iree_make_status(
+          IREE_STATUS_INVALID_ARGUMENT,
+          "command parameter roots are not in canonical ascending order");
+    }
+    if (!iree_is_power_of_two_uint64(root.minimum_alignment)) {
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                              "command parameter root %" PRIu32
+                              " has invalid minimum alignment %" PRIu64,
+                              i, root.minimum_alignment);
+    }
+    previous_fixed_buffer_index = root.fixed_buffer_index;
+  }
+  return iree_ok_status();
+}
+
+static bool loom_cmd_program_find_parameter_root(
+    const loom_cmd_program_t* program, uint32_t fixed_buffer_index,
+    loom_cmd_program_parameter_root_t* out_root) {
+  uint32_t begin = 0;
+  uint32_t end = program->parameter_roots.count;
+  while (begin < end) {
+    const uint32_t middle = begin + (end - begin) / 2;
+    const loom_cmd_program_parameter_root_t root =
+        loom_cmd_program_parameter_root_at(program, middle);
+    if (root.fixed_buffer_index < fixed_buffer_index) {
+      begin = middle + 1;
+    } else if (root.fixed_buffer_index > fixed_buffer_index) {
+      end = middle;
+    } else {
+      *out_root = root;
+      return true;
+    }
+  }
+  return false;
+}
+
+static iree_status_t loom_cmd_program_validate_parameters(
+    const loom_cmd_program_t* program) {
+  uint32_t expected_key_offset = 0;
+  for (uint32_t i = 0; i < program->parameters.count; ++i) {
+    const uint8_t* record =
+        program->parameters.data + i * LOOM_CMD_PROGRAM_PARAMETER_SIZE;
+    const uint32_t key_offset = iree_unaligned_load_le_u32(
+        record + LOOM_CMD_PROGRAM_PARAMETER_KEY_OFFSET_OFFSET);
+    const uint32_t key_length = iree_unaligned_load_le_u32(
+        record + LOOM_CMD_PROGRAM_PARAMETER_KEY_LENGTH_OFFSET);
+    if (iree_unaligned_load_le_u32(
+            record + LOOM_CMD_PROGRAM_PARAMETER_RESERVED_OFFSET) != 0) {
+      return iree_make_status(
+          IREE_STATUS_INVALID_ARGUMENT,
+          "command parameter %" PRIu32 " has reserved fields set", i);
+    }
+    if (key_length == 0 || key_offset != expected_key_offset ||
+        key_offset > program->parameter_keys.data_length ||
+        key_length > program->parameter_keys.data_length - key_offset) {
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                              "command parameter %" PRIu32
+                              " has a noncanonical key slice [%" PRIu32
+                              ", %" PRIu64 ")",
+                              i, key_offset, (uint64_t)key_offset + key_length);
+    }
+    expected_key_offset += key_length;
+
+    const loom_cmd_program_parameter_t parameter =
+        loom_cmd_program_parameter_at(program, i);
+    loom_cmd_program_parameter_root_t root = {0};
+    if (!loom_cmd_program_find_parameter_root(
+            program, parameter.fixed_buffer_index, &root)) {
+      return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                              "command parameter %" PRIu32
+                              " selects fixed buffer %" PRIu32
+                              " without a parameter-root requirement",
+                              i, parameter.fixed_buffer_index);
+    }
+    if (!iree_is_power_of_two_uint64(parameter.minimum_alignment) ||
+        parameter.byte_offset % parameter.minimum_alignment != 0 ||
+        root.minimum_alignment < parameter.minimum_alignment) {
+      return iree_make_status(
+          IREE_STATUS_INVALID_ARGUMENT,
+          "command parameter %" PRIu32 " has inconsistent alignment", i);
+    }
+    uint64_t byte_end = 0;
+    if (!iree_checked_add_u64(parameter.byte_offset, parameter.byte_length,
+                              &byte_end) ||
+        byte_end > root.required_byte_length) {
+      return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                              "command parameter %" PRIu32
+                              " exceeds fixed buffer %" PRIu32 " requirement",
+                              i, parameter.fixed_buffer_index);
+    }
+  }
+  if (expected_key_offset != program->parameter_keys.data_length) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "command parameter key storage has unreferenced trailing bytes");
+  }
+  return iree_ok_status();
+}
+
 iree_status_t loom_cmd_program_parse(iree_const_byte_span_t data,
                                      loom_cmd_program_t* out_program) {
   IREE_ASSERT_ARGUMENT(out_program);
@@ -441,7 +629,11 @@ iree_status_t loom_cmd_program_parse(iree_const_byte_span_t data,
   if (iree_unaligned_load_le_u32(
           data.data + LOOM_CMD_PROGRAM_HEADER_RESERVED_0_OFFSET) != 0 ||
       iree_unaligned_load_le_u32(
-          data.data + LOOM_CMD_PROGRAM_HEADER_RESERVED_1_OFFSET) != 0) {
+          data.data + LOOM_CMD_PROGRAM_HEADER_RESERVED_1_OFFSET) != 0 ||
+      iree_unaligned_load_le_u32(
+          data.data + LOOM_CMD_PROGRAM_HEADER_RESERVED_2_OFFSET) != 0 ||
+      iree_unaligned_load_le_u32(
+          data.data + LOOM_CMD_PROGRAM_HEADER_RESERVED_3_OFFSET) != 0) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "command program header reserved fields are set");
   }
@@ -475,11 +667,25 @@ iree_status_t loom_cmd_program_parse(iree_const_byte_span_t data,
               .count = iree_unaligned_load_le_u32(
                   data.data + LOOM_CMD_PROGRAM_HEADER_COMMAND_COUNT_OFFSET),
           },
+      .parameter_roots =
+          {
+              .count = iree_unaligned_load_le_u32(
+                  data.data +
+                  LOOM_CMD_PROGRAM_HEADER_PARAMETER_ROOT_COUNT_OFFSET),
+          },
+      .parameters =
+          {
+              .count = iree_unaligned_load_le_u32(
+                  data.data + LOOM_CMD_PROGRAM_HEADER_PARAMETER_COUNT_OFFSET),
+          },
   };
+  const uint32_t parameter_key_length = iree_unaligned_load_le_u32(
+      data.data + LOOM_CMD_PROGRAM_HEADER_PARAMETER_KEY_LENGTH_OFFSET);
   loom_cmd_program_format_layout_t layout = {0};
   IREE_RETURN_IF_ERROR(loom_cmd_program_format_calculate_layout(
       program.buffer_refs.count, program.arguments.count,
-      program.commands.count, &layout));
+      program.commands.count, program.parameter_roots.count,
+      program.parameters.count, parameter_key_length, &layout));
   if (layout.total_length != total_length ||
       layout.buffer_ref_offset !=
           iree_unaligned_load_le_u32(
@@ -489,17 +695,33 @@ iree_status_t loom_cmd_program_parse(iree_const_byte_span_t data,
               data.data + LOOM_CMD_PROGRAM_HEADER_ARGUMENT_TABLE_OFFSET) ||
       layout.command_offset !=
           iree_unaligned_load_le_u32(
-              data.data + LOOM_CMD_PROGRAM_HEADER_COMMAND_TABLE_OFFSET)) {
+              data.data + LOOM_CMD_PROGRAM_HEADER_COMMAND_TABLE_OFFSET) ||
+      layout.parameter_root_offset !=
+          iree_unaligned_load_le_u32(
+              data.data +
+              LOOM_CMD_PROGRAM_HEADER_PARAMETER_ROOT_TABLE_OFFSET) ||
+      layout.parameter_offset !=
+          iree_unaligned_load_le_u32(
+              data.data + LOOM_CMD_PROGRAM_HEADER_PARAMETER_TABLE_OFFSET) ||
+      layout.parameter_key_offset !=
+          iree_unaligned_load_le_u32(
+              data.data + LOOM_CMD_PROGRAM_HEADER_PARAMETER_KEY_TABLE_OFFSET)) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "command program table layout is not canonical");
   }
   program.buffer_refs.data = data.data + layout.buffer_ref_offset;
   program.arguments.data = data.data + layout.argument_offset;
   program.commands.data = data.data + layout.command_offset;
+  program.parameter_roots.data = data.data + layout.parameter_root_offset;
+  program.parameters.data = data.data + layout.parameter_offset;
+  program.parameter_keys = iree_make_const_byte_span(
+      data.data + layout.parameter_key_offset, parameter_key_length);
 
   IREE_RETURN_IF_ERROR(loom_cmd_program_validate_buffer_refs(&program));
   IREE_RETURN_IF_ERROR(loom_cmd_program_validate_arguments(&program));
   IREE_RETURN_IF_ERROR(loom_cmd_program_validate_commands(&program));
+  IREE_RETURN_IF_ERROR(loom_cmd_program_validate_parameter_roots(&program));
+  IREE_RETURN_IF_ERROR(loom_cmd_program_validate_parameters(&program));
   *out_program = program;
   return iree_ok_status();
 }
