@@ -171,6 +171,8 @@ command.program.def public target(@command_target) @attention_wave() launch(%sou
   EXPECT_EQ(program.requirements.rebindable_binding_count, 3u);
   EXPECT_EQ(program.requirements.transient.binding_index, 2u);
   EXPECT_EQ(program.requirements.transient.required_byte_length, 320u);
+  EXPECT_EQ(program.requirements.launch_counts.binding_index, UINT32_MAX);
+  EXPECT_EQ(program.requirements.launch_counts.required_byte_length, 0u);
   ASSERT_EQ(program.commands.count, 9u);
 
   const std::array<loom_cmd_program_buffer_ref_t, 3> branches = {

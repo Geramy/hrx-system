@@ -188,11 +188,21 @@ static std::vector<uint8_t> BuildValidProgram() {
   iree_unaligned_store_le_u32(
       data.data() + LOOM_CMD_PROGRAM_HEADER_TRANSIENT_BINDING_INDEX_OFFSET,
       UINT32_MAX);
+  iree_unaligned_store_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_LAUNCH_COUNT_BINDING_INDEX_OFFSET,
+      0);
+  iree_unaligned_store_le_u64(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_LAUNCH_COUNT_BYTE_LENGTH_OFFSET,
+      12);
+  iree_unaligned_store_le_u64(
+      data.data() +
+          LOOM_CMD_PROGRAM_HEADER_LAUNCH_COUNT_MINIMUM_ALIGNMENT_OFFSET,
+      4);
 
   StoreBufferRef(data, layout.buffer_ref_offset, 0,
                  LOOM_CMD_PROGRAM_BUFFER_ROLE_FIXED, 0, 0, 256);
   StoreBufferRef(data, layout.buffer_ref_offset, 1,
-                 LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE, 0, 16, 64);
+                 LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE, 0, 0, 12);
   StoreArgument(data, layout.argument_offset, 0,
                 LOOM_CMD_PROGRAM_ARGUMENT_KIND_U32, 7);
   StoreArgument(data, layout.argument_offset, 1,
@@ -244,6 +254,9 @@ TEST(CmdProgramTest, ParsesCanonicalProgram) {
   EXPECT_EQ(program.requirements.transient.binding_index, UINT32_MAX);
   EXPECT_EQ(program.requirements.transient.required_byte_length, 0u);
   EXPECT_EQ(program.requirements.transient.minimum_alignment, 0u);
+  EXPECT_EQ(program.requirements.launch_counts.binding_index, 0u);
+  EXPECT_EQ(program.requirements.launch_counts.required_byte_length, 12u);
+  EXPECT_EQ(program.requirements.launch_counts.minimum_alignment, 4u);
   EXPECT_EQ(program.requirements.executable_count, 1u);
   EXPECT_EQ(program.requirements.entry_count, 1u);
   EXPECT_EQ(program.buffer_refs.count, 2u);
@@ -255,8 +268,8 @@ TEST(CmdProgramTest, ParsesCanonicalProgram) {
       loom_cmd_program_buffer_ref_at(&program, 1);
   EXPECT_EQ(binding.role, LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE);
   EXPECT_EQ(binding.root_index, 0u);
-  EXPECT_EQ(binding.byte_offset, 16u);
-  EXPECT_EQ(binding.byte_length, 64u);
+  EXPECT_EQ(binding.byte_offset, 0u);
+  EXPECT_EQ(binding.byte_length, 12u);
   const loom_cmd_program_argument_t argument =
       loom_cmd_program_argument_at(&program, 1);
   EXPECT_EQ(argument.kind, LOOM_CMD_PROGRAM_ARGUMENT_KIND_U64);
@@ -299,6 +312,31 @@ TEST(CmdProgramTest, ParsesTransientRequirement) {
   EXPECT_EQ(program.requirements.transient.binding_index, 1u);
   EXPECT_EQ(program.requirements.transient.required_byte_length, 4096u);
   EXPECT_EQ(program.requirements.transient.minimum_alignment, 256u);
+}
+
+TEST(CmdProgramTest, RejectsMalformedLaunchCountRequirement) {
+  std::vector<uint8_t> data = BuildValidProgram();
+  iree_unaligned_store_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_LAUNCH_COUNT_BINDING_INDEX_OFFSET,
+      1);
+
+  loom_cmd_program_t program = {};
+  IREE_EXPECT_STATUS_IS(IREE_STATUS_INVALID_ARGUMENT,
+                        loom_cmd_program_parse(AsByteSpan(data), &program));
+}
+
+TEST(CmdProgramTest, RejectsMalformedLaunchCountTuple) {
+  std::vector<uint8_t> data = BuildValidProgram();
+  const uint32_t table_offset = iree_unaligned_load_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_BUFFER_REF_TABLE_OFFSET);
+  iree_unaligned_store_le_u64(
+      data.data() + table_offset + LOOM_CMD_PROGRAM_BUFFER_REF_SIZE +
+          LOOM_CMD_PROGRAM_BUFFER_REF_BYTE_LENGTH_OFFSET,
+      8);
+
+  loom_cmd_program_t program = {};
+  IREE_EXPECT_STATUS_IS(IREE_STATUS_INVALID_ARGUMENT,
+                        loom_cmd_program_parse(AsByteSpan(data), &program));
 }
 
 TEST(CmdProgramTest, RelocatesDependencyIndices) {

@@ -478,7 +478,7 @@ TEST_F(CommandLifecycleTest,
   ASSERT_EQ(once_launch_info.workload_argument_count, 1u);
   ASSERT_EQ(once_launch_info.result_count, 1u);
   ASSERT_EQ(once_launch_info.output_byte_length,
-            LOOM_CMD_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
+            LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
   loomc_launch_config_function_t twice_launch_function =
       loomc_launch_config_function_invalid();
   LOOMC_ASSERT_OK(loomc_launch_config_module_lookup_function_by_name(
@@ -493,7 +493,7 @@ TEST_F(CommandLifecycleTest,
   ASSERT_EQ(twice_launch_info.workload_argument_count, 1u);
   ASSERT_EQ(twice_launch_info.result_count, 1u);
   ASSERT_EQ(twice_launch_info.output_byte_length,
-            LOOM_CMD_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
+            LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
   loomc_launch_config_context_t* raw_launch_context = nullptr;
   LOOMC_ASSERT_OK(loomc_launch_config_context_create(
       launch_module.get(), /*options=*/nullptr, loomc_allocator_system(),
@@ -595,7 +595,7 @@ TEST_F(CommandLifecycleTest,
   static constexpr iree_device_size_t kBufferByteLength =
       kElementCount * sizeof(uint32_t);
   static constexpr iree_device_size_t kLaunchCountByteLength =
-      LOOM_CMD_LAUNCH_COUNT_TUPLE_BYTE_LENGTH;
+      LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_BYTE_LENGTH;
   iree_hal_buffer_t* source_buffer =
       CreateTransferBuffer(device, kBufferByteLength);
   iree_hal_buffer_t* intermediate_buffer =

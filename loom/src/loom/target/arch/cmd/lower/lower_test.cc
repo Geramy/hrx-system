@@ -161,7 +161,7 @@ static void ExpectCapturedProgramsEqual(const CaptureCommandBuffer& expected,
     EXPECT_EQ(actual_command.function.value, expected_command.function.value);
     EXPECT_EQ(actual_command.dispatch_flags, expected_command.dispatch_flags);
     for (iree_host_size_t axis = 0;
-         axis < LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT; ++axis) {
+         axis < LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT; ++axis) {
       EXPECT_EQ(actual_command.dispatch_config.workgroup_size[axis],
                 expected_command.dispatch_config.workgroup_size[axis]);
       EXPECT_EQ(actual_command.dispatch_config.workgroup_count[axis],
@@ -500,7 +500,7 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
       EXPECT_EQ(dispatch.dispatch_config.workgroup_count_ref.offset,
                 kLaunchCountOffset);
       EXPECT_EQ(dispatch.dispatch_config.workgroup_count_ref.length,
-                LOOM_CMD_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
+                LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
     }
     ASSERT_EQ(dispatch.bindings.size(), i == 0 ? 3u : 2u);
     EXPECT_EQ(dispatch.bindings[0].buffer, fixed_buffer.buffer);
@@ -532,6 +532,12 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
   EXPECT_EQ(program.requirements.rebindable_binding_count, 6u);
   EXPECT_EQ(program.requirements.executable_count, 2u);
   EXPECT_EQ(program.requirements.entry_count, 4u);
+  EXPECT_EQ(program.requirements.launch_counts.binding_index, 5u);
+  EXPECT_EQ(
+      program.requirements.launch_counts.required_byte_length,
+      kLaunchCountOffset + LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
+  EXPECT_EQ(program.requirements.launch_counts.minimum_alignment,
+            alignof(uint32_t));
   ASSERT_EQ(program.buffer_refs.count, 8u);
   EXPECT_EQ(program.arguments.count, 9u);
   ASSERT_EQ(program.commands.count, 5u);
@@ -541,7 +547,7 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
   EXPECT_EQ(launch_count_ref.root_index, 5u);
   EXPECT_EQ(launch_count_ref.byte_offset, kLaunchCountOffset);
   EXPECT_EQ(launch_count_ref.byte_length,
-            LOOM_CMD_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
+            LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
   EXPECT_EQ(loom_cmd_program_command_at(&program, 0).kind,
             LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT);
   const loom_cmd_program_command_t prepare_command =
@@ -579,7 +585,7 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
   loom_exact_function_context_t launch_config_context = {};
   loom_exact_function_context_initialize(launch_config_module.get(),
                                          &block_pool_, &launch_config_context);
-  std::array<uint32_t, LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT>
+  std::array<uint32_t, LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT>
       launch_count_table = {};
   const int64_t first_arguments[] = {1};
   IREE_ASSERT_OK(loom_exact_function_evaluate_u32(

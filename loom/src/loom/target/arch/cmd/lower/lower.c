@@ -377,7 +377,8 @@ static iree_status_t loom_cmd_lower_build_launch_count_refs(
   IREE_RETURN_IF_ERROR(loom_cmd_lower_allocate_value_array(
       state, graph->host_tuple_count, &state->resources.launch_counts));
 
-  const uint64_t tuple_byte_length = LOOM_CMD_LAUNCH_COUNT_TUPLE_BYTE_LENGTH;
+  const uint64_t tuple_byte_length =
+      LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_BYTE_LENGTH;
   loom_value_id_t byte_length = LOOM_VALUE_ID_INVALID;
   IREE_RETURN_IF_ERROR(loom_cmd_lower_build_u64_constant(
       state, tuple_byte_length, state->source_program.op->location,

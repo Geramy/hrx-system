@@ -67,6 +67,7 @@ loom_cc_library(
         "//loom/src/loom/rewrite:remap",
         "//loom/src/loom/rewrite:rewriter",
         "//loom/src/loom/target:types",
+        "//loom/src/loom/target/arch/cmd:program",
         "//loom/src/loom/transforms/cleanup:canonicalize",
         "//loom/src/loom/transforms/cleanup:cse",
         "//runtime/src/iree/base",
