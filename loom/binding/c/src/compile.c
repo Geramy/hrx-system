@@ -123,6 +123,7 @@ static iree_status_t loomc_compile_capture_diagnostic_emission(
 static loomc_status_t loomc_compile_run_pass_program(
     loomc_compiler_t* compiler, loomc_workspace_t* workspace,
     const loomc_pass_program_t* pass_program, loom_module_t* internal_module,
+    loom_pass_function_selector_t function_selector,
     loom_function_version_owner_t* function_version_owner,
     loomc_result_t* result) {
   loomc_compile_diagnostic_capture_t capture = {
@@ -144,6 +145,7 @@ static loomc_status_t loomc_compile_run_pass_program(
   }
   loom_pass_interpreter_options_t interpreter_options = {
       .block_pool = loomc_workspace_block_pool(workspace),
+      .function_selector = function_selector,
       .predicate_provider = predicate_provider,
       .diagnostic_emitter =
           {
@@ -425,13 +427,12 @@ loomc_status_t loomc_compiler_create(loomc_context_t* context,
   return loomc_ok_status();
 }
 
-loomc_status_t loomc_compile_module(loomc_compiler_t* compiler,
-                                    loomc_workspace_t* workspace,
-                                    const loomc_pass_program_t* pass_program,
-                                    loomc_module_t* module,
-                                    const loomc_compile_options_t* options,
-                                    loomc_allocator_t allocator,
-                                    loomc_result_t** out_result) {
+static loomc_status_t loomc_compile_module_impl(
+    loomc_compiler_t* compiler, loomc_workspace_t* workspace,
+    const loomc_pass_program_t* pass_program, loomc_module_t* module,
+    loom_pass_function_selector_t function_selector,
+    const loomc_compile_options_t* options, loomc_allocator_t allocator,
+    loomc_result_t** out_result) {
   if (out_result == NULL) {
     return loomc_make_status(LOOMC_STATUS_INVALID_ARGUMENT,
                              "out_result must not be NULL");
@@ -496,8 +497,8 @@ loomc_status_t loomc_compile_module(loomc_compiler_t* compiler,
   }
   if (loomc_status_is_ok(status) && loomc_result_succeeded(result)) {
     status = loomc_compile_run_pass_program(compiler, workspace, pass_program,
-                                            internal_module, &function_versions,
-                                            result);
+                                            internal_module, function_selector,
+                                            &function_versions, result);
   }
   if (loomc_status_is_ok(status)) {
     status = loomc_compile_emit_requested_artifacts(result, options, module);
@@ -515,6 +516,29 @@ loomc_status_t loomc_compile_module(loomc_compiler_t* compiler,
   }
   loomc_result_release(result);
   return status;
+}
+
+loomc_status_t loomc_compile_module(loomc_compiler_t* compiler,
+                                    loomc_workspace_t* workspace,
+                                    const loomc_pass_program_t* pass_program,
+                                    loomc_module_t* module,
+                                    const loomc_compile_options_t* options,
+                                    loomc_allocator_t allocator,
+                                    loomc_result_t** out_result) {
+  return loomc_compile_module_impl(compiler, workspace, pass_program, module,
+                                   (loom_pass_function_selector_t){0}, options,
+                                   allocator, out_result);
+}
+
+loomc_status_t loomc_compile_module_select_functions(
+    loomc_compiler_t* compiler, loomc_workspace_t* workspace,
+    const loomc_pass_program_t* pass_program, loomc_module_t* module,
+    loom_pass_function_selector_t function_selector,
+    const loomc_compile_options_t* options, loomc_allocator_t allocator,
+    loomc_result_t** out_result) {
+  return loomc_compile_module_impl(compiler, workspace, pass_program, module,
+                                   function_selector, options, allocator,
+                                   out_result);
 }
 
 void loomc_compiler_retain(loomc_compiler_t* compiler) {

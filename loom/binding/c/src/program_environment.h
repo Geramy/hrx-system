@@ -7,6 +7,7 @@
 #ifndef LOOMC_PROGRAM_ENVIRONMENT_H_
 #define LOOMC_PROGRAM_ENVIRONMENT_H_
 
+#include "loom/pass/interpreter.h"
 #include "loomc/program_plan.h"
 #include "visibility.h"
 
@@ -18,6 +19,9 @@ extern "C" {
 typedef struct loomc_program_provider_t {
   // Returns true when this provider owns at least one selected module root.
   bool (*matches)(const loomc_module_t* module);
+
+  // Selects function bodies shaped before this provider partitions the module.
+  loom_pass_function_selector_t preparation_function_selector;
 
   // Prepares one exact program plan from the selected module roots.
   loomc_status_t (*prepare)(loomc_compiler_t* compiler,

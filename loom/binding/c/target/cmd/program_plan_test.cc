@@ -773,6 +773,86 @@ command.program.def public target(@command_target) @parameter_root() launch(%par
   EXPECT_EQ(loomc_program_artifact_count(dependency_program.get()), 1u);
 }
 
+TEST(CmdProgramPlanTest, SeparatesRootAndDependencyPreparation) {
+  ContextPtr context = CreateContext();
+  WorkspacePtr coordinator_workspace = CreateWorkspace();
+  SourcePtr source = CreateSource(R"(
+spirv.target<vulkan1_3> @kernel_target {abi = hal_kernel}
+
+target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
+
+kernel.def target(@kernel_target) @stage(%trip_count: index) {
+  %one = index.constant 1 : index
+  kernel.launch.config workgroups(%one, %one, %one) workgroup_size(%one, %one, %one) : index
+} launch(%trip_count: index, %output: buffer) {
+  %zero = index.constant 0 : index
+  %one = index.constant 1 : index
+  scf.for %iteration = [%zero to %trip_count step %one] unroll {
+    scf.yield
+  }
+  kernel.return
+}
+
+command.program.def public target(@command_target) @root() launch(%output: buffer) {
+  %zero = index.constant 0 : index
+  %two = index.constant 2 : index
+  %one = index.constant 1 : index
+  scf.for %iteration = [%zero to %two step %one] unroll {
+    kernel.launch @stage[%two](%two, %output) : [index](index, buffer)
+    scf.yield
+  }
+  command.return
+}
+)");
+  ModulePtr module = DeserializeModule(
+      context.get(), coordinator_workspace.get(), source.get());
+  PassProgramPtr preparation_pass_program =
+      CreateCommandPreparationPassProgram(context.get());
+  PassProgramPtr unit_pass_program = CreateTargetPassProgram(context.get());
+  CompilerPtr compiler = CreateCompiler(context.get());
+  const loomc_cmd_program_plan_options_t command_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PLAN_OPTIONS,
+      /*.structure_size=*/sizeof(command_options),
+      /*.next=*/nullptr,
+      /*.dependency_artifact_format=*/
+      loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_SPIRV),
+  };
+  const loomc_program_plan_options_t plan_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_OPTIONS,
+      /*.structure_size=*/sizeof(plan_options),
+      /*.next=*/&command_options,
+  };
+
+  loomc_program_plan_t* raw_plan = nullptr;
+  loomc_result_t* raw_result = nullptr;
+  LOOMC_ASSERT_OK(loomc_prepare_programs(
+      compiler.get(), coordinator_workspace.get(),
+      preparation_pass_program.get(), unit_pass_program.get(), module.get(),
+      &plan_options, loomc_allocator_system(), &raw_plan, &raw_result));
+  PlanPtr plan(raw_plan);
+  ResultPtr result(raw_result);
+  ASSERT_TRUE(loomc_result_succeeded(result.get()));
+  ASSERT_EQ(loomc_program_plan_root_count(plan.get()), 1u);
+  ASSERT_EQ(loomc_program_plan_unit_count(plan.get()), 2u);
+
+  WorkspacePtr worker_workspace = CreateWorkspace();
+  loomc_program_t* raw_dependency_program = nullptr;
+  LOOMC_ASSERT_OK(loomc_program_plan_compile_unit(
+      plan.get(), worker_workspace.get(), loomc_program_plan_unit_from_index(1),
+      /*options=*/nullptr, loomc_allocator_system(), &raw_dependency_program,
+      &raw_result));
+  ProgramPtr dependency_program(raw_dependency_program);
+  result.reset(raw_result);
+  ASSERT_TRUE(loomc_result_succeeded(result.get()));
+  ASSERT_EQ(loomc_program_artifact_count(dependency_program.get()), 1u);
+  const loomc_artifact_t* artifact =
+      loomc_program_artifact_at(dependency_program.get(), 0);
+  ASSERT_NE(artifact, nullptr);
+  EXPECT_EQ(artifact->kind, LOOMC_ARTIFACT_KIND_EXECUTABLE);
+  EXPECT_TRUE(loomc_string_view_equal(
+      artifact->format, loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_SPIRV)));
+}
+
 TEST(CmdProgramPlanTest, LowersModelShapedScheduleAfterPreparation) {
   ContextPtr context = CreateContext();
   WorkspacePtr coordinator_workspace = CreateWorkspace();

@@ -274,22 +274,29 @@ loomc_status_t loomc_prepare_programs(
       .next = options ? options->target_specialization : NULL,
       .config = options ? options->config : (loomc_config_options_t){0},
   };
+  const loomc_program_provider_t* provider = NULL;
+  loomc_status_t status = loomc_program_environment_select_provider(
+      program_environment, module, &provider);
+  if (!loomc_status_is_ok(status)) {
+    if (!loomc_status_is_result_diagnostic(status)) return status;
+    loomc_result_t* selection_result = NULL;
+    LOOMC_RETURN_IF_ERROR(loomc_result_create(LOOMC_RESULT_STATE_SUCCEEDED,
+                                              allocator, &selection_result));
+    return loomc_program_plan_finish_preparation_failure(selection_result,
+                                                         status, out_result);
+  }
   loomc_result_t* result = NULL;
-  LOOMC_RETURN_IF_ERROR(
-      loomc_compile_module(compiler, workspace, preparation_pass_program,
-                           module, &compile_options, allocator, &result));
+  LOOMC_RETURN_IF_ERROR(loomc_compile_module_select_functions(
+      compiler, workspace, preparation_pass_program, module,
+      provider->preparation_function_selector, &compile_options, allocator,
+      &result));
   if (!loomc_result_succeeded(result)) {
     *out_result = result;
     return loomc_ok_status();
   }
 
-  const loomc_program_provider_t* provider = NULL;
-  loomc_status_t status = loomc_program_environment_select_provider(
-      program_environment, module, &provider);
-  if (loomc_status_is_ok(status)) {
-    status = provider->prepare(compiler, workspace, unit_pass_program, module,
-                               options, result, allocator, out_program_plan);
-  }
+  status = provider->prepare(compiler, workspace, unit_pass_program, module,
+                             options, result, allocator, out_program_plan);
   if (loomc_status_is_ok(status)) {
     IREE_ASSERT(*out_program_plan != NULL);
     *out_result = result;
