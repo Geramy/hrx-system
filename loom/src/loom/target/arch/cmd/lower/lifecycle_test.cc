@@ -315,9 +315,9 @@ command.program.def public @increment_elements(%element_count: index) launch(%so
     IREE_ASSERT_EQ(launch_graph.host_tuple_count, 1u);
 
     iree_byte_span_t launch_config_data = iree_byte_span_empty();
-    IREE_CHECK_OK(loom_cmd_launch_graph_serialize(&launch_graph, &block_pool_,
-                                                  iree_allocator_system(),
-                                                  &launch_config_data));
+    IREE_CHECK_OK(loom_cmd_launch_program_serialize(
+        launch_graph.module, &block_pool_, iree_allocator_system(),
+        &launch_config_data));
 
     static constexpr uint64_t kBufferByteLength = 128 * sizeof(uint32_t);
     const std::array<loom_cmd_lower_binding_t, 2> binding_plan = {{

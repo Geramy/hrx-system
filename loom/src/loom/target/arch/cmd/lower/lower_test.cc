@@ -355,9 +355,9 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
     ASSERT_EQ(launch_graph.launches[i].payload.host_tuple_ordinal, 0u);
   }
   iree_byte_span_t launch_config_data = iree_byte_span_empty();
-  IREE_ASSERT_OK(loom_cmd_launch_graph_serialize(&launch_graph, &block_pool_,
-                                                 iree_allocator_system(),
-                                                 &launch_config_data));
+  IREE_ASSERT_OK(loom_cmd_launch_program_serialize(
+      launch_graph.module, &block_pool_, iree_allocator_system(),
+      &launch_config_data));
   iree_arena_deinitialize(&schedule_arena);
 
   static constexpr uint64_t kBufferLength = 4096;
