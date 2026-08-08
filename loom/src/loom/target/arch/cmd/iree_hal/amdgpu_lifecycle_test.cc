@@ -89,6 +89,12 @@ command.program.def public target(@command_target) @add_seven_once(%element_coun
   kernel.launch @add_seven[%element_count](%source, %target) : [index](buffer, buffer)
   command.return
 }
+
+command.program.def public target(@command_target) @add_seven_twice(%element_count: index) launch(%source: buffer, %intermediate: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+  kernel.launch @add_seven[%element_count](%source, %intermediate) : [index](buffer, buffer)
+  kernel.launch @add_seven[%element_count](%intermediate, %target) : [index](buffer, buffer)
+  command.return
+}
 )";
 
 static void PrintResultDiagnostics(const loomc_result_t* result) {
@@ -219,7 +225,7 @@ static iree_status_t SubmitAndWait(
 }
 
 TEST(CommandAmdgpuLifecycleTest,
-     CompilesAssemblesMaterializesAndReplaysNativeProgram) {
+     CompilesAssemblesMaterializesAndReplaysNativePrograms) {
   ProactorPoolPtr proactor_pool;
   FrontierTrackerPtr frontier_tracker;
   HalDeviceGroupPtr device_group;
@@ -390,12 +396,17 @@ TEST(CommandAmdgpuLifecycleTest,
   result.reset(raw_result);
   ASSERT_TRUE(ResultSucceeded(result.get()));
   result.reset();
-  ASSERT_EQ(loomc_program_plan_root_count(plan.get()), 1u);
+  ASSERT_EQ(loomc_program_plan_root_count(plan.get()), 2u);
   ASSERT_EQ(loomc_program_plan_unit_count(plan.get()), 2u);
 
-  loomc_program_plan_root_t root = loomc_program_plan_root_invalid();
+  std::array<loomc_program_plan_root_t, 2> roots = {
+      loomc_program_plan_root_invalid(),
+      loomc_program_plan_root_invalid(),
+  };
   LOOMC_ASSERT_OK(loomc_program_plan_lookup_root(
-      plan.get(), loomc_make_cstring_view("add_seven_once"), &root));
+      plan.get(), loomc_make_cstring_view("add_seven_once"), &roots[0]));
+  LOOMC_ASSERT_OK(loomc_program_plan_lookup_root(
+      plan.get(), loomc_make_cstring_view("add_seven_twice"), &roots[1]));
 
   target_profile.reset();
   unit_pass_program.reset();
@@ -435,7 +446,7 @@ TEST(CommandAmdgpuLifecycleTest,
   };
   loomc_program_t* raw_program = nullptr;
   LOOMC_ASSERT_OK(loomc_program_plan_assemble(
-      plan.get(), coordinator_workspace.get(), &root, /*root_count=*/1,
+      plan.get(), coordinator_workspace.get(), roots.data(), roots.size(),
       &unit_table, /*options=*/nullptr, loomc_allocator_system(), &raw_program,
       &raw_result));
   ProgramPtr program(raw_program);
@@ -443,6 +454,7 @@ TEST(CommandAmdgpuLifecycleTest,
   ASSERT_TRUE(ResultSucceeded(result.get()));
   result.reset();
 
+  ASSERT_EQ(loomc_program_export_count(program.get()), 2u);
   ASSERT_EQ(loomc_program_dependency_count(program.get()), 1u);
   loomc_program_dependency_info_t dependency_info = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_DEPENDENCY_INFO,
@@ -492,20 +504,40 @@ TEST(CommandAmdgpuLifecycleTest,
   IREE_ASSERT_OK(iree_hal_executable_function_parameters(
       executable.get(), function, parameters.size(), parameters.data()));
 
-  const loomc_artifact_t* command_artifact =
+  const loomc_artifact_t* once_command_artifact =
       FindArtifact(program.get(), LOOMC_ARTIFACT_KIND_EXECUTABLE,
                    LOOMC_ARTIFACT_FORMAT_COMMAND_PROGRAM, "add_seven_once");
-  ASSERT_NE(command_artifact, nullptr);
-  loom_cmd_program_t command_program = {};
+  ASSERT_NE(once_command_artifact, nullptr);
+  loom_cmd_program_t once_command_program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
-      iree_make_const_byte_span(command_artifact->contents.data,
-                                command_artifact->contents.data_length),
-      &command_program));
-  ASSERT_EQ(command_program.requirements.rebindable_binding_count, 3u);
-  ASSERT_EQ(command_program.requirements.executable_count, 1u);
-  ASSERT_EQ(command_program.requirements.entry_count, 1u);
-  ASSERT_EQ(command_program.commands.count, 1u);
-  EXPECT_EQ(loom_cmd_program_command_at(&command_program, 0).kind,
+      iree_make_const_byte_span(once_command_artifact->contents.data,
+                                once_command_artifact->contents.data_length),
+      &once_command_program));
+  ASSERT_EQ(once_command_program.requirements.rebindable_binding_count, 3u);
+  ASSERT_EQ(once_command_program.requirements.executable_count, 1u);
+  ASSERT_EQ(once_command_program.requirements.entry_count, 1u);
+  ASSERT_EQ(once_command_program.commands.count, 1u);
+  EXPECT_EQ(loom_cmd_program_command_at(&once_command_program, 0).kind,
+            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
+
+  const loomc_artifact_t* twice_command_artifact =
+      FindArtifact(program.get(), LOOMC_ARTIFACT_KIND_EXECUTABLE,
+                   LOOMC_ARTIFACT_FORMAT_COMMAND_PROGRAM, "add_seven_twice");
+  ASSERT_NE(twice_command_artifact, nullptr);
+  loom_cmd_program_t twice_command_program = {};
+  IREE_ASSERT_OK(loom_cmd_program_parse(
+      iree_make_const_byte_span(twice_command_artifact->contents.data,
+                                twice_command_artifact->contents.data_length),
+      &twice_command_program));
+  ASSERT_EQ(twice_command_program.requirements.rebindable_binding_count, 4u);
+  ASSERT_EQ(twice_command_program.requirements.executable_count, 1u);
+  ASSERT_EQ(twice_command_program.requirements.entry_count, 1u);
+  ASSERT_EQ(twice_command_program.commands.count, 3u);
+  EXPECT_EQ(loom_cmd_program_command_at(&twice_command_program, 0).kind,
+            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
+  EXPECT_EQ(loom_cmd_program_command_at(&twice_command_program, 1).kind,
+            LOOM_CMD_PROGRAM_COMMAND_KIND_EXECUTION_BARRIER);
+  EXPECT_EQ(loom_cmd_program_command_at(&twice_command_program, 2).kind,
             LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
 
   const std::array<iree_hal_executable_t*, 1> executables = {
@@ -519,7 +551,7 @@ TEST(CommandAmdgpuLifecycleTest,
           /*.parameters=*/parameters.data(),
       },
   }};
-  const loom_cmd_iree_hal_inputs_t materialization_inputs = {
+  const loom_cmd_iree_hal_inputs_t once_materialization_inputs = {
       /*.binding_count=*/3,
       /*.fixed_buffer_count=*/0,
       /*.fixed_buffers=*/nullptr,
@@ -528,12 +560,28 @@ TEST(CommandAmdgpuLifecycleTest,
       /*.entry_count=*/entries.size(),
       /*.entries=*/entries.data(),
   };
-  iree_hal_command_buffer_t* raw_command_buffer = nullptr;
+  iree_hal_command_buffer_t* raw_once_command_buffer = nullptr;
   IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program(
-      &command_program, &materialization_inputs, device.get(),
+      &once_command_program, &once_materialization_inputs, device.get(),
       IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT, IREE_HAL_QUEUE_AFFINITY_ANY,
-      &raw_command_buffer, iree_allocator_system()));
-  HalCommandBufferPtr command_buffer(raw_command_buffer);
+      &raw_once_command_buffer, iree_allocator_system()));
+  HalCommandBufferPtr once_command_buffer(raw_once_command_buffer);
+
+  const loom_cmd_iree_hal_inputs_t twice_materialization_inputs = {
+      /*.binding_count=*/4,
+      /*.fixed_buffer_count=*/0,
+      /*.fixed_buffers=*/nullptr,
+      /*.executable_count=*/executables.size(),
+      /*.executables=*/executables.data(),
+      /*.entry_count=*/entries.size(),
+      /*.entries=*/entries.data(),
+  };
+  iree_hal_command_buffer_t* raw_twice_command_buffer = nullptr;
+  IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program(
+      &twice_command_program, &twice_materialization_inputs, device.get(),
+      IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT, IREE_HAL_QUEUE_AFFINITY_ANY,
+      &raw_twice_command_buffer, iree_allocator_system()));
+  HalCommandBufferPtr twice_command_buffer(raw_twice_command_buffer);
 
   const loomc_artifact_t* launch_artifact = FindArtifact(
       program.get(), LOOMC_ARTIFACT_KIND_LAUNCH_CONFIG,
@@ -549,20 +597,37 @@ TEST(CommandAmdgpuLifecycleTest,
       launch_module.get(), /*options=*/nullptr, loomc_allocator_system(),
       &raw_launch_context));
   LaunchContextPtr launch_context(raw_launch_context);
-  loomc_launch_config_function_t launch_function =
+  ASSERT_EQ(loomc_launch_config_module_function_count(launch_module.get()), 2u);
+  loomc_launch_config_function_t once_launch_function =
       loomc_launch_config_function_invalid();
   LOOMC_ASSERT_OK(loomc_launch_config_module_lookup_function_by_name(
       launch_module.get(), loomc_make_cstring_view("add_seven_once"),
-      &launch_function));
-  loomc_launch_config_function_info_t launch_function_info = {
+      &once_launch_function));
+  loomc_launch_config_function_info_t once_launch_function_info = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_LAUNCH_CONFIG_FUNCTION_INFO,
-      /*.structure_size=*/sizeof(launch_function_info),
+      /*.structure_size=*/sizeof(once_launch_function_info),
   };
   LOOMC_ASSERT_OK(loomc_launch_config_module_function_info(
-      launch_module.get(), launch_function, &launch_function_info));
-  ASSERT_EQ(launch_function_info.workload_argument_count, 1u);
-  ASSERT_EQ(launch_function_info.result_count, 1u);
-  ASSERT_GT(launch_function_info.output_byte_length, 0u);
+      launch_module.get(), once_launch_function, &once_launch_function_info));
+  ASSERT_EQ(once_launch_function_info.workload_argument_count, 1u);
+  ASSERT_EQ(once_launch_function_info.result_count, 1u);
+  ASSERT_GT(once_launch_function_info.output_byte_length, 0u);
+
+  loomc_launch_config_function_t twice_launch_function =
+      loomc_launch_config_function_invalid();
+  LOOMC_ASSERT_OK(loomc_launch_config_module_lookup_function_by_name(
+      launch_module.get(), loomc_make_cstring_view("add_seven_twice"),
+      &twice_launch_function));
+  loomc_launch_config_function_info_t twice_launch_function_info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_LAUNCH_CONFIG_FUNCTION_INFO,
+      /*.structure_size=*/sizeof(twice_launch_function_info),
+  };
+  LOOMC_ASSERT_OK(loomc_launch_config_module_function_info(
+      launch_module.get(), twice_launch_function, &twice_launch_function_info));
+  ASSERT_EQ(twice_launch_function_info.workload_argument_count, 1u);
+  ASSERT_EQ(twice_launch_function_info.result_count, 1u);
+  ASSERT_EQ(twice_launch_function_info.output_byte_length,
+            once_launch_function_info.output_byte_length);
 
   program.reset();
   for (ProgramPtr& unit_program : unit_programs) unit_program.reset();
@@ -575,15 +640,23 @@ TEST(CommandAmdgpuLifecycleTest,
   static constexpr iree_device_size_t kBufferByteLength =
       kElementCount * sizeof(uint32_t);
   const iree_device_size_t launch_count_byte_length =
-      launch_function_info.output_byte_length;
+      once_launch_function_info.output_byte_length;
   iree_hal_buffer_t* raw_source_buffer = nullptr;
   IREE_ASSERT_OK(AllocateStorageBuffer(device.get(), kBufferByteLength,
                                        &raw_source_buffer));
   HalBufferPtr source_buffer(raw_source_buffer);
-  iree_hal_buffer_t* raw_target_buffer = nullptr;
+  iree_hal_buffer_t* raw_intermediate_buffer = nullptr;
   IREE_ASSERT_OK(AllocateStorageBuffer(device.get(), kBufferByteLength,
-                                       &raw_target_buffer));
-  HalBufferPtr target_buffer(raw_target_buffer);
+                                       &raw_intermediate_buffer));
+  HalBufferPtr intermediate_buffer(raw_intermediate_buffer);
+  iree_hal_buffer_t* raw_once_target_buffer = nullptr;
+  IREE_ASSERT_OK(AllocateStorageBuffer(device.get(), kBufferByteLength,
+                                       &raw_once_target_buffer));
+  HalBufferPtr once_target_buffer(raw_once_target_buffer);
+  iree_hal_buffer_t* raw_twice_target_buffer = nullptr;
+  IREE_ASSERT_OK(AllocateStorageBuffer(device.get(), kBufferByteLength,
+                                       &raw_twice_target_buffer));
+  HalBufferPtr twice_target_buffer(raw_twice_target_buffer);
   iree_hal_buffer_t* raw_launch_count_buffer = nullptr;
   IREE_ASSERT_OK(AllocateLaunchCountBuffer(
       device.get(), launch_count_byte_length, &raw_launch_count_buffer));
@@ -599,7 +672,15 @@ TEST(CommandAmdgpuLifecycleTest,
       kBufferByteLength, IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT,
       iree_infinite_timeout()));
   IREE_ASSERT_OK(iree_hal_device_transfer_h2d(
-      device.get(), zero_values.data(), target_buffer.get(), 0,
+      device.get(), zero_values.data(), intermediate_buffer.get(), 0,
+      kBufferByteLength, IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT,
+      iree_infinite_timeout()));
+  IREE_ASSERT_OK(iree_hal_device_transfer_h2d(
+      device.get(), zero_values.data(), once_target_buffer.get(), 0,
+      kBufferByteLength, IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT,
+      iree_infinite_timeout()));
+  IREE_ASSERT_OK(iree_hal_device_transfer_h2d(
+      device.get(), zero_values.data(), twice_target_buffer.get(), 0,
       kBufferByteLength, IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT,
       iree_infinite_timeout()));
 
@@ -616,36 +697,67 @@ TEST(CommandAmdgpuLifecycleTest,
       /*.workload_arguments=*/&workload,
       /*.workload_argument_count=*/1,
   };
-  loomc_launch_config_outputs_t outputs = {
+  loomc_launch_config_outputs_t once_outputs = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_LAUNCH_CONFIG_OUTPUTS,
-      /*.structure_size=*/sizeof(outputs),
+      /*.structure_size=*/sizeof(once_outputs),
       /*.next=*/nullptr,
       /*.storage=*/launch_count_mapping.contents.data,
       /*.storage_length=*/launch_count_mapping.contents.data_length,
   };
   LOOMC_ASSERT_OK(loomc_launch_config_context_evaluate(
-      launch_context.get(), launch_function, &arguments, &outputs));
+      launch_context.get(), once_launch_function, &arguments, &once_outputs));
   IREE_ASSERT_OK(iree_hal_buffer_mapping_flush_range(
       &launch_count_mapping, /*byte_offset=*/0, launch_count_byte_length));
 
-  const iree_hal_buffer_binding_t bindings[] = {
+  const iree_hal_buffer_binding_t once_bindings[] = {
       /*source=*/{source_buffer.get(), 0, IREE_HAL_WHOLE_BUFFER},
-      /*target=*/{target_buffer.get(), 0, IREE_HAL_WHOLE_BUFFER},
+      /*target=*/{once_target_buffer.get(), 0, IREE_HAL_WHOLE_BUFFER},
       /*launch_count=*/
       {launch_count_buffer.get(), 0, launch_count_byte_length},
   };
-  IREE_ASSERT_OK(SubmitAndWait(
-      device.get(), command_buffer.get(),
-      {/*.count=*/IREE_ARRAYSIZE(bindings), /*.bindings=*/bindings}));
+  IREE_ASSERT_OK(SubmitAndWait(device.get(), once_command_buffer.get(),
+                               {/*.count=*/IREE_ARRAYSIZE(once_bindings),
+                                /*.bindings=*/once_bindings}));
 
-  std::array<uint32_t, kElementCount> actual_values = {};
+  loomc_launch_config_outputs_t twice_outputs = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_LAUNCH_CONFIG_OUTPUTS,
+      /*.structure_size=*/sizeof(twice_outputs),
+      /*.next=*/nullptr,
+      /*.storage=*/launch_count_mapping.contents.data,
+      /*.storage_length=*/launch_count_mapping.contents.data_length,
+  };
+  LOOMC_ASSERT_OK(loomc_launch_config_context_evaluate(
+      launch_context.get(), twice_launch_function, &arguments, &twice_outputs));
+  IREE_ASSERT_OK(iree_hal_buffer_mapping_flush_range(
+      &launch_count_mapping, /*byte_offset=*/0, launch_count_byte_length));
+
+  const iree_hal_buffer_binding_t twice_bindings[] = {
+      /*source=*/{source_buffer.get(), 0, IREE_HAL_WHOLE_BUFFER},
+      /*intermediate=*/
+      {intermediate_buffer.get(), 0, IREE_HAL_WHOLE_BUFFER},
+      /*target=*/{twice_target_buffer.get(), 0, IREE_HAL_WHOLE_BUFFER},
+      /*launch_count=*/
+      {launch_count_buffer.get(), 0, launch_count_byte_length},
+  };
+  IREE_ASSERT_OK(SubmitAndWait(device.get(), twice_command_buffer.get(),
+                               {/*.count=*/IREE_ARRAYSIZE(twice_bindings),
+                                /*.bindings=*/twice_bindings}));
+
+  std::array<uint32_t, kElementCount> once_actual_values = {};
   IREE_ASSERT_OK(iree_hal_device_transfer_d2h(
-      device.get(), target_buffer.get(), 0, actual_values.data(),
+      device.get(), once_target_buffer.get(), 0, once_actual_values.data(),
       kBufferByteLength, IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT,
       iree_infinite_timeout()));
-  for (iree_host_size_t i = 0; i < actual_values.size(); ++i) {
+  std::array<uint32_t, kElementCount> twice_actual_values = {};
+  IREE_ASSERT_OK(iree_hal_device_transfer_d2h(
+      device.get(), twice_target_buffer.get(), 0, twice_actual_values.data(),
+      kBufferByteLength, IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT,
+      iree_infinite_timeout()));
+  for (iree_host_size_t i = 0; i < once_actual_values.size(); ++i) {
     const uint32_t expected = i < kWorkload ? source_values[i] + 7 : 0;
-    EXPECT_EQ(actual_values[i], expected) << "element " << i;
+    EXPECT_EQ(once_actual_values[i], expected) << "element " << i;
+    const uint32_t twice_expected = i < kWorkload ? source_values[i] + 14 : 0;
+    EXPECT_EQ(twice_actual_values[i], twice_expected) << "element " << i;
   }
 
   IREE_ASSERT_OK(iree_hal_buffer_unmap_range(&launch_count_mapping));
