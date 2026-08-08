@@ -55,7 +55,7 @@ typedef struct loom_cmd_lower_launch_count_binding_t {
 
 // Compiler-owned facts consumed by closed command-program conversion.
 //
-// Rows are already resolved by source specialization, kernel-product
+// Rows are already resolved by source specialization, dependency-unit
 // extraction, binding placement, aggregate launch analysis, and wave planning.
 // Conversion preserves these facts; it does not rediscover kernel identity,
 // launch arithmetic, or command ordering from the source module.
