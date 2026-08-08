@@ -43,6 +43,10 @@ typedef struct loom_cmd_lower_launch_t {
   uint32_t executable_index;
   // Dense program entry-table index selecting an executable-local token.
   uint32_t entry_index;
+  // Number of source kernel arguments retained by the derived entry ABI.
+  uint16_t argument_count;
+  // Source kernel argument ordinal for each derived entry argument.
+  const uint16_t* source_argument_ordinals;
 } loom_cmd_lower_launch_t;
 
 // Issue-time binding placement of the aggregate host launch-count table.
