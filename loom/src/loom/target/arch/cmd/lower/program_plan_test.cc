@@ -342,8 +342,24 @@ kernel.def @increment(%element_count: index) {
   kernel.return
 }
 
-command.program.def public target(@command_target) @increment_once(%element_count: index) launch(%source: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
-  kernel.launch @increment[%element_count](%source, %target) : [index](buffer, buffer)
+kernel.def @double(%element_count: index) {
+  %one = index.constant 1 : index
+  kernel.launch.config workgroups(%element_count, %one, %one) workgroup_size(%one, %one, %one) : index
+} launch(%source: buffer, %target: buffer) {
+  %base = index.constant 0 : offset
+  %workgroup = kernel.workgroup.id<x> : index
+  %two = scalar.constant 2 : i32
+  %source_view = buffer.view %source[%base] : buffer -> view<128xi32, #dense>
+  %target_view = buffer.view %target[%base] : buffer -> view<128xi32, #dense>
+  %value = view.load %source_view[%workgroup] : view<128xi32, #dense> -> i32
+  %result = scalar.muli %value, %two : i32
+  view.store %result, %target_view[%workgroup] : i32, view<128xi32, #dense>
+  kernel.return
+}
+
+command.program.def public target(@command_target) @increment_then_double(%element_count: index) launch(%source: buffer, %scratch: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+  kernel.launch @increment[%element_count](%source, %scratch) : [index](buffer, buffer)
+  kernel.launch @double[%element_count](%scratch, %target) : [index](buffer, buffer)
   command.return
 }
 
@@ -356,7 +372,7 @@ command.program.def public target(@command_target) @increment_twice(%element_cou
   ASSERT_NE(source_module.get(), nullptr);
   const loom_op_t* source_programs[] = {
       FindSymbol(source_module.get(), IREE_SV("increment_twice")),
-      FindSymbol(source_module.get(), IREE_SV("increment_once")),
+      FindSymbol(source_module.get(), IREE_SV("increment_then_double")),
   };
 
   loom_cmd_program_plan_t plan = {};
@@ -372,27 +388,36 @@ command.program.def public target(@command_target) @increment_twice(%element_cou
   EXPECT_FALSE(HasSymbol(plan.root_module, IREE_SV("increment")));
 
   const loom_cmd_program_root_t& twice = plan.roots[0];
-  const loom_cmd_program_root_t& once = plan.roots[1];
+  const loom_cmd_program_root_t& mixed = plan.roots[1];
   EXPECT_EQ(FindSymbol(plan.root_module, IREE_SV("increment_twice")),
             twice.function_op);
-  EXPECT_EQ(FindSymbol(plan.root_module, IREE_SV("increment_once")),
-            once.function_op);
+  EXPECT_EQ(FindSymbol(plan.root_module, IREE_SV("increment_then_double")),
+            mixed.function_op);
   EXPECT_TRUE(loom_low_func_def_isa(twice.function_op));
-  EXPECT_TRUE(loom_low_func_def_isa(once.function_op));
+  EXPECT_TRUE(loom_low_func_def_isa(mixed.function_op));
   ASSERT_NE(plan.launch_module, nullptr);
   ASSERT_NE(twice.launch_function_op, nullptr);
-  ASSERT_NE(once.launch_function_op, nullptr);
+  ASSERT_NE(mixed.launch_function_op, nullptr);
   EXPECT_EQ(FindSymbol(plan.launch_module, IREE_SV("increment_twice")),
             twice.launch_function_op);
-  EXPECT_EQ(FindSymbol(plan.launch_module, IREE_SV("increment_once")),
-            once.launch_function_op);
+  EXPECT_EQ(FindSymbol(plan.launch_module, IREE_SV("increment_then_double")),
+            mixed.launch_function_op);
   EXPECT_EQ(twice.launch_tuple_count, 1u);
-  EXPECT_EQ(once.launch_tuple_count, 1u);
+  EXPECT_EQ(mixed.launch_tuple_count, 1u);
 
-  ASSERT_EQ(plan.dependency_count, 1u);
+  ASSERT_EQ(plan.dependency_count, 2u);
   ASSERT_NE(plan.dependency_units, nullptr);
   EXPECT_EQ(plan.dependency_units[0].source_argument_count, 2u);
   EXPECT_EQ(plan.dependency_units[0].argument_count, 2u);
+  EXPECT_EQ(plan.dependency_units[1].source_argument_count, 2u);
+  EXPECT_EQ(plan.dependency_units[1].argument_count, 2u);
+  ASSERT_EQ(twice.dependency_count, 1u);
+  ASSERT_NE(twice.dependency_unit_indices, nullptr);
+  EXPECT_EQ(twice.dependency_unit_indices[0], 0u);
+  ASSERT_EQ(mixed.dependency_count, 2u);
+  ASSERT_NE(mixed.dependency_unit_indices, nullptr);
+  EXPECT_EQ(mixed.dependency_unit_indices[0], 0u);
+  EXPECT_EQ(mixed.dependency_unit_indices[1], 1u);
 
   iree_byte_span_t launch_data = iree_byte_span_empty();
   IREE_ASSERT_OK(loom_cmd_launch_program_serialize(
@@ -419,24 +444,27 @@ command.program.def public target(@command_target) @increment_twice(%element_cou
                 .payload.dispatch_indirect.executable_index,
             0u);
 
-  iree_byte_span_t once_program_data = iree_byte_span_empty();
+  iree_byte_span_t mixed_program_data = iree_byte_span_empty();
   IREE_ASSERT_OK(loom_cmd_program_serialize_low(
-      plan.root_module, once.function_op, &once_program_data,
+      plan.root_module, mixed.function_op, &mixed_program_data,
       iree_allocator_system()));
-  loom_cmd_program_t once_program = {};
+  loom_cmd_program_t mixed_program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
-      iree_make_const_byte_span(once_program_data.data,
-                                once_program_data.data_length),
-      &once_program));
-  EXPECT_EQ(once_program.requirements.rebindable_binding_count, 3u);
-  EXPECT_EQ(once_program.requirements.executable_count, 1u);
-  EXPECT_EQ(once_program.requirements.entry_count, 1u);
-  ASSERT_EQ(once_program.commands.count, 1u);
-  EXPECT_EQ(loom_cmd_program_command_at(&once_program, 0)
+      iree_make_const_byte_span(mixed_program_data.data,
+                                mixed_program_data.data_length),
+      &mixed_program));
+  EXPECT_EQ(mixed_program.requirements.rebindable_binding_count, 4u);
+  EXPECT_EQ(mixed_program.requirements.executable_count, 2u);
+  EXPECT_EQ(mixed_program.requirements.entry_count, 2u);
+  ASSERT_EQ(mixed_program.commands.count, 3u);
+  EXPECT_EQ(loom_cmd_program_command_at(&mixed_program, 0)
                 .payload.dispatch_indirect.executable_index,
             0u);
+  EXPECT_EQ(loom_cmd_program_command_at(&mixed_program, 2)
+                .payload.dispatch_indirect.executable_index,
+            1u);
 
-  iree_allocator_free(iree_allocator_system(), once_program_data.data);
+  iree_allocator_free(iree_allocator_system(), mixed_program_data.data);
   iree_allocator_free(iree_allocator_system(), twice_program_data.data);
   iree_allocator_free(iree_allocator_system(), launch_data.data);
   loom_cmd_program_plan_deinitialize(&plan);

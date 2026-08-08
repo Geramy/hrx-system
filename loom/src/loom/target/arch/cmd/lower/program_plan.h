@@ -33,6 +33,12 @@ typedef struct loom_cmd_program_root_t {
 
   // Number of unique dynamic xyz tuples returned by |launch_function_op|.
   uint32_t launch_tuple_count;
+
+  // Plan-wide dependency unit index for each root-local executable slot.
+  uint32_t* dependency_unit_indices;
+
+  // Number of entries in |dependency_unit_indices|.
+  uint32_t dependency_count;
 } loom_cmd_program_root_t;
 
 // Immutable command roots and their union dependency graph.
