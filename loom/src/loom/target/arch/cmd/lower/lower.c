@@ -271,6 +271,43 @@ static iree_status_t loom_cmd_lower_build_abi_resources(
       state->types.entry, &state->resources.entries);
 }
 
+static iree_status_t loom_cmd_lower_build_buffer_ref(
+    loom_cmd_lower_state_t* state, const loom_cmd_lower_binding_t* binding,
+    uint64_t byte_offset, uint64_t byte_length, loom_location_id_t location,
+    loom_value_id_t* out_buffer_ref) {
+  loom_value_id_t root_value = LOOM_VALUE_ID_INVALID;
+  uint32_t descriptor_ordinal = 0;
+  if (binding->role == LOOM_CMD_LOWER_BUFFER_ROLE_FIXED) {
+    IREE_ASSERT_LT(binding->resource_index, state->plan->fixed_buffer_count);
+    root_value = state->resources.fixed_buffers[binding->resource_index];
+    descriptor_ordinal = CMD_CORE_DESCRIPTOR_REF_BUFFER_REF_DIRECT;
+  } else {
+    IREE_ASSERT_EQ(binding->role, LOOM_CMD_LOWER_BUFFER_ROLE_REBINDABLE);
+    IREE_ASSERT_LT(binding->resource_index,
+                   state->plan->rebindable_binding_count);
+    root_value = state->resources.bindings[binding->resource_index];
+    descriptor_ordinal = CMD_CORE_DESCRIPTOR_REF_BUFFER_REF_BINDING;
+  }
+
+  loom_value_id_t low_byte_offset = LOOM_VALUE_ID_INVALID;
+  loom_value_id_t low_byte_length = LOOM_VALUE_ID_INVALID;
+  IREE_RETURN_IF_ERROR(loom_cmd_lower_build_u64_constant(
+      state, byte_offset, location, &low_byte_offset));
+  IREE_RETURN_IF_ERROR(loom_cmd_lower_build_u64_constant(
+      state, byte_length, location, &low_byte_length));
+  const loom_value_id_t operands[] = {
+      root_value,
+      low_byte_offset,
+      low_byte_length,
+  };
+  loom_op_t* buffer_ref_op = NULL;
+  IREE_RETURN_IF_ERROR(loom_cmd_lower_build_descriptor_op(
+      state, descriptor_ordinal, operands, IREE_ARRAYSIZE(operands),
+      &state->types.buffer_ref, 1, location, &buffer_ref_op));
+  *out_buffer_ref = loom_low_op_results(buffer_ref_op).values[0];
+  return iree_ok_status();
+}
+
 static iree_status_t loom_cmd_lower_map_source_bindings(
     loom_cmd_lower_state_t* state) {
   uint16_t argument_count = 0;
@@ -291,39 +328,43 @@ static iree_status_t loom_cmd_lower_map_source_bindings(
     IREE_ASSERT(loom_type_is_buffer(
         loom_module_value_type(state->module, source_value)));
     const loom_cmd_lower_binding_t* binding = &state->plan->bindings[i];
-    loom_value_id_t root_value = LOOM_VALUE_ID_INVALID;
-    uint32_t descriptor_ordinal = 0;
-    if (binding->role == LOOM_CMD_LOWER_BUFFER_ROLE_FIXED) {
-      IREE_ASSERT_LT(binding->resource_index, state->plan->fixed_buffer_count);
-      root_value = state->resources.fixed_buffers[binding->resource_index];
-      descriptor_ordinal = CMD_CORE_DESCRIPTOR_REF_BUFFER_REF_DIRECT;
-    } else {
-      IREE_ASSERT_EQ(binding->role, LOOM_CMD_LOWER_BUFFER_ROLE_REBINDABLE);
-      IREE_ASSERT_LT(binding->resource_index,
-                     state->plan->rebindable_binding_count);
-      root_value = state->resources.bindings[binding->resource_index];
-      descriptor_ordinal = CMD_CORE_DESCRIPTOR_REF_BUFFER_REF_BINDING;
-    }
-
-    loom_value_id_t byte_offset = LOOM_VALUE_ID_INVALID;
-    loom_value_id_t byte_length = LOOM_VALUE_ID_INVALID;
-    IREE_RETURN_IF_ERROR(loom_cmd_lower_build_u64_constant(
-        state, binding->byte_offset, state->source_program.op->location,
-        &byte_offset));
-    IREE_RETURN_IF_ERROR(loom_cmd_lower_build_u64_constant(
-        state, binding->byte_length, state->source_program.op->location,
-        &byte_length));
-    const loom_value_id_t operands[] = {root_value, byte_offset, byte_length};
-    loom_op_t* buffer_ref_op = NULL;
-    IREE_RETURN_IF_ERROR(loom_cmd_lower_build_descriptor_op(
-        state, descriptor_ordinal, operands, IREE_ARRAYSIZE(operands),
-        &state->types.buffer_ref, 1, state->source_program.op->location,
-        &buffer_ref_op));
-    const loom_value_id_t buffer_ref =
-        loom_low_op_results(buffer_ref_op).values[0];
+    loom_value_id_t buffer_ref = LOOM_VALUE_ID_INVALID;
+    IREE_RETURN_IF_ERROR(loom_cmd_lower_build_buffer_ref(
+        state, binding, binding->byte_offset, binding->byte_length,
+        state->source_program.op->location, &buffer_ref));
     state->resources.source_value_map[source_value] = buffer_ref;
     IREE_RETURN_IF_ERROR(
         loom_module_copy_value_name(state->module, source_value, buffer_ref));
+  }
+  return iree_ok_status();
+}
+
+static iree_status_t loom_cmd_lower_map_source_buffer_ranges(
+    loom_cmd_lower_state_t* state) {
+  IREE_ASSERT(state->plan->buffer_range_count == 0 ||
+              state->plan->buffer_ranges != NULL);
+  for (iree_host_size_t i = 0; i < state->plan->buffer_range_count; ++i) {
+    const loom_cmd_lower_buffer_range_t* range = &state->plan->buffer_ranges[i];
+    IREE_ASSERT_LT(range->source_value, state->resources.source_value_count);
+    IREE_ASSERT_EQ(state->resources.source_value_map[range->source_value],
+                   LOOM_VALUE_ID_INVALID);
+    IREE_ASSERT_LT(range->source_binding_ordinal, state->plan->binding_count);
+    const loom_cmd_lower_binding_t* binding =
+        &state->plan->bindings[range->source_binding_ordinal];
+    IREE_ASSERT_LE(binding->byte_offset, UINT64_MAX - range->byte_offset);
+    const uint64_t byte_offset = binding->byte_offset + range->byte_offset;
+    if (binding->byte_length != UINT64_MAX) {
+      IREE_ASSERT_LE(range->byte_offset, binding->byte_length);
+      IREE_ASSERT_LE(range->byte_length,
+                     binding->byte_length - range->byte_offset);
+    }
+    loom_value_id_t buffer_ref = LOOM_VALUE_ID_INVALID;
+    IREE_RETURN_IF_ERROR(loom_cmd_lower_build_buffer_ref(
+        state, binding, byte_offset, range->byte_length,
+        state->source_program.op->location, &buffer_ref));
+    state->resources.source_value_map[range->source_value] = buffer_ref;
+    IREE_RETURN_IF_ERROR(loom_module_copy_value_name(
+        state->module, range->source_value, buffer_ref));
   }
   return iree_ok_status();
 }
@@ -394,7 +435,8 @@ static iree_status_t loom_cmd_lower_build_launch_arguments(
             LOOM_VALUE_ID_INVALID) {
       return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
                               "kernel launch argument %" PRIu16
-                              " is not a direct command-program buffer binding",
+                              " does not have a resolved command-program "
+                              "buffer range",
                               source_argument_ordinal);
     }
     const loom_value_id_t operands[] = {
@@ -585,6 +627,7 @@ static iree_status_t loom_cmd_lower_convert(loom_cmd_lower_state_t* state) {
   IREE_RETURN_IF_ERROR(loom_cmd_lower_create_function(state));
   IREE_RETURN_IF_ERROR(loom_cmd_lower_build_abi_resources(state));
   IREE_RETURN_IF_ERROR(loom_cmd_lower_map_source_bindings(state));
+  IREE_RETURN_IF_ERROR(loom_cmd_lower_map_source_buffer_ranges(state));
   IREE_RETURN_IF_ERROR(loom_cmd_lower_build_launch_count_refs(state));
   return loom_cmd_lower_build_commands(state);
 }
@@ -610,6 +653,7 @@ iree_status_t loom_cmd_lower_program_to_low(loom_module_t* module,
   IREE_ASSERT_EQ(plan->binding_count,
                  argument_count - (uint16_t)specialization_count);
   IREE_ASSERT(plan->binding_count == 0 || plan->bindings != NULL);
+  IREE_ASSERT(plan->buffer_range_count == 0 || plan->buffer_ranges != NULL);
   IREE_ASSERT(plan->launch_graph != NULL);
   IREE_ASSERT(loom_symbol_ref_is_valid(plan->command_target));
   IREE_ASSERT_EQ(plan->command_target.module_id, 0u);

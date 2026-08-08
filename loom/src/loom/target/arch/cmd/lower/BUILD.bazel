@@ -259,6 +259,7 @@ loom_cc_test(
         "//loom/src/loom/format/text:parser",
         "//loom/src/loom/ir",
         "//loom/src/loom/ops:op_registry",
+        "//loom/src/loom/ops/kernel",
         "//loom/src/loom/ops/low",
         "//loom/src/loom/target/arch/cmd/descriptors:low_registry",
         "//loom/src/loom/target/arch/cmd/iree_hal:recording",

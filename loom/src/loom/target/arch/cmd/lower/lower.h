@@ -37,6 +37,18 @@ typedef struct loom_cmd_lower_binding_t {
   uint64_t byte_length;
 } loom_cmd_lower_binding_t;
 
+// Resolved range for one source view or derived buffer value.
+typedef struct loom_cmd_lower_buffer_range_t {
+  // Source SSA value mapped to the resulting portable buffer reference.
+  loom_value_id_t source_value;
+  // Source command-program launch-binding ordinal owning the storage root.
+  uint16_t source_binding_ordinal;
+  // Byte offset relative to the source launch-binding range.
+  uint64_t byte_offset;
+  // Exact byte length of the derived range.
+  uint64_t byte_length;
+} loom_cmd_lower_buffer_range_t;
+
 // Resolved executable placement for one aggregate launch-graph row.
 typedef struct loom_cmd_lower_launch_t {
   // Dense executable-table index selected for the launch.
@@ -70,6 +82,10 @@ typedef struct loom_cmd_lower_plan_t {
   const loom_cmd_lower_binding_t* bindings;
   // Number of source launch-binding rows, excluding specialization arguments.
   iree_host_size_t binding_count;
+  // Derived source values mapped to root-relative buffer ranges.
+  const loom_cmd_lower_buffer_range_t* buffer_ranges;
+  // Number of entries in |buffer_ranges|.
+  iree_host_size_t buffer_range_count;
   // Number of dense fixed-buffer ABI resources.
   uint32_t fixed_buffer_count;
   // Number of dense issue-time binding ABI resources.
@@ -89,12 +105,13 @@ typedef struct loom_cmd_lower_plan_t {
 // Replaces one specialized command.program.def with a zero-signature
 // command_program low.func.def using the cmd.core representation contract.
 //
-// The first issue-time slice accepts buffer-only kernel arguments and
-// workgroup counts classified by |plan->launch_graph|. Exact tuples become
-// direct dispatches. Host tuples become static-indirect dispatches referencing
-// one rebindable output table. Unsupported kernel-argument forms fail without
-// changing the source program. On success the replacement keeps the source
-// symbol identity and is returned in |out_low_function|.
+// The first issue-time slice accepts buffer roots and explicitly resolved view
+// ranges plus workgroup counts classified by |plan->launch_graph|. Exact
+// tuples become direct dispatches. Host tuples become static-indirect
+// dispatches referencing one rebindable output table. Unsupported
+// kernel-argument forms fail without changing the source program. On success
+// the replacement keeps the source symbol identity and is returned in
+// |out_low_function|.
 iree_status_t loom_cmd_lower_program_to_low(loom_module_t* module,
                                             loom_op_t* program_op,
                                             const loom_cmd_lower_plan_t* plan,

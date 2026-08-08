@@ -277,6 +277,7 @@ loom_cc_test(
     loom::format::bytecode::reader
     loom::format::text::parser
     loom::ir
+    loom::ops::kernel
     loom::ops::low
     loom::ops::op_registry
     loom::target::arch::cmd::descriptors::low_registry
