@@ -7,12 +7,14 @@
 #include "loom/target/arch/cmd/lower/transients.h"
 
 #include <inttypes.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "iree/base/internal/math.h"
 #include "loom/ir/facts.h"
 #include "loom/ir/module.h"
 #include "loom/ops/buffer/ops.h"
+#include "loom/ops/kernel/ops.h"
 #include "loom/util/walk.h"
 
 typedef struct loom_cmd_transient_allocation_t {
@@ -24,7 +26,27 @@ typedef struct loom_cmd_transient_allocation_t {
 
   // Reserved byte length of the allocation root.
   uint64_t byte_length;
+
+  // Minimum byte alignment of the allocation root.
+  uint64_t base_alignment;
+
+  // First scheduled wave that may access the allocation.
+  iree_host_size_t first_wave;
+
+  // Last scheduled wave that may access the allocation.
+  iree_host_size_t last_wave;
+
+  // Stable source-order tie breaker for deterministic packing.
+  iree_host_size_t source_ordinal;
 } loom_cmd_transient_allocation_t;
+
+typedef struct loom_cmd_transient_free_range_t {
+  // Byte offset of the available range within the aggregate slab.
+  uint64_t byte_offset;
+
+  // Number of available bytes beginning at |byte_offset|.
+  uint64_t byte_length;
+} loom_cmd_transient_free_range_t;
 
 typedef struct loom_cmd_transient_build_t {
   // Complete value facts for the source program.
@@ -44,6 +66,9 @@ typedef struct loom_cmd_transient_build_t {
 
   // Number of allocated entries in |allocations|.
   iree_host_size_t allocation_capacity;
+
+  // Number of allocation roots reached by at least one scheduled command.
+  iree_host_size_t live_allocation_count;
 
   // Source values mapped to packed transient ranges.
   loom_cmd_lower_buffer_range_t* buffer_ranges;
@@ -97,6 +122,18 @@ static const loom_cmd_transient_allocation_t*
 loom_cmd_transient_find_allocation(const loom_cmd_transient_build_t* build,
                                    loom_value_id_t root_value) {
   for (iree_host_size_t i = 0; i < build->allocation_count; ++i) {
+    if (build->allocations[i].root_value == root_value &&
+        build->allocations[i].first_wave != IREE_HOST_SIZE_MAX) {
+      return &build->allocations[i];
+    }
+  }
+  return NULL;
+}
+
+static loom_cmd_transient_allocation_t*
+loom_cmd_transient_find_mutable_allocation(loom_cmd_transient_build_t* build,
+                                           loom_value_id_t root_value) {
+  for (iree_host_size_t i = 0; i < build->allocation_count; ++i) {
     if (build->allocations[i].root_value == root_value) {
       return &build->allocations[i];
     }
@@ -128,7 +165,7 @@ static iree_status_t loom_cmd_transient_append_range(
   return iree_ok_status();
 }
 
-static iree_status_t loom_cmd_transient_append_allocation(
+static iree_status_t loom_cmd_transient_collect_allocation(
     loom_cmd_transient_build_t* build, const loom_op_t* op) {
   const loom_value_fact_memory_space_t memory_space =
       loom_buffer_alloca_memory_space(op);
@@ -156,27 +193,225 @@ static iree_status_t loom_cmd_transient_append_allocation(
       (uint64_t)loom_buffer_alloca_base_alignment(op);
   IREE_ASSERT(iree_is_power_of_two_uint64(base_alignment));
 
-  uint64_t byte_offset = 0;
-  if (!loom_cmd_transient_align_offset(build->placement_cursor, base_alignment,
-                                       &byte_offset) ||
-      byte_length > UINT64_MAX - byte_offset) {
-    return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
-                            "command transient slab exceeds 64-bit offsets");
-  }
-
   IREE_RETURN_IF_ERROR(loom_cmd_transient_reserve_allocation(build));
   loom_cmd_transient_allocation_t* allocation =
       &build->allocations[build->allocation_count++];
   *allocation = (loom_cmd_transient_allocation_t){
       .root_value = loom_buffer_alloca_result(op),
+      .byte_length = byte_length,
+      .base_alignment = base_alignment,
+      .first_wave = IREE_HOST_SIZE_MAX,
+      .source_ordinal = build->allocation_count - 1,
+  };
+  return iree_ok_status();
+}
+
+static loom_value_id_t loom_cmd_transient_resolve_root_value(
+    const loom_cmd_transient_build_t* build, loom_value_id_t value) {
+  const loom_value_facts_t facts =
+      loom_value_fact_table_lookup(build->fact_table, value);
+  loom_value_fact_view_reference_t view_reference = {0};
+  if (loom_value_facts_query_view_reference(&build->fact_table->context, facts,
+                                            &view_reference)) {
+    return view_reference.root_value_id;
+  }
+  loom_value_fact_buffer_reference_t buffer_reference = {0};
+  if (loom_value_facts_query_buffer_reference(&build->fact_table->context,
+                                              facts, &buffer_reference)) {
+    return loom_value_fact_buffer_reference_resolve_root_value(buffer_reference,
+                                                               value);
+  }
+  return LOOM_VALUE_ID_INVALID;
+}
+
+static void loom_cmd_transient_mark_launch_uses(
+    loom_cmd_transient_build_t* build, const loom_op_t* launch_op,
+    iree_host_size_t wave_index) {
+  const loom_value_slice_t arguments = loom_kernel_launch_arguments(launch_op);
+  for (uint16_t i = 0; i < arguments.count; ++i) {
+    const loom_value_id_t root_value =
+        loom_cmd_transient_resolve_root_value(build, arguments.values[i]);
+    if (root_value == LOOM_VALUE_ID_INVALID) continue;
+    loom_cmd_transient_allocation_t* allocation =
+        loom_cmd_transient_find_mutable_allocation(build, root_value);
+    if (!allocation) continue;
+    allocation->first_wave = iree_min(allocation->first_wave, wave_index);
+    allocation->last_wave = iree_max(allocation->last_wave, wave_index);
+  }
+}
+
+static void loom_cmd_transient_mark_scheduled_uses(
+    loom_cmd_transient_build_t* build,
+    const loom_cmd_schedule_plan_t* schedule) {
+  for (iree_host_size_t wave_index = 0; wave_index < schedule->wave_count;
+       ++wave_index) {
+    const loom_cmd_schedule_wave_t wave = schedule->waves[wave_index];
+    for (iree_host_size_t i = 0; i < wave.command_count; ++i) {
+      loom_cmd_transient_mark_launch_uses(
+          build, schedule->commands[wave.command_offset + i], wave_index);
+    }
+  }
+}
+
+static int loom_cmd_transient_compare_allocations(const void* lhs_ptr,
+                                                  const void* rhs_ptr) {
+  const loom_cmd_transient_allocation_t* lhs =
+      (const loom_cmd_transient_allocation_t*)lhs_ptr;
+  const loom_cmd_transient_allocation_t* rhs =
+      (const loom_cmd_transient_allocation_t*)rhs_ptr;
+  if (lhs->first_wave < rhs->first_wave) return -1;
+  if (lhs->first_wave > rhs->first_wave) return 1;
+  if (lhs->source_ordinal < rhs->source_ordinal) return -1;
+  if (lhs->source_ordinal > rhs->source_ordinal) return 1;
+  return 0;
+}
+
+static void loom_cmd_transient_insert_free_range(
+    loom_cmd_transient_free_range_t* free_ranges,
+    iree_host_size_t* free_range_count, uint64_t byte_offset,
+    uint64_t byte_length) {
+  if (byte_length == 0) return;
+  iree_host_size_t insert_index = 0;
+  while (insert_index < *free_range_count &&
+         free_ranges[insert_index].byte_offset < byte_offset) {
+    ++insert_index;
+  }
+  memmove(&free_ranges[insert_index + 1], &free_ranges[insert_index],
+          (*free_range_count - insert_index) * sizeof(*free_ranges));
+  free_ranges[insert_index] = (loom_cmd_transient_free_range_t){
       .byte_offset = byte_offset,
       .byte_length = byte_length,
   };
-  build->placement_cursor = byte_offset + byte_length;
-  build->minimum_alignment = iree_max(build->minimum_alignment, base_alignment);
-  return loom_cmd_transient_append_range(build, allocation->root_value,
-                                         allocation, /*byte_offset=*/0,
-                                         allocation->byte_length);
+  ++*free_range_count;
+
+  if (insert_index > 0) {
+    loom_cmd_transient_free_range_t* previous = &free_ranges[insert_index - 1];
+    loom_cmd_transient_free_range_t* current = &free_ranges[insert_index];
+    if (previous->byte_offset + previous->byte_length == current->byte_offset) {
+      previous->byte_length += current->byte_length;
+      memmove(current, current + 1,
+              (*free_range_count - insert_index - 1) * sizeof(*free_ranges));
+      --*free_range_count;
+      --insert_index;
+    }
+  }
+  if (insert_index + 1 < *free_range_count) {
+    loom_cmd_transient_free_range_t* current = &free_ranges[insert_index];
+    loom_cmd_transient_free_range_t* next = &free_ranges[insert_index + 1];
+    if (current->byte_offset + current->byte_length == next->byte_offset) {
+      current->byte_length += next->byte_length;
+      memmove(next, next + 1,
+              (*free_range_count - insert_index - 2) * sizeof(*free_ranges));
+      --*free_range_count;
+    }
+  }
+}
+
+static bool loom_cmd_transient_allocate_free_range(
+    loom_cmd_transient_free_range_t* free_ranges,
+    iree_host_size_t* free_range_count, uint64_t byte_length,
+    uint64_t base_alignment, uint64_t* out_byte_offset) {
+  iree_host_size_t best_index = IREE_HOST_SIZE_MAX;
+  uint64_t best_offset = 0;
+  uint64_t best_waste = UINT64_MAX;
+  for (iree_host_size_t i = 0; i < *free_range_count; ++i) {
+    const loom_cmd_transient_free_range_t range = free_ranges[i];
+    uint64_t aligned_offset = 0;
+    if (!loom_cmd_transient_align_offset(range.byte_offset, base_alignment,
+                                         &aligned_offset) ||
+        aligned_offset < range.byte_offset ||
+        aligned_offset - range.byte_offset > range.byte_length ||
+        byte_length >
+            range.byte_length - (aligned_offset - range.byte_offset)) {
+      continue;
+    }
+    const uint64_t waste = range.byte_length - byte_length;
+    if (waste < best_waste ||
+        (waste == best_waste && aligned_offset < best_offset)) {
+      best_index = i;
+      best_offset = aligned_offset;
+      best_waste = waste;
+    }
+  }
+  if (best_index == IREE_HOST_SIZE_MAX) return false;
+
+  const loom_cmd_transient_free_range_t selected = free_ranges[best_index];
+  memmove(&free_ranges[best_index], &free_ranges[best_index + 1],
+          (*free_range_count - best_index - 1) * sizeof(*free_ranges));
+  --*free_range_count;
+  loom_cmd_transient_insert_free_range(free_ranges, free_range_count,
+                                       selected.byte_offset,
+                                       best_offset - selected.byte_offset);
+  const uint64_t allocation_end = best_offset + byte_length;
+  const uint64_t selected_end = selected.byte_offset + selected.byte_length;
+  loom_cmd_transient_insert_free_range(free_ranges, free_range_count,
+                                       allocation_end,
+                                       selected_end - allocation_end);
+  *out_byte_offset = best_offset;
+  return true;
+}
+
+static iree_status_t loom_cmd_transient_pack_allocations(
+    loom_cmd_transient_build_t* build) {
+  if (build->allocation_count == 0) return iree_ok_status();
+  qsort(build->allocations, build->allocation_count,
+        sizeof(*build->allocations), loom_cmd_transient_compare_allocations);
+
+  iree_host_size_t* active_indices = NULL;
+  loom_cmd_transient_free_range_t* free_ranges = NULL;
+  IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+      build->scratch_arena, build->allocation_count, sizeof(*active_indices),
+      (void**)&active_indices));
+  IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+      build->scratch_arena, build->allocation_count + 1, sizeof(*free_ranges),
+      (void**)&free_ranges));
+  iree_host_size_t active_count = 0;
+  iree_host_size_t free_range_count = 0;
+
+  for (iree_host_size_t allocation_index = 0;
+       allocation_index < build->allocation_count; ++allocation_index) {
+    loom_cmd_transient_allocation_t* allocation =
+        &build->allocations[allocation_index];
+    if (allocation->first_wave == IREE_HOST_SIZE_MAX) break;
+
+    for (iree_host_size_t active_index = 0; active_index < active_count;) {
+      const iree_host_size_t retired_index = active_indices[active_index];
+      const loom_cmd_transient_allocation_t* retired =
+          &build->allocations[retired_index];
+      if (retired->last_wave >= allocation->first_wave) {
+        ++active_index;
+        continue;
+      }
+      loom_cmd_transient_insert_free_range(free_ranges, &free_range_count,
+                                           retired->byte_offset,
+                                           retired->byte_length);
+      active_indices[active_index] = active_indices[--active_count];
+    }
+
+    uint64_t byte_offset = 0;
+    if (!loom_cmd_transient_allocate_free_range(
+            free_ranges, &free_range_count, allocation->byte_length,
+            allocation->base_alignment, &byte_offset)) {
+      if (!loom_cmd_transient_align_offset(build->placement_cursor,
+                                           allocation->base_alignment,
+                                           &byte_offset) ||
+          allocation->byte_length > UINT64_MAX - byte_offset) {
+        return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
+                                "command transient slab exceeds 64-bit "
+                                "offsets");
+      }
+      loom_cmd_transient_insert_free_range(
+          free_ranges, &free_range_count, build->placement_cursor,
+          byte_offset - build->placement_cursor);
+      build->placement_cursor = byte_offset + allocation->byte_length;
+    }
+    allocation->byte_offset = byte_offset;
+    build->minimum_alignment =
+        iree_max(build->minimum_alignment, allocation->base_alignment);
+    active_indices[active_count++] = allocation_index;
+    ++build->live_allocation_count;
+  }
+  return iree_ok_status();
 }
 
 static iree_status_t loom_cmd_transient_append_result_range(
@@ -221,15 +456,25 @@ static iree_status_t loom_cmd_transient_append_result_range(
       build, result, allocation, /*byte_offset=*/0, allocation->byte_length);
 }
 
-static iree_status_t loom_cmd_transient_visit(
+static iree_status_t loom_cmd_transient_collect_visit(
     void* user_data, loom_op_t* op, const loom_walk_context_t* context,
     loom_walk_result_t* out_result) {
   (void)context;
   *out_result = LOOM_WALK_CONTINUE;
   loom_cmd_transient_build_t* build = (loom_cmd_transient_build_t*)user_data;
   if (loom_buffer_alloca_isa(op)) {
-    return loom_cmd_transient_append_allocation(build, op);
+    return loom_cmd_transient_collect_allocation(build, op);
   }
+
+  return iree_ok_status();
+}
+
+static iree_status_t loom_cmd_transient_range_visit(
+    void* user_data, loom_op_t* op, const loom_walk_context_t* context,
+    loom_walk_result_t* out_result) {
+  (void)context;
+  *out_result = LOOM_WALK_CONTINUE;
+  loom_cmd_transient_build_t* build = (loom_cmd_transient_build_t*)user_data;
 
   const loom_value_id_t* results = loom_op_const_results(op);
   for (uint16_t i = 0; i < op->result_count; ++i) {
@@ -241,12 +486,14 @@ static iree_status_t loom_cmd_transient_visit(
 
 iree_status_t loom_cmd_transient_layout_build(
     const loom_module_t* module, loom_func_like_t program,
-    const loom_value_fact_table_t* fact_table, uint32_t binding_index,
+    const loom_value_fact_table_t* fact_table,
+    const loom_cmd_schedule_plan_t* schedule, uint32_t binding_index,
     iree_arena_allocator_t* scratch_arena,
     loom_cmd_transient_layout_t* out_layout) {
   IREE_ASSERT_ARGUMENT(module);
   IREE_ASSERT(loom_func_like_isa(program));
   IREE_ASSERT_ARGUMENT(fact_table);
+  IREE_ASSERT_ARGUMENT(schedule);
   IREE_ASSERT_ARGUMENT(scratch_arena);
   IREE_ASSERT_ARGUMENT(out_layout);
   memset(out_layout, 0, sizeof(*out_layout));
@@ -259,15 +506,22 @@ iree_status_t loom_cmd_transient_layout_build(
   loom_walk_result_t walk_result = LOOM_WALK_CONTINUE;
   IREE_RETURN_IF_ERROR(loom_walk_function(
       module, program, LOOM_WALK_PRE_ORDER,
-      (loom_walk_callback_t){loom_cmd_transient_visit, &build}, scratch_arena,
-      &walk_result));
+      (loom_walk_callback_t){loom_cmd_transient_collect_visit, &build},
+      scratch_arena, &walk_result));
+  IREE_ASSERT_EQ(walk_result, LOOM_WALK_CONTINUE);
+  loom_cmd_transient_mark_scheduled_uses(&build, schedule);
+  IREE_RETURN_IF_ERROR(loom_cmd_transient_pack_allocations(&build));
+  IREE_RETURN_IF_ERROR(loom_walk_function(
+      module, program, LOOM_WALK_PRE_ORDER,
+      (loom_walk_callback_t){loom_cmd_transient_range_visit, &build},
+      scratch_arena, &walk_result));
   IREE_ASSERT_EQ(walk_result, LOOM_WALK_CONTINUE);
 
   *out_layout = (loom_cmd_transient_layout_t){
       .requirement =
           {
               .binding_index =
-                  build.allocation_count != 0 ? binding_index : UINT32_MAX,
+                  build.live_allocation_count != 0 ? binding_index : UINT32_MAX,
               .required_byte_length = build.placement_cursor,
               .minimum_alignment = build.minimum_alignment,
           },
