@@ -620,6 +620,68 @@ static iree_status_t loom_cmd_program_validate_transient(
   return iree_ok_status();
 }
 
+static iree_status_t loom_cmd_program_validate_launch_counts(
+    const loom_cmd_program_t* program) {
+  const loom_cmd_program_launch_count_requirement_t requirement =
+      program->requirements.launch_counts;
+  if (requirement.binding_index == UINT32_MAX) {
+    if (requirement.required_byte_length != 0 ||
+        requirement.minimum_alignment != 0) {
+      return iree_make_status(
+          IREE_STATUS_INVALID_ARGUMENT,
+          "command program without host launch counts declares storage");
+    }
+  } else if (requirement.binding_index >=
+                 program->requirements.rebindable_binding_count ||
+             requirement.required_byte_length == 0 ||
+             requirement.minimum_alignment !=
+                 LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_ALIGNMENT) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "command host launch-count requirement is not representable");
+  }
+
+  bool found_static_dispatch = false;
+  for (uint32_t i = 0; i < program->commands.count; ++i) {
+    const loom_cmd_program_command_t command =
+        loom_cmd_program_command_at(program, i);
+    if (command.kind !=
+        LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC) {
+      continue;
+    }
+    found_static_dispatch = true;
+    if (requirement.binding_index == UINT32_MAX) {
+      return iree_make_status(
+          IREE_STATUS_INVALID_ARGUMENT,
+          "static indirect dispatch has no host launch-count requirement");
+    }
+    const loom_cmd_program_buffer_ref_t buffer_ref =
+        loom_cmd_program_buffer_ref_at(
+            program,
+            command.payload.dispatch_indirect.workgroup_count_buffer_ref);
+    uint64_t byte_end = 0;
+    if (buffer_ref.role != LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE ||
+        buffer_ref.root_index != requirement.binding_index ||
+        buffer_ref.byte_length !=
+            LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_BYTE_LENGTH ||
+        !iree_checked_add_u64(buffer_ref.byte_offset, buffer_ref.byte_length,
+                              &byte_end) ||
+        byte_end > requirement.required_byte_length ||
+        buffer_ref.byte_offset % requirement.minimum_alignment != 0) {
+      return iree_make_status(
+          IREE_STATUS_INVALID_ARGUMENT,
+          "static indirect dispatch references inconsistent host launch "
+          "counts");
+    }
+  }
+  if (!found_static_dispatch && requirement.binding_index != UINT32_MAX) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "host launch-count storage has no static indirect dispatch");
+  }
+  return iree_ok_status();
+}
+
 iree_status_t loom_cmd_program_parse(iree_const_byte_span_t data,
                                      loom_cmd_program_t* out_program) {
   IREE_ASSERT_ARGUMENT(out_program);
@@ -657,9 +719,8 @@ iree_status_t loom_cmd_program_parse(iree_const_byte_span_t data,
                             total_length, data.data_length);
   }
   if (iree_unaligned_load_le_u32(
-          data.data + LOOM_CMD_PROGRAM_HEADER_RESERVED_0_OFFSET) != 0 ||
-      iree_unaligned_load_le_u32(
-          data.data + LOOM_CMD_PROGRAM_HEADER_RESERVED_1_OFFSET) != 0 ||
+          data.data + LOOM_CMD_PROGRAM_HEADER_LAUNCH_COUNT_RESERVED_OFFSET) !=
+          0 ||
       iree_unaligned_load_le_u32(
           data.data + LOOM_CMD_PROGRAM_HEADER_TRANSIENT_RESERVED_OFFSET) != 0) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
@@ -690,6 +751,18 @@ iree_status_t loom_cmd_program_parse(iree_const_byte_span_t data,
                       .minimum_alignment = iree_unaligned_load_le_u64(
                           data.data +
                           LOOM_CMD_PROGRAM_HEADER_TRANSIENT_MINIMUM_ALIGNMENT_OFFSET),
+                  },
+              .launch_counts =
+                  {
+                      .binding_index = iree_unaligned_load_le_u32(
+                          data.data +
+                          LOOM_CMD_PROGRAM_HEADER_LAUNCH_COUNT_BINDING_INDEX_OFFSET),
+                      .required_byte_length = iree_unaligned_load_le_u64(
+                          data.data +
+                          LOOM_CMD_PROGRAM_HEADER_LAUNCH_COUNT_BYTE_LENGTH_OFFSET),
+                      .minimum_alignment = iree_unaligned_load_le_u64(
+                          data.data +
+                          LOOM_CMD_PROGRAM_HEADER_LAUNCH_COUNT_MINIMUM_ALIGNMENT_OFFSET),
                   },
           },
       .buffer_refs =
@@ -761,6 +834,7 @@ iree_status_t loom_cmd_program_parse(iree_const_byte_span_t data,
   IREE_RETURN_IF_ERROR(loom_cmd_program_validate_buffer_refs(&program));
   IREE_RETURN_IF_ERROR(loom_cmd_program_validate_arguments(&program));
   IREE_RETURN_IF_ERROR(loom_cmd_program_validate_commands(&program));
+  IREE_RETURN_IF_ERROR(loom_cmd_program_validate_launch_counts(&program));
   IREE_RETURN_IF_ERROR(loom_cmd_program_validate_parameter_roots(&program));
   IREE_RETURN_IF_ERROR(loom_cmd_program_validate_parameters(&program));
   *out_program = program;

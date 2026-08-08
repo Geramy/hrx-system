@@ -525,6 +525,12 @@ TEST(CommandAmdgpuLifecycleTest,
             UINT32_MAX);
   EXPECT_EQ(once_command_program.requirements.transient.required_byte_length,
             0u);
+  EXPECT_EQ(once_command_program.requirements.launch_counts.binding_index, 1u);
+  EXPECT_EQ(
+      once_command_program.requirements.launch_counts.required_byte_length,
+      LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
+  EXPECT_EQ(once_command_program.requirements.launch_counts.minimum_alignment,
+            LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_ALIGNMENT);
   ASSERT_EQ(once_command_program.parameter_roots.count, 1u);
   const loom_cmd_program_parameter_root_t once_parameter_root =
       loom_cmd_program_parameter_root_at(&once_command_program, 0);
@@ -562,6 +568,12 @@ TEST(CommandAmdgpuLifecycleTest,
             512u);
   EXPECT_EQ(twice_command_program.requirements.transient.minimum_alignment,
             256u);
+  EXPECT_EQ(twice_command_program.requirements.launch_counts.binding_index, 2u);
+  EXPECT_EQ(
+      twice_command_program.requirements.launch_counts.required_byte_length,
+      LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
+  EXPECT_EQ(twice_command_program.requirements.launch_counts.minimum_alignment,
+            LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_ALIGNMENT);
   ASSERT_EQ(twice_command_program.parameter_roots.count, 1u);
   ASSERT_EQ(twice_command_program.parameters.count, 1u);
   EXPECT_TRUE(iree_string_view_equal(

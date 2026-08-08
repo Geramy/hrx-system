@@ -270,7 +270,8 @@ static iree_status_t loom_cmd_launch_graph_build_host_function(
   const uint16_t specialization_count = (uint16_t)specialization_count_i64;
 
   const iree_host_size_t result_count =
-      build->schedule->command_count * LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT;
+      build->schedule->command_count *
+      LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT;
   if (result_count > UINT16_MAX) {
     return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
                             "aggregate launch function requires %" PRIhsz
@@ -417,16 +418,16 @@ static iree_status_t loom_cmd_launch_graph_clone_config(
   IREE_RETURN_IF_ERROR(loom_ir_clone_block_ops(
       &build->builder, config_block, &config_remap,
       &(loom_ir_clone_block_options_t){.omit_terminators = true}));
-  for (uint8_t dimension = 0; dimension < LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT;
-       ++dimension) {
+  for (uint8_t dimension = 0;
+       dimension < LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT; ++dimension) {
     const loom_value_id_t source_count =
         loom_kernel_launch_config_workgroup_count_operand(
             launch_config, (loom_kernel_dimension_t)dimension);
     IREE_RETURN_IF_ERROR(loom_ir_remap_resolve_value(
         &config_remap, source_count,
-        &build->launch_result_values[launch_index *
-                                         LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT +
-                                     dimension]));
+        &build->launch_result_values
+             [launch_index * LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT +
+              dimension]));
   }
   return iree_ok_status();
 }
@@ -434,7 +435,8 @@ static iree_status_t loom_cmd_launch_graph_clone_config(
 static iree_status_t loom_cmd_launch_graph_build_body(
     loom_cmd_launch_graph_build_t* build) {
   const iree_host_size_t result_count =
-      build->schedule->command_count * LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT;
+      build->schedule->command_count *
+      LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT;
   if (result_count != 0) {
     IREE_RETURN_IF_ERROR(
         iree_arena_allocate_array(build->scratch_arena, result_count,
@@ -524,7 +526,8 @@ static iree_status_t loom_cmd_launch_graph_compact_results(
   const loom_value_slice_t return_values =
       loom_func_return_operands(old_return_op);
   const iree_host_size_t result_count =
-      build->schedule->command_count * LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT;
+      build->schedule->command_count *
+      LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT;
   IREE_ASSERT_EQ(return_values.count, result_count);
 
   bool* remove_results = NULL;
@@ -547,13 +550,14 @@ static iree_status_t loom_cmd_launch_graph_compact_results(
   for (iree_host_size_t launch_index = 0;
        launch_index < build->schedule->command_count; ++launch_index) {
     const loom_value_id_t* tuple =
-        &return_values
-             .values[launch_index * LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT];
+        &return_values.values[launch_index *
+                              LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT];
     loom_target_dispatch_workgroup_count_t direct = {0};
     uint32_t* direct_values[] = {&direct.x, &direct.y, &direct.z};
     bool all_exact = true;
     for (uint8_t dimension = 0;
-         dimension < LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT; ++dimension) {
+         dimension < LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT;
+         ++dimension) {
       bool is_exact = false;
       if (!loom_cmd_launch_graph_exact_u32(
               facts, tuple[dimension], direct_values[dimension], &is_exact)) {
@@ -573,8 +577,9 @@ static iree_status_t loom_cmd_launch_graph_compact_results(
     uint32_t tuple_ordinal = 0;
     for (; tuple_ordinal < host_tuple_count; ++tuple_ordinal) {
       if (loom_cmd_launch_graph_tuples_equal(
-              tuple, &unique_tuples[(iree_host_size_t)tuple_ordinal *
-                                    LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT])) {
+              tuple,
+              &unique_tuples[(iree_host_size_t)tuple_ordinal *
+                             LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT])) {
         break;
       }
     }
@@ -584,11 +589,14 @@ static iree_status_t loom_cmd_launch_graph_compact_results(
                                 "host launch tuple count exceeds u32");
       }
       memcpy(&unique_tuples[(iree_host_size_t)host_tuple_count *
-                            LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT],
-             tuple, LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT * sizeof(*tuple));
+                            LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT],
+             tuple,
+             LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT * sizeof(*tuple));
       for (uint8_t dimension = 0;
-           dimension < LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT; ++dimension) {
-        remove_results[launch_index * LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT +
+           dimension < LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT;
+           ++dimension) {
+        remove_results[launch_index *
+                           LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT +
                        dimension] = false;
       }
       ++host_tuple_count;
@@ -602,7 +610,7 @@ static iree_status_t loom_cmd_launch_graph_compact_results(
     if (!remove_results[i]) kept_values[kept_count++] = return_values.values[i];
   }
   IREE_ASSERT_EQ(kept_count, (iree_host_size_t)host_tuple_count *
-                                 LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT);
+                                 LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT);
 
   loom_builder_t builder;
   loom_builder_initialize(build->module, &build->module->arena, host_block,

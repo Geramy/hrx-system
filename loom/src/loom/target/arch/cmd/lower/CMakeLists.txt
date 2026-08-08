@@ -70,6 +70,7 @@ loom_cc_library(
     loom::rewrite::materialize
     loom::rewrite::remap
     loom::rewrite::rewriter
+    loom::target::arch::cmd::program
     loom::target::types
     loom::transforms::cleanup::canonicalize
     loom::transforms::cleanup::cse

@@ -13,19 +13,12 @@
 #include "iree/base/internal/arena.h"
 #include "loom/ir/ir.h"
 #include "loom/target/arch/cmd/lower/schedule.h"
+#include "loom/target/arch/cmd/program.h"
 #include "loom/target/types.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-enum {
-  // Number of u32 dimensions in one serialized workgroup-count tuple.
-  LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT = 3,
-  // Byte length of one serialized workgroup-count tuple.
-  LOOM_CMD_LAUNCH_COUNT_TUPLE_BYTE_LENGTH =
-      LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT * sizeof(uint32_t),
-};
 
 // Placement of one source launch's workgroup-count tuple.
 typedef enum loom_cmd_launch_count_kind_e {

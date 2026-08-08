@@ -224,7 +224,7 @@ command.program.def @prefill(%token_count: index) launch(%storage: buffer) where
 
   ASSERT_TRUE(loom_func_def_isa(graph.host_function_op));
   EXPECT_EQ(loom_func_def_results(graph.host_function_op).count,
-            LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT);
+            LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT);
   const loom_func_like_t host_function =
       loom_func_like_cast(graph.module, graph.host_function_op);
   uint16_t host_argument_count = 0;
@@ -243,7 +243,7 @@ command.program.def @prefill(%token_count: index) launch(%storage: buffer) where
   ASSERT_NE(host_body->last_op, nullptr);
   ASSERT_TRUE(loom_func_return_isa(host_body->last_op));
   EXPECT_EQ(loom_func_return_operands(host_body->last_op).count,
-            LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT);
+            LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT);
   EXPECT_EQ(CountOpKind(graph.host_function_op, LOOM_OP_INDEX_ADD), 1u);
   iree_byte_span_t host_artifact = iree_byte_span_empty();
   IREE_ASSERT_OK(loom_cmd_launch_program_serialize(

@@ -15,6 +15,16 @@
 extern "C" {
 #endif
 
+enum {
+  // Number of u32 dimensions in one serialized workgroup-count tuple.
+  LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT = 3,
+  // Byte length of one serialized workgroup-count tuple.
+  LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_BYTE_LENGTH =
+      LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT * sizeof(uint32_t),
+  // Required byte alignment of one serialized workgroup-count tuple.
+  LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_ALIGNMENT = 4,
+};
+
 // Materialization role of a serialized buffer root.
 typedef enum loom_cmd_program_buffer_role_e {
   // A concrete buffer is fixed while the live program remains materialized.
@@ -130,6 +140,16 @@ typedef struct loom_cmd_program_transient_requirement_t {
   uint64_t minimum_alignment;
 } loom_cmd_program_transient_requirement_t;
 
+// Host-produced workgroup-count storage required by static indirect dispatches.
+typedef struct loom_cmd_program_launch_count_requirement_t {
+  // Dense rebindable root index, or UINT32_MAX when no table is required.
+  uint32_t binding_index;
+  // Minimum byte length of the supplied workgroup-count table.
+  uint64_t required_byte_length;
+  // Minimum required alignment of the supplied workgroup-count table.
+  uint64_t minimum_alignment;
+} loom_cmd_program_launch_count_requirement_t;
+
 // External resource counts required to materialize one command program.
 typedef struct loom_cmd_program_requirements_t {
   // Number of fixed buffer roots supplied during materialization.
@@ -142,6 +162,8 @@ typedef struct loom_cmd_program_requirements_t {
   uint32_t entry_count;
   // Aggregate issue-time storage required by command-program allocations.
   loom_cmd_program_transient_requirement_t transient;
+  // Host-produced workgroup-count storage for static indirect dispatches.
+  loom_cmd_program_launch_count_requirement_t launch_counts;
 } loom_cmd_program_requirements_t;
 
 // Aggregate storage requirement for one fixed parameter-buffer root.
