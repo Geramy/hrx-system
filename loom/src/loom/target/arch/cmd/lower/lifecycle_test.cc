@@ -65,11 +65,16 @@ using CompilerPtr =
 using PassProgramPtr =
     loomc::testing::HandlePtr<loomc_pass_program_t, loomc_pass_program_release>;
 
-struct CommandArtifacts {
+struct CommandRootArtifacts {
   // Evaluation-ready launch-configuration Loombc.
   std::vector<uint8_t> launch_config;
   // Closed portable command-program bytes.
   std::vector<uint8_t> command_program;
+};
+
+struct CommandArtifacts {
+  // Per-root artifacts in requested export order.
+  std::vector<CommandRootArtifacts> roots;
   // Independently compiled dependency-unit Loombc artifacts.
   std::vector<std::vector<uint8_t>> dependency_modules;
 };
@@ -334,7 +339,7 @@ class CommandLifecycleTest : public ::testing::Test {
     InternalModulePtr module = ParseAndVerifySource(R"(
 target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
 
-kernel.def @increment_first(%element_count: index) {
+kernel.def @increment(%element_count: index) {
   %one = index.constant 1 : index
   kernel.launch.config workgroups(%element_count, %one, %one) workgroup_size(%one, %one, %one) : index
 } launch(%source: buffer, %target: buffer) {
@@ -349,62 +354,56 @@ kernel.def @increment_first(%element_count: index) {
   kernel.return
 }
 
-kernel.def @increment_second(%element_count: index) {
-  %one = index.constant 1 : index
-  kernel.launch.config workgroups(%element_count, %one, %one) workgroup_size(%one, %one, %one) : index
-} launch(%source: buffer, %target: buffer) {
-  %base = index.constant 0 : offset
-  %workgroup = kernel.workgroup.id<x> : index
-  %seven = scalar.constant 7 : i32
-  %source_view = buffer.view %source[%base] : buffer -> view<128xi32, #dense>
-  %target_view = buffer.view %target[%base] : buffer -> view<128xi32, #dense>
-  %value = view.load %source_view[%workgroup] : view<128xi32, #dense> -> i32
-  %incremented = scalar.addi %value, %seven : i32
-  view.store %incremented, %target_view[%workgroup] : i32, view<128xi32, #dense>
-  kernel.return
+command.program.def public target(@command_target) @increment_once(%element_count: index) launch(%source: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+  kernel.launch @increment[%element_count](%source, %target) : [index](buffer, buffer)
+  command.return
 }
 
-command.program.def public target(@command_target) @increment_elements(%element_count: index) launch(%source: buffer, %intermediate: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
-  kernel.launch @increment_first[%element_count](%source, %intermediate) : [index](buffer, buffer)
-  kernel.launch @increment_second[%element_count](%intermediate, %target) : [index](buffer, buffer)
+command.program.def public target(@command_target) @increment_twice(%element_count: index) launch(%source: buffer, %intermediate: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+  kernel.launch @increment[%element_count](%source, %intermediate) : [index](buffer, buffer)
+  kernel.launch @increment[%element_count](%intermediate, %target) : [index](buffer, buffer)
   command.return
 }
 )");
 
-    loom_op_t* source_program =
-        FindSymbol(module.get(), IREE_SV("increment_elements"));
-    const loom_op_t* source_programs[] = {source_program};
+    const loom_op_t* source_programs[] = {
+        FindSymbol(module.get(), IREE_SV("increment_once")),
+        FindSymbol(module.get(), IREE_SV("increment_twice")),
+    };
     loom_cmd_program_plan_t plan = {};
     IREE_CHECK_OK(loom_cmd_program_plan_prepare(
         module.get(), source_programs, IREE_ARRAYSIZE(source_programs),
         block_pool_, iree_allocator_system(), &plan));
     module.reset();
-    IREE_ASSERT_EQ(plan.root_count, 1u);
-    IREE_ASSERT_EQ(plan.dependency_count, 2u);
-    const loom_cmd_program_root_t& root = plan.roots[0];
-    IREE_ASSERT_EQ(root.launch_tuple_count, 1u);
+    IREE_ASSERT_EQ(plan.root_count, 2u);
+    IREE_ASSERT_EQ(plan.dependency_count, 1u);
     VerifyLowModule(plan.root_module);
 
-    iree_byte_span_t launch_config_data = iree_byte_span_empty();
-    IREE_CHECK_OK(loom_cmd_launch_program_serialize(
-        root.launch_module, block_pool_, iree_allocator_system(),
-        &launch_config_data));
-
-    iree_byte_span_t command_program_data = iree_byte_span_empty();
-    IREE_CHECK_OK(loom_cmd_program_serialize_low(
-        plan.root_module, root.function_op, &command_program_data,
-        iree_allocator_system()));
-
     CommandArtifacts artifacts;
+    artifacts.roots.resize(plan.root_count);
+    for (iree_host_size_t i = 0; i < plan.root_count; ++i) {
+      const loom_cmd_program_root_t& root = plan.roots[i];
+      IREE_ASSERT_EQ(root.launch_tuple_count, 1u);
+      iree_byte_span_t launch_config_data = iree_byte_span_empty();
+      IREE_CHECK_OK(loom_cmd_launch_program_serialize(
+          root.launch_module, block_pool_, iree_allocator_system(),
+          &launch_config_data));
+      iree_byte_span_t command_program_data = iree_byte_span_empty();
+      IREE_CHECK_OK(loom_cmd_program_serialize_low(
+          plan.root_module, root.function_op, &command_program_data,
+          iree_allocator_system()));
+
+      CommandRootArtifacts& root_artifacts = artifacts.roots[i];
+      root_artifacts.launch_config.assign(
+          launch_config_data.data,
+          launch_config_data.data + launch_config_data.data_length);
+      root_artifacts.command_program.assign(
+          command_program_data.data,
+          command_program_data.data + command_program_data.data_length);
+      iree_allocator_free(iree_allocator_system(), launch_config_data.data);
+      iree_allocator_free(iree_allocator_system(), command_program_data.data);
+    }
     CompileDependencyModules(&plan, &artifacts);
-    artifacts.launch_config.assign(
-        launch_config_data.data,
-        launch_config_data.data + launch_config_data.data_length);
-    artifacts.command_program.assign(
-        command_program_data.data,
-        command_program_data.data + command_program_data.data_length);
-    iree_allocator_free(iree_allocator_system(), launch_config_data.data);
-    iree_allocator_free(iree_allocator_system(), command_program_data.data);
     loom_cmd_program_plan_deinitialize(&plan);
     return artifacts;
   }
@@ -421,64 +420,115 @@ command.program.def public target(@command_target) @increment_elements(%element_
   loom_target_low_descriptor_registry_t registry_ = {};
 };
 
-TEST_F(CommandLifecycleTest, CompilesDependenciesAndReplaysAssembledRoot) {
+TEST_F(CommandLifecycleTest,
+       CompilesSharedDependenciesAndReplaysAssembledRoots) {
   CommandArtifacts artifacts = CompileArtifacts();
-  ASSERT_FALSE(artifacts.launch_config.empty());
-  ASSERT_FALSE(artifacts.command_program.empty());
-  ASSERT_EQ(artifacts.dependency_modules.size(), 2u);
+  ASSERT_EQ(artifacts.roots.size(), 2u);
+  ASSERT_FALSE(artifacts.roots[0].launch_config.empty());
+  ASSERT_FALSE(artifacts.roots[0].command_program.empty());
+  ASSERT_FALSE(artifacts.roots[1].launch_config.empty());
+  ASSERT_FALSE(artifacts.roots[1].command_program.empty());
+  ASSERT_EQ(artifacts.dependency_modules.size(), 1u);
   EXPECT_FALSE(artifacts.dependency_modules[0].empty());
-  EXPECT_FALSE(artifacts.dependency_modules[1].empty());
 
-  const loomc_artifact_t launch_artifact = {
+  const loomc_artifact_t once_launch_artifact = {
       /*.kind=*/LOOMC_ARTIFACT_KIND_LAUNCH_CONFIG,
       /*.format=*/loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_LOOM_BYTECODE),
-      /*.identifier=*/loomc_make_cstring_view("increment_elements.loombc"),
+      /*.identifier=*/loomc_make_cstring_view("increment_once.loombc"),
       /*.contents=*/
-      loomc_make_byte_span(artifacts.launch_config.data(),
-                           artifacts.launch_config.size()),
+      loomc_make_byte_span(artifacts.roots[0].launch_config.data(),
+                           artifacts.roots[0].launch_config.size()),
   };
-  loomc_launch_config_module_t* raw_launch_module = nullptr;
+  loomc_launch_config_module_t* raw_once_launch_module = nullptr;
   LOOMC_ASSERT_OK(loomc_launch_config_module_load(
-      &launch_artifact, /*options=*/nullptr, loomc_allocator_system(),
-      &raw_launch_module));
-  LaunchModulePtr launch_module(raw_launch_module);
-  artifacts.launch_config.clear();
-  loomc_launch_config_function_t launch_function =
+      &once_launch_artifact, /*options=*/nullptr, loomc_allocator_system(),
+      &raw_once_launch_module));
+  LaunchModulePtr once_launch_module(raw_once_launch_module);
+  artifacts.roots[0].launch_config.clear();
+  loomc_launch_config_function_t once_launch_function =
       loomc_launch_config_function_invalid();
   LOOMC_ASSERT_OK(loomc_launch_config_module_lookup_function_by_name(
-      launch_module.get(), loomc_make_cstring_view("increment_elements"),
-      &launch_function));
-  loomc_launch_config_function_info_t launch_info = {
+      once_launch_module.get(), loomc_make_cstring_view("increment_once"),
+      &once_launch_function));
+  loomc_launch_config_function_info_t once_launch_info = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_LAUNCH_CONFIG_FUNCTION_INFO,
-      /*.structure_size=*/sizeof(launch_info),
+      /*.structure_size=*/sizeof(once_launch_info),
   };
   LOOMC_ASSERT_OK(loomc_launch_config_module_function_info(
-      launch_module.get(), launch_function, &launch_info));
-  ASSERT_EQ(launch_info.workload_argument_count, 1u);
-  ASSERT_EQ(launch_info.result_count, 1u);
-  ASSERT_EQ(launch_info.output_byte_length,
+      once_launch_module.get(), once_launch_function, &once_launch_info));
+  ASSERT_EQ(once_launch_info.workload_argument_count, 1u);
+  ASSERT_EQ(once_launch_info.result_count, 1u);
+  ASSERT_EQ(once_launch_info.output_byte_length,
             LOOM_CMD_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
-  loomc_launch_config_context_t* raw_launch_context = nullptr;
+  loomc_launch_config_context_t* raw_once_launch_context = nullptr;
   LOOMC_ASSERT_OK(loomc_launch_config_context_create(
-      launch_module.get(), /*options=*/nullptr, loomc_allocator_system(),
-      &raw_launch_context));
-  LaunchContextPtr launch_context(raw_launch_context);
+      once_launch_module.get(), /*options=*/nullptr, loomc_allocator_system(),
+      &raw_once_launch_context));
+  LaunchContextPtr once_launch_context(raw_once_launch_context);
 
-  loom_cmd_program_t command_program = {};
+  const loomc_artifact_t twice_launch_artifact = {
+      /*.kind=*/LOOMC_ARTIFACT_KIND_LAUNCH_CONFIG,
+      /*.format=*/loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_LOOM_BYTECODE),
+      /*.identifier=*/loomc_make_cstring_view("increment_twice.loombc"),
+      /*.contents=*/
+      loomc_make_byte_span(artifacts.roots[1].launch_config.data(),
+                           artifacts.roots[1].launch_config.size()),
+  };
+  loomc_launch_config_module_t* raw_twice_launch_module = nullptr;
+  LOOMC_ASSERT_OK(loomc_launch_config_module_load(
+      &twice_launch_artifact, /*options=*/nullptr, loomc_allocator_system(),
+      &raw_twice_launch_module));
+  LaunchModulePtr twice_launch_module(raw_twice_launch_module);
+  artifacts.roots[1].launch_config.clear();
+  loomc_launch_config_function_t twice_launch_function =
+      loomc_launch_config_function_invalid();
+  LOOMC_ASSERT_OK(loomc_launch_config_module_lookup_function_by_name(
+      twice_launch_module.get(), loomc_make_cstring_view("increment_twice"),
+      &twice_launch_function));
+  loomc_launch_config_function_info_t twice_launch_info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_LAUNCH_CONFIG_FUNCTION_INFO,
+      /*.structure_size=*/sizeof(twice_launch_info),
+  };
+  LOOMC_ASSERT_OK(loomc_launch_config_module_function_info(
+      twice_launch_module.get(), twice_launch_function, &twice_launch_info));
+  ASSERT_EQ(twice_launch_info.workload_argument_count, 1u);
+  ASSERT_EQ(twice_launch_info.result_count, 1u);
+  ASSERT_EQ(twice_launch_info.output_byte_length,
+            LOOM_CMD_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
+  loomc_launch_config_context_t* raw_twice_launch_context = nullptr;
+  LOOMC_ASSERT_OK(loomc_launch_config_context_create(
+      twice_launch_module.get(), /*options=*/nullptr, loomc_allocator_system(),
+      &raw_twice_launch_context));
+  LaunchContextPtr twice_launch_context(raw_twice_launch_context);
+
+  loom_cmd_program_t once_program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
-      iree_make_const_byte_span(artifacts.command_program.data(),
-                                artifacts.command_program.size()),
-      &command_program));
-  ASSERT_EQ(command_program.requirements.fixed_buffer_count, 0u);
-  ASSERT_EQ(command_program.requirements.rebindable_binding_count, 4u);
-  ASSERT_EQ(command_program.requirements.executable_count, 2u);
-  ASSERT_EQ(command_program.requirements.entry_count, 2u);
-  ASSERT_EQ(command_program.commands.count, 3u);
-  EXPECT_EQ(loom_cmd_program_command_at(&command_program, 0).kind,
+      iree_make_const_byte_span(artifacts.roots[0].command_program.data(),
+                                artifacts.roots[0].command_program.size()),
+      &once_program));
+  ASSERT_EQ(once_program.requirements.fixed_buffer_count, 0u);
+  ASSERT_EQ(once_program.requirements.rebindable_binding_count, 3u);
+  ASSERT_EQ(once_program.requirements.executable_count, 1u);
+  ASSERT_EQ(once_program.requirements.entry_count, 1u);
+  ASSERT_EQ(once_program.commands.count, 1u);
+  EXPECT_EQ(loom_cmd_program_command_at(&once_program, 0).kind,
             LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
-  EXPECT_EQ(loom_cmd_program_command_at(&command_program, 1).kind,
+
+  loom_cmd_program_t twice_program = {};
+  IREE_ASSERT_OK(loom_cmd_program_parse(
+      iree_make_const_byte_span(artifacts.roots[1].command_program.data(),
+                                artifacts.roots[1].command_program.size()),
+      &twice_program));
+  ASSERT_EQ(twice_program.requirements.fixed_buffer_count, 0u);
+  ASSERT_EQ(twice_program.requirements.rebindable_binding_count, 4u);
+  ASSERT_EQ(twice_program.requirements.executable_count, 1u);
+  ASSERT_EQ(twice_program.requirements.entry_count, 1u);
+  ASSERT_EQ(twice_program.commands.count, 3u);
+  EXPECT_EQ(loom_cmd_program_command_at(&twice_program, 0).kind,
+            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
+  EXPECT_EQ(loom_cmd_program_command_at(&twice_program, 1).kind,
             LOOM_CMD_PROGRAM_COMMAND_KIND_EXECUTION_BARRIER);
-  EXPECT_EQ(loom_cmd_program_command_at(&command_program, 2).kind,
+  EXPECT_EQ(loom_cmd_program_command_at(&twice_program, 2).kind,
             LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
 
   iree_hal_device_group_t* device_group = CreateSyncDeviceGroup();
@@ -494,25 +544,30 @@ TEST_F(CommandLifecycleTest, CompilesDependenciesAndReplaysAssembledRoot) {
       function_info.parameter_count);
   IREE_ASSERT_OK(iree_hal_executable_function_parameters(
       executable, function, parameters.size(), parameters.data()));
-  const std::array<iree_hal_executable_t*, 2> executables = {
-      executable,
-      executable,
-  };
-  const std::array<loom_cmd_iree_hal_entry_t, 2> entries = {{
+  const std::array<iree_hal_executable_t*, 1> executables = {executable};
+  const std::array<loom_cmd_iree_hal_entry_t, 1> entries = {{
       {
           /*.executable_index=*/0,
           /*.function=*/function,
           /*.info=*/function_info,
           /*.parameters=*/parameters.data(),
       },
-      {
-          /*.executable_index=*/1,
-          /*.function=*/function,
-          /*.info=*/function_info,
-          /*.parameters=*/parameters.data(),
-      },
   }};
-  const loom_cmd_iree_hal_inputs_t inputs = {
+  const loom_cmd_iree_hal_inputs_t once_inputs = {
+      /*.binding_count=*/3,
+      /*.fixed_buffer_count=*/0,
+      /*.fixed_buffers=*/nullptr,
+      /*.executable_count=*/executables.size(),
+      /*.executables=*/executables.data(),
+      /*.entry_count=*/entries.size(),
+      /*.entries=*/entries.data(),
+  };
+  iree_hal_command_buffer_t* once_command_buffer = nullptr;
+  IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program(
+      &once_program, &once_inputs, device, IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT,
+      IREE_HAL_QUEUE_AFFINITY_ANY, &once_command_buffer,
+      iree_allocator_system()));
+  const loom_cmd_iree_hal_inputs_t twice_inputs = {
       /*.binding_count=*/4,
       /*.fixed_buffer_count=*/0,
       /*.fixed_buffers=*/nullptr,
@@ -521,11 +576,13 @@ TEST_F(CommandLifecycleTest, CompilesDependenciesAndReplaysAssembledRoot) {
       /*.entry_count=*/entries.size(),
       /*.entries=*/entries.data(),
   };
-  iree_hal_command_buffer_t* command_buffer = nullptr;
+  iree_hal_command_buffer_t* twice_command_buffer = nullptr;
   IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program(
-      &command_program, &inputs, device, IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT,
-      IREE_HAL_QUEUE_AFFINITY_ANY, &command_buffer, iree_allocator_system()));
-  artifacts.command_program.clear();
+      &twice_program, &twice_inputs, device,
+      IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT, IREE_HAL_QUEUE_AFFINITY_ANY,
+      &twice_command_buffer, iree_allocator_system()));
+  artifacts.roots[0].command_program.clear();
+  artifacts.roots[1].command_program.clear();
   artifacts.dependency_modules.clear();
   iree_hal_executable_release(executable);
 
@@ -538,7 +595,9 @@ TEST_F(CommandLifecycleTest, CompilesDependenciesAndReplaysAssembledRoot) {
       CreateTransferBuffer(device, kBufferByteLength);
   iree_hal_buffer_t* intermediate_buffer =
       CreateTransferBuffer(device, kBufferByteLength);
-  iree_hal_buffer_t* target_buffer =
+  iree_hal_buffer_t* once_target_buffer =
+      CreateTransferBuffer(device, kBufferByteLength);
+  iree_hal_buffer_t* twice_target_buffer =
       CreateTransferBuffer(device, kBufferByteLength);
   iree_hal_buffer_t* launch_count_buffer =
       CreateLaunchCountBuffer(device, kLaunchCountByteLength);
@@ -563,7 +622,10 @@ TEST_F(CommandLifecycleTest, CompilesDependenciesAndReplaysAssembledRoot) {
         device, zero_values.data(), intermediate_buffer, 0, kBufferByteLength,
         IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT, iree_infinite_timeout()));
     IREE_ASSERT_OK(iree_hal_device_transfer_h2d(
-        device, zero_values.data(), target_buffer, 0, kBufferByteLength,
+        device, zero_values.data(), once_target_buffer, 0, kBufferByteLength,
+        IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT, iree_infinite_timeout()));
+    IREE_ASSERT_OK(iree_hal_device_transfer_h2d(
+        device, zero_values.data(), twice_target_buffer, 0, kBufferByteLength,
         IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT, iree_infinite_timeout()));
 
     const loomc_launch_config_arguments_t arguments = {
@@ -573,47 +635,78 @@ TEST_F(CommandLifecycleTest, CompilesDependenciesAndReplaysAssembledRoot) {
         /*.workload_arguments=*/&workload,
         /*.workload_argument_count=*/1,
     };
-    loomc_launch_config_outputs_t outputs = {
+    loomc_launch_config_outputs_t once_outputs = {
         /*.type=*/LOOMC_STRUCTURE_TYPE_LAUNCH_CONFIG_OUTPUTS,
-        /*.structure_size=*/sizeof(outputs),
+        /*.structure_size=*/sizeof(once_outputs),
         /*.next=*/nullptr,
         /*.storage=*/launch_count_mapping.contents.data,
         /*.storage_length=*/launch_count_mapping.contents.data_length,
     };
     LOOMC_ASSERT_OK(loomc_launch_config_context_evaluate(
-        launch_context.get(), launch_function, &arguments, &outputs));
+        once_launch_context.get(), once_launch_function, &arguments,
+        &once_outputs));
     IREE_ASSERT_OK(iree_hal_buffer_mapping_flush_range(
         &launch_count_mapping, /*byte_offset=*/0, kLaunchCountByteLength));
 
-    const iree_hal_buffer_binding_t bindings[] = {
+    const iree_hal_buffer_binding_t once_bindings[] = {
         /*source=*/{source_buffer, 0, IREE_HAL_WHOLE_BUFFER},
-        /*intermediate=*/{intermediate_buffer, 0, IREE_HAL_WHOLE_BUFFER},
-        /*target=*/{target_buffer, 0, IREE_HAL_WHOLE_BUFFER},
+        /*target=*/{once_target_buffer, 0, IREE_HAL_WHOLE_BUFFER},
         /*launch_count=*/{launch_count_buffer, 0, kLaunchCountByteLength},
     };
-    IREE_ASSERT_OK(SubmitAndWait(
-        device, command_buffer,
-        {/*.count=*/IREE_ARRAYSIZE(bindings), /*.bindings=*/bindings}));
+    IREE_ASSERT_OK(SubmitAndWait(device, once_command_buffer,
+                                 {/*.count=*/IREE_ARRAYSIZE(once_bindings),
+                                  /*.bindings=*/once_bindings}));
 
-    std::array<uint32_t, kElementCount> actual = {};
+    loomc_launch_config_outputs_t twice_outputs = {
+        /*.type=*/LOOMC_STRUCTURE_TYPE_LAUNCH_CONFIG_OUTPUTS,
+        /*.structure_size=*/sizeof(twice_outputs),
+        /*.next=*/nullptr,
+        /*.storage=*/launch_count_mapping.contents.data,
+        /*.storage_length=*/launch_count_mapping.contents.data_length,
+    };
+    LOOMC_ASSERT_OK(loomc_launch_config_context_evaluate(
+        twice_launch_context.get(), twice_launch_function, &arguments,
+        &twice_outputs));
+    IREE_ASSERT_OK(iree_hal_buffer_mapping_flush_range(
+        &launch_count_mapping, /*byte_offset=*/0, kLaunchCountByteLength));
+
+    const iree_hal_buffer_binding_t twice_bindings[] = {
+        /*source=*/{source_buffer, 0, IREE_HAL_WHOLE_BUFFER},
+        /*intermediate=*/{intermediate_buffer, 0, IREE_HAL_WHOLE_BUFFER},
+        /*target=*/{twice_target_buffer, 0, IREE_HAL_WHOLE_BUFFER},
+        /*launch_count=*/{launch_count_buffer, 0, kLaunchCountByteLength},
+    };
+    IREE_ASSERT_OK(SubmitAndWait(device, twice_command_buffer,
+                                 {/*.count=*/IREE_ARRAYSIZE(twice_bindings),
+                                  /*.bindings=*/twice_bindings}));
+
+    std::array<uint32_t, kElementCount> once_actual = {};
     IREE_ASSERT_OK(iree_hal_device_transfer_d2h(
-        device, target_buffer, 0, actual.data(), kBufferByteLength,
+        device, once_target_buffer, 0, once_actual.data(), kBufferByteLength,
         IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT, iree_infinite_timeout()));
-    for (iree_host_size_t i = 0; i < actual.size(); ++i) {
-      const uint32_t expected = i < static_cast<iree_host_size_t>(workload)
-                                    ? source_values[i] + 14
-                                    : 0;
-      EXPECT_EQ(actual[i], expected)
+    std::array<uint32_t, kElementCount> twice_actual = {};
+    IREE_ASSERT_OK(iree_hal_device_transfer_d2h(
+        device, twice_target_buffer, 0, twice_actual.data(), kBufferByteLength,
+        IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT, iree_infinite_timeout()));
+    for (iree_host_size_t i = 0; i < once_actual.size(); ++i) {
+      const bool is_active = i < static_cast<iree_host_size_t>(workload);
+      const uint32_t once_expected = is_active ? source_values[i] + 7 : 0;
+      EXPECT_EQ(once_actual[i], once_expected)
+          << "element " << i << " at workload " << workload;
+      const uint32_t twice_expected = is_active ? source_values[i] + 14 : 0;
+      EXPECT_EQ(twice_actual[i], twice_expected)
           << "element " << i << " at workload " << workload;
     }
   }
 
   IREE_ASSERT_OK(iree_hal_buffer_unmap_range(&launch_count_mapping));
   iree_hal_buffer_release(launch_count_buffer);
-  iree_hal_buffer_release(target_buffer);
+  iree_hal_buffer_release(twice_target_buffer);
+  iree_hal_buffer_release(once_target_buffer);
   iree_hal_buffer_release(intermediate_buffer);
   iree_hal_buffer_release(source_buffer);
-  iree_hal_command_buffer_release(command_buffer);
+  iree_hal_command_buffer_release(twice_command_buffer);
+  iree_hal_command_buffer_release(once_command_buffer);
   iree_hal_device_group_release(device_group);
 }
 
