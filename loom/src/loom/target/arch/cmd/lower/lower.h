@@ -41,9 +41,11 @@ typedef struct loom_cmd_lower_binding_t {
 typedef struct loom_cmd_lower_buffer_range_t {
   // Source SSA value mapped to the resulting portable buffer reference.
   loom_value_id_t source_value;
-  // Source command-program launch-binding ordinal owning the storage root.
-  uint16_t source_binding_ordinal;
-  // Byte offset relative to the source launch-binding range.
+  // Materialization role of the resolved storage root.
+  loom_cmd_lower_buffer_role_t role;
+  // Dense index in the resource table selected by |role|.
+  uint32_t resource_index;
+  // Byte offset relative to the resolved storage root.
   uint64_t byte_offset;
   // Exact byte length of the derived range.
   uint64_t byte_length;

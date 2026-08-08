@@ -348,19 +348,15 @@ static iree_status_t loom_cmd_lower_map_source_buffer_ranges(
     IREE_ASSERT_LT(range->source_value, state->resources.source_value_count);
     IREE_ASSERT_EQ(state->resources.source_value_map[range->source_value],
                    LOOM_VALUE_ID_INVALID);
-    IREE_ASSERT_LT(range->source_binding_ordinal, state->plan->binding_count);
-    const loom_cmd_lower_binding_t* binding =
-        &state->plan->bindings[range->source_binding_ordinal];
-    IREE_ASSERT_LE(binding->byte_offset, UINT64_MAX - range->byte_offset);
-    const uint64_t byte_offset = binding->byte_offset + range->byte_offset;
-    if (binding->byte_length != UINT64_MAX) {
-      IREE_ASSERT_LE(range->byte_offset, binding->byte_length);
-      IREE_ASSERT_LE(range->byte_length,
-                     binding->byte_length - range->byte_offset);
-    }
+    const loom_cmd_lower_binding_t binding = {
+        .role = range->role,
+        .resource_index = range->resource_index,
+        .byte_offset = range->byte_offset,
+        .byte_length = range->byte_length,
+    };
     loom_value_id_t buffer_ref = LOOM_VALUE_ID_INVALID;
     IREE_RETURN_IF_ERROR(loom_cmd_lower_build_buffer_ref(
-        state, binding, byte_offset, range->byte_length,
+        state, &binding, range->byte_offset, range->byte_length,
         state->source_program.op->location, &buffer_ref));
     state->resources.source_value_map[range->source_value] = buffer_ref;
     IREE_RETURN_IF_ERROR(loom_module_copy_value_name(
