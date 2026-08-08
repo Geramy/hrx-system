@@ -377,7 +377,8 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
   }};
   const loom_cmd_lower_buffer_range_t buffer_range = {
       /*.source_value=*/parameter_view,
-      /*.source_binding_ordinal=*/0,
+      /*.role=*/LOOM_CMD_LOWER_BUFFER_ROLE_FIXED,
+      /*.resource_index=*/0,
       /*.byte_offset=*/256,
       /*.byte_length=*/512,
   };
