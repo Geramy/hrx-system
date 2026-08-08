@@ -1,0 +1,15 @@
+// RUN: verify
+
+func.def @pack_requires_one_alignment_per_range(%first: offset, %second: offset) {
+  // ERROR@+1: STRUCTURE/014 "minimum_alignments" "1" "one entry per byte length"
+  %total, %first_offset, %second_offset = buffer.pack %first, %second {minimum_alignments = [16]} : offset, offset, offset
+  func.return
+}
+
+// ====
+
+func.def @pack_requires_power_of_two_alignments(%byte_length: offset) {
+  // ERROR@+1: STRUCTURE/014 "minimum_alignments[0]" "24" "positive power-of-two byte alignment"
+  %total, %byte_offset = buffer.pack %byte_length {minimum_alignments = [24]} : offset, offset
+  func.return
+}
