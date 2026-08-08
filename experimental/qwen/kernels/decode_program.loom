@@ -59,7 +59,7 @@ kernel.decl @ggml_linear_q6k_q8_1_x4_partial_argmax(%token_count: index, %input_
 
 kernel.decl @qwen_greedy_argmax_partials(%partial_count: index, %context_increment: index) launch(%partial_count: index, %context_increment: index, %partial_logits: buffer, %partial_ids: buffer, %next_token_id: buffer, %next_control: buffer, %observed_token_id: buffer)
 
-command.program.def public target(@qwen_command_target) @qwen3_30b_decode_576() launch(%parameters: buffer, %key_cache: buffer, %value_cache: buffer, %request_state: buffer, %output_staging: buffer) {
+command.program.def public target(@qwen_command_target) @qwen3_30b_decode_576() launch(%parameters: buffer, %auxiliary_parameters: buffer, %key_cache: buffer, %value_cache: buffer, %request_state: buffer, %output_staging: buffer) {
   %zero = index.constant 0 : offset
   %token_count = index.constant 1 : index
   %context_count = index.constant 576 : index
@@ -68,27 +68,29 @@ command.program.def public target(@qwen_command_target) @qwen3_30b_decode_576() 
   %expert_count = index.constant 128 : index
   %intermediate_size = index.constant 768 : index
   %hidden_size = index.constant 2048 : index
-  %layer_cache_stride = index.constant 589824 : offset
 
   // The GGUF stores these three roots before the transformer layers.
   %output_weight = command.parameter %parameters, "output.weight"[] : view<255252480xi8, #dense>
   %output_norm = command.parameter %parameters, "output_norm.weight"[] : view<8192xi8, #dense>
   %token_embedding = command.parameter %parameters, "token_embd.weight"[] : view<175030272xi8, #dense>
 
-  // RoPE frequencies are runtime-derived fixed model data appended after the
-  // packed GGUF payload rather than a provider-owned parameter.
-  %rope_offset = index.constant 18550716416 : offset
-  %rope_inverse_frequencies = buffer.view %parameters[%rope_offset] : buffer -> view<64xf32, #dense>
+  // Runtime-derived immutable model data occupies an independent fixed root.
+  // The host may bind this as a subrange of its existing model allocation.
+  %rope_inverse_frequencies = command.parameter %auxiliary_parameters, "rope.inverse_frequencies"[] : view<64xf32, #dense>
 
   // Request-local persistent state has token capacity one and context
-  // capacity 576. K/V planes remain independent issue-time roots.
-  %token_ids_offset = index.constant 8192 : offset
-  %control_offset = index.constant 8196 : offset
-  %positions_offset = index.constant 8200 : offset
-  %key_indices_offset = index.constant 8208 : offset
-  %value_indices_offset = index.constant 8216 : offset
-  %mask_offset = index.constant 8224 : offset
-  %hidden_state = buffer.view %request_state[%zero] : buffer -> view<2048xf32, #dense>
+  // capacity 576. The source describes field extents and alignment while
+  // buffer.pack owns their physical placement. K/V planes remain independent
+  // issue-time roots.
+  %hidden_bytes = index.constant 8192 : offset
+  %token_ids_bytes = index.constant 4 : offset
+  %control_bytes = index.constant 4 : offset
+  %positions_bytes = index.constant 4 : offset
+  %key_indices_bytes = index.constant 8 : offset
+  %value_indices_bytes = index.constant 8 : offset
+  %mask_bytes = index.constant 1152 : offset
+  %request_bytes, %hidden_offset, %token_ids_offset, %control_offset, %positions_offset, %key_indices_offset, %value_indices_offset, %mask_offset = buffer.pack %hidden_bytes, %token_ids_bytes, %control_bytes, %positions_bytes, %key_indices_bytes, %value_indices_bytes, %mask_bytes {minimum_alignments = [256, 4, 4, 4, 8, 8, 2]} : offset, offset, offset, offset, offset, offset, offset, offset
+  %hidden_state = buffer.view %request_state[%hidden_offset] : buffer -> view<2048xf32, #dense>
   %token_ids = buffer.view %request_state[%token_ids_offset] : buffer -> view<1xi32, #dense>
   %control = buffer.view %request_state[%control_offset] : buffer -> view<1xi32, #dense>
   %positions = buffer.view %request_state[%positions_offset] : buffer -> view<1xi32, #dense>
@@ -96,6 +98,11 @@ command.program.def public target(@qwen_command_target) @qwen3_30b_decode_576() 
   %value_cache_indices = buffer.view %request_state[%value_indices_offset] : buffer -> view<1xi64, #dense>
   %attention_mask = buffer.view %request_state[%mask_offset] : buffer -> view<576xi16, #dense>
   %selected_token = buffer.view %output_staging[%zero] : buffer -> view<1xi32, #dense>
+
+  // A one-record pack derives the aligned per-layer cache stride from the
+  // payload extent instead of repeating placement arithmetic.
+  %layer_cache_bytes = index.constant 589824 : offset
+  %layer_cache_stride, %layer_cache_base = buffer.pack %layer_cache_bytes {minimum_alignments = [256]} : offset, offset
 
   // Reused phased storage. Completion words are reset after every successful
   // fused publication and are initialized before program issue.
@@ -173,7 +180,8 @@ command.program.def public target(@qwen_command_target) @qwen3_30b_decode_576() 
     %swiglu = buffer.alloca %swiglu_bytes {base_alignment = 256, memory_space = global} : buffer
     %routed_projection = buffer.alloca %routed_projection_bytes {base_alignment = 256, memory_space = global} : buffer
 
-    %layer_cache_offset = index.scale %layer, %layer_cache_stride : index, offset -> offset
+    %layer_cache_relative_offset = index.scale %layer, %layer_cache_stride : index, offset -> offset
+    %layer_cache_offset = index.add %layer_cache_base, %layer_cache_relative_offset : offset
     %layer_key_cache = buffer.view %key_cache[%layer_cache_offset] : buffer -> view<589824xi8, #dense>
     %layer_value_cache = buffer.view %value_cache[%layer_cache_offset] : buffer -> view<589824xi8, #dense>
 
