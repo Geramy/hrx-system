@@ -18,7 +18,7 @@
 extern "C" {
 #endif
 
-// One independently owned kernel product derived from a source launch site.
+// One independently owned dependency unit derived from a source launch site.
 //
 // The unit owns a selectively linked module containing the launched kernel and
 // its dependency closure. Its executable ABI may be narrower than the source
