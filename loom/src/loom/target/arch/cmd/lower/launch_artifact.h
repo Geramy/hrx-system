@@ -11,19 +11,19 @@
 
 #include "iree/base/api.h"
 #include "iree/base/internal/arena.h"
-#include "loom/target/arch/cmd/lower/launch_graph.h"
+#include "loom/ir/ir.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-// Serializes the aggregate host module in |graph| as evaluation-ready Loombc.
+// Serializes an aggregate host launch program as evaluation-ready Loombc.
 //
 // The returned bytes contain only the public host function and its scalar
 // dependency closure. Source locations and command-program compiler state are
 // omitted. The caller owns |out_data| and frees it with |host_allocator|.
-iree_status_t loom_cmd_launch_graph_serialize(
-    const loom_cmd_launch_graph_t* graph, iree_arena_block_pool_t* block_pool,
+iree_status_t loom_cmd_launch_program_serialize(
+    const loom_module_t* module, iree_arena_block_pool_t* block_pool,
     iree_allocator_t host_allocator, iree_byte_span_t* out_data);
 
 #ifdef __cplusplus

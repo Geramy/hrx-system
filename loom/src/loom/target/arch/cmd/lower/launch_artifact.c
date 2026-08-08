@@ -9,11 +9,10 @@
 #include "iree/io/vec_stream.h"
 #include "loom/format/bytecode/writer.h"
 
-iree_status_t loom_cmd_launch_graph_serialize(
-    const loom_cmd_launch_graph_t* graph, iree_arena_block_pool_t* block_pool,
+iree_status_t loom_cmd_launch_program_serialize(
+    const loom_module_t* module, iree_arena_block_pool_t* block_pool,
     iree_allocator_t host_allocator, iree_byte_span_t* out_data) {
-  IREE_ASSERT_ARGUMENT(graph);
-  IREE_ASSERT_ARGUMENT(graph->module);
+  IREE_ASSERT_ARGUMENT(module);
   IREE_ASSERT_ARGUMENT(block_pool);
   IREE_ASSERT_ARGUMENT(out_data);
   *out_data = iree_byte_span_empty();
@@ -28,8 +27,7 @@ iree_status_t loom_cmd_launch_graph_serialize(
         .producer = IREE_SV("loom-command-program"),
         .location_mode = LOOM_BYTECODE_LOCATION_MODE_NO_LOCATIONS,
     };
-    status =
-        loom_bytecode_write_module(graph->module, stream, &options, block_pool);
+    status = loom_bytecode_write_module(module, stream, &options, block_pool);
   }
 
   iree_host_size_t data_length = 0;

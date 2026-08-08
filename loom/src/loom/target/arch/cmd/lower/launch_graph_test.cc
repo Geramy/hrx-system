@@ -246,8 +246,8 @@ command.program.def @prefill(%token_count: index) launch(%storage: buffer) where
             LOOM_CMD_LAUNCH_COUNT_DIMENSION_COUNT);
   EXPECT_EQ(CountOpKind(graph.host_function_op, LOOM_OP_INDEX_ADD), 1u);
   iree_byte_span_t host_artifact = iree_byte_span_empty();
-  IREE_ASSERT_OK(loom_cmd_launch_graph_serialize(
-      &graph, &block_pool_, iree_allocator_system(), &host_artifact));
+  IREE_ASSERT_OK(loom_cmd_launch_program_serialize(
+      graph.module, &block_pool_, iree_allocator_system(), &host_artifact));
   EXPECT_NE(host_artifact.data_length, 0u);
   const std::vector<uint8_t> host_bytecode(
       host_artifact.data, host_artifact.data + host_artifact.data_length);

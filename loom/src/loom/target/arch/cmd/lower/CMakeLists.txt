@@ -61,11 +61,11 @@ loom_cc_library(
   SRCS
     "launch_artifact.c"
   DEPS
-    ::launch_graph
     iree::base
     iree::base::internal::arena
     iree::io::stream
     loom::format::bytecode::writer
+    loom::ir
   PUBLIC
 )
 
@@ -109,6 +109,29 @@ loom_cc_library(
     loom::ops::type_registry
     loom::pass::value_facts
     loom::transforms::cleanup::canonicalize
+    loom::util::fact_table
+  PUBLIC
+)
+
+loom_cc_library(
+  NAME
+    program_plan
+  HDRS
+    "program_plan.h"
+  SRCS
+    "program_plan.c"
+  DEPS
+    ::kernel_unit
+    ::launch_graph
+    ::lower
+    ::schedule
+    iree::base
+    iree::base::internal::arena
+    loom::ir
+    loom::link::linker
+    loom::ops::command
+    loom::ops::op_defs
+    loom::ops::type_registry
     loom::util::fact_table
   PUBLIC
 )
@@ -204,6 +227,33 @@ loom_cc_test(
     loom::testing::diagnostic_matchers
     loom::testing::module_ptr
     loom::util::fact_table
+    loom::verify
+)
+
+loom_cc_test(
+  NAME
+    program_plan_test
+  SRCS
+    "program_plan_test.cc"
+  DEPS
+    ::launch_artifact
+    ::program_plan
+    ::serialize
+    iree::base
+    iree::base::internal::arena
+    iree::testing::gtest
+    iree::testing::gtest_main
+    loom::codegen::low::verify
+    loom::format::text::parser
+    loom::ir
+    loom::ops::command
+    loom::ops::low
+    loom::ops::op_defs
+    loom::ops::op_registry
+    loom::target::arch::cmd::descriptors::low_registry
+    loom::target::arch::cmd::program
+    loom::testing::diagnostic_matchers
+    loom::testing::module_ptr
     loom::verify
 )
 
