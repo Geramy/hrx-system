@@ -22,16 +22,13 @@ extern "C" {
 // One prepared command root within a program plan.
 //
 // The lowered command function addresses the plan-wide dependency table. Its
-// independently owned launch module evaluates only this root's dynamic launch
-// counts. Both remain valid after the source module is released.
+// launch function in the plan's shared host module evaluates this root's
+// dynamic launch counts. Both remain valid after the source module is released.
 typedef struct loom_cmd_program_root_t {
   // Lowered command root in the plan's shared root module.
   loom_op_t* function_op;
 
-  // Owned module containing this root's host launch-count function.
-  loom_module_t* launch_module;
-
-  // Host launch-count function in |launch_module|.
+  // Host launch-count function in the plan's shared launch module.
   loom_op_t* launch_function_op;
 
   // Number of unique dynamic xyz tuples returned by |launch_function_op|.
@@ -41,13 +38,16 @@ typedef struct loom_cmd_program_root_t {
 // Immutable command roots and their union dependency graph.
 //
 // The root module contains every selected command symbol lowered to the
-// portable cmd low ISA. Each root owns an independent pure host launch module.
-// Equivalent dependency launch sites across all roots share one selectively
-// linked and specialized kernel unit. No compilation or artifact emission
-// occurs while preparing the plan.
+// portable cmd low ISA. The launch module contains one pure host function per
+// selected root. Equivalent dependency launch sites across all roots share one
+// selectively linked and specialized kernel unit. No compilation or artifact
+// emission occurs while preparing the plan.
 typedef struct loom_cmd_program_plan_t {
   // Owned module containing all lowered command roots.
   loom_module_t* root_module;
+
+  // Owned module containing all root launch-count functions.
+  loom_module_t* launch_module;
 
   // Selected roots in caller order.
   loom_cmd_program_root_t* roots;

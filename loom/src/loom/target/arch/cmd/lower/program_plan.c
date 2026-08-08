@@ -318,16 +318,37 @@ iree_status_t loom_cmd_program_plan_prepare(
         },
         block_pool, host_allocator, &plan.root_module);
   }
+  const loom_module_t** launch_source_modules = NULL;
+  if (iree_status_is_ok(status)) {
+    status = iree_arena_allocate_array(&scratch_arena, source_program_count,
+                                       sizeof(*launch_source_modules),
+                                       (void**)&launch_source_modules);
+  }
+  if (iree_status_is_ok(status)) {
+    for (iree_host_size_t i = 0; i < source_program_count; ++i) {
+      launch_source_modules[i] = root_builds[i].launch_graph.module;
+    }
+    status = loom_link_materialized_modules(
+        launch_source_modules, source_program_count,
+        &(loom_link_options_t){
+            .module_name = IREE_SV("command_program_launch"),
+            .root_symbols =
+                {
+                    .count = source_program_count,
+                    .values = root_names,
+                },
+        },
+        block_pool, host_allocator, &plan.launch_module);
+  }
   if (iree_status_is_ok(status)) {
     for (iree_host_size_t i = 0; i < source_program_count; ++i) {
       loom_cmd_program_root_t* root = &plan.roots[i];
       loom_cmd_program_root_build_t* build = &root_builds[i];
       root->function_op =
           loom_cmd_program_plan_find_symbol(plan.root_module, build->name);
-      root->launch_module = build->launch_graph.module;
-      root->launch_function_op = build->launch_graph.host_function_op;
+      root->launch_function_op =
+          loom_cmd_program_plan_find_symbol(plan.launch_module, build->name);
       root->launch_tuple_count = build->launch_graph.host_tuple_count;
-      build->launch_graph.module = NULL;
     }
   }
 
@@ -353,12 +374,8 @@ void loom_cmd_program_plan_deinitialize(loom_cmd_program_plan_t* plan) {
     loom_cmd_kernel_unit_deinitialize(&plan->dependency_units[i]);
   }
   iree_allocator_free(plan->host_allocator, plan->dependency_units);
-  for (iree_host_size_t i = 0; i < plan->root_count; ++i) {
-    if (plan->roots[i].launch_module) {
-      loom_module_free(plan->roots[i].launch_module);
-    }
-  }
   iree_allocator_free(plan->host_allocator, plan->roots);
+  if (plan->launch_module) loom_module_free(plan->launch_module);
   if (plan->root_module) loom_module_free(plan->root_module);
   memset(plan, 0, sizeof(*plan));
 }
