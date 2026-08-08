@@ -235,11 +235,12 @@ typedef struct loomc_program_plan_assembly_options_t {
 
 /// Prepares an immutable production plan for linked module-boundary roots.
 ///
-/// `preparation_pass_program` runs once over the complete linked module before
-/// provider selection and partitioning. `unit_pass_program` is retained by the
-/// plan and runs independently for each cache miss passed to
-/// `loomc_program_plan_compile_unit`. Preparation itself emits no deployment
-/// artifacts and never compiles a partitioned unit.
+/// The selected provider applies `preparation_pass_program` before
+/// partitioning. Module passes retain complete linked-module semantics while
+/// function passes visit only function bodies selected by that provider.
+/// `unit_pass_program` is retained by the plan and runs independently for each
+/// cache miss passed to `loomc_program_plan_compile_unit`. Preparation itself
+/// emits no deployment artifacts and never compiles a partitioned unit.
 ///
 /// Root selection is already represented by the linked module. This operation
 /// does not accept a second root list. One returned plan may expose several

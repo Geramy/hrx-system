@@ -174,6 +174,17 @@ static bool loomc_cmd_program_provider_matches(const loomc_module_t* module) {
   return false;
 }
 
+static bool loomc_cmd_program_provider_select_preparation_function(
+    void* user_data, const loom_module_t* module, const loom_symbol_t* symbol,
+    loom_func_like_t function) {
+  (void)user_data;
+  (void)module;
+  (void)function;
+  return loom_symbol_implements(symbol,
+                                LOOM_SYMBOL_INTERFACE_COMMAND_PROGRAM) &&
+         !loom_symbol_definition_is_declaration(symbol->definition);
+}
+
 static const loomc_artifact_t* loomc_cmd_program_find_artifact(
     const loomc_program_t* program, loomc_artifact_kind_t kind,
     loomc_string_view_t format, loomc_string_view_t identifier) {
@@ -1005,6 +1016,11 @@ static loomc_status_t loomc_cmd_program_plan_prepare_module(
 
 static const loomc_program_provider_t loomc_command_program_provider = {
     .matches = loomc_cmd_program_provider_matches,
+    .preparation_function_selector =
+        {
+            .select = loomc_cmd_program_provider_select_preparation_function,
+            .user_data = NULL,
+        },
     .prepare = loomc_cmd_program_plan_prepare_module,
 };
 
