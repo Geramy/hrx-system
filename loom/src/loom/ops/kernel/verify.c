@@ -123,8 +123,12 @@ static iree_status_t loom_kernel_emit_launch_related(
 static bool loom_kernel_launch_type_matches(
     const loom_module_t* module, loom_type_t actual_type,
     loom_type_t expected_type, const loom_type_value_remap_t* value_remap) {
-  if (loom_type_kind(actual_type) == LOOM_TYPE_TENSOR &&
-      loom_type_kind(expected_type) == LOOM_TYPE_BUFFER) {
+  // An opaque buffer ABI deliberately erases the logical shape and layout of
+  // the storage passed to it. Both owning tensors and non-owning typed views
+  // carry a buffer reference at that boundary; their exact range remains an
+  // operand fact for callers and target lowering.
+  if ((loom_type_is_tensor(actual_type) || loom_type_is_view(actual_type)) &&
+      loom_type_is_buffer(expected_type)) {
     return true;
   }
   return loom_type_equal_after_value_remap(module, expected_type, actual_type,
