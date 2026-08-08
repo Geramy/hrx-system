@@ -39,14 +39,36 @@ static loom_op_t* loom_cmd_program_plan_find_symbol(
   return defining_op;
 }
 
-static iree_status_t loom_cmd_program_plan_allocate_dependencies(
-    iree_host_size_t dependency_count, loom_cmd_program_plan_t* plan) {
-  if (dependency_count == 0) return iree_ok_status();
+typedef struct loom_cmd_program_root_build_t {
+  iree_string_view_t name;
+  loom_op_t* program_op;
+  loom_func_like_t program;
+  loom_cmd_schedule_plan_t schedule;
+  loom_cmd_launch_graph_t launch_graph;
+  loom_cmd_lower_plan_t lower_plan;
+} loom_cmd_program_root_build_t;
+
+static iree_status_t loom_cmd_program_plan_allocate_tables(
+    iree_host_size_t root_count, iree_host_size_t dependency_capacity,
+    loom_cmd_program_plan_t* plan) {
+  if (root_count > IREE_HOST_SIZE_MAX / sizeof(*plan->roots) ||
+      dependency_capacity >
+          IREE_HOST_SIZE_MAX / sizeof(*plan->dependency_units)) {
+    return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
+                            "command program plan tables are too large");
+  }
+  plan->root_count = root_count;
+  IREE_RETURN_IF_ERROR(iree_allocator_malloc(plan->host_allocator,
+                                             root_count * sizeof(*plan->roots),
+                                             (void**)&plan->roots));
+  memset(plan->roots, 0, root_count * sizeof(*plan->roots));
+  if (dependency_capacity == 0) return iree_ok_status();
   IREE_RETURN_IF_ERROR(iree_allocator_malloc(
-      plan->host_allocator, dependency_count * sizeof(*plan->dependency_units),
+      plan->host_allocator,
+      dependency_capacity * sizeof(*plan->dependency_units),
       (void**)&plan->dependency_units));
   memset(plan->dependency_units, 0,
-         dependency_count * sizeof(*plan->dependency_units));
+         dependency_capacity * sizeof(*plan->dependency_units));
   return iree_ok_status();
 }
 
@@ -55,6 +77,7 @@ static iree_status_t loom_cmd_program_plan_build_lower_plan(
     loom_op_t* root_program_op, const loom_cmd_schedule_plan_t* schedule,
     const loom_value_fact_table_t* source_facts,
     const loom_cmd_launch_graph_t* launch_graph,
+    const loom_op_t** dependency_launches,
     iree_arena_allocator_t* scratch_arena, iree_arena_block_pool_t* block_pool,
     loom_cmd_lower_plan_t* out_lower_plan) {
   if (schedule->command_count > UINT32_MAX) {
@@ -62,18 +85,11 @@ static iree_status_t loom_cmd_program_plan_build_lower_plan(
                             "command root has too many dependency units");
   }
 
-  IREE_RETURN_IF_ERROR(loom_cmd_program_plan_allocate_dependencies(
-      schedule->command_count, plan));
-
   loom_cmd_lower_launch_t* launches = NULL;
-  const loom_op_t** dependency_launches = NULL;
   if (schedule->command_count > 0) {
     IREE_RETURN_IF_ERROR(
         iree_arena_allocate_array(scratch_arena, schedule->command_count,
                                   sizeof(*launches), (void**)&launches));
-    IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
-        scratch_arena, schedule->command_count, sizeof(*dependency_launches),
-        (void**)&dependency_launches));
   }
   for (iree_host_size_t i = 0; i < schedule->command_count; ++i) {
     const loom_op_t* source_launch = schedule->commands[i];
@@ -136,8 +152,6 @@ static iree_status_t loom_cmd_program_plan_build_lower_plan(
       .fixed_buffer_count = 0,
       .rebindable_binding_count =
           (uint32_t)binding_count + (has_host_launch_counts ? 1u : 0u),
-      .executable_count = (uint32_t)plan->dependency_count,
-      .entry_count = (uint32_t)plan->dependency_count,
       .launch_graph = launch_graph,
       .launch_count_binding =
           {
@@ -149,121 +163,181 @@ static iree_status_t loom_cmd_program_plan_build_lower_plan(
   return iree_ok_status();
 }
 
-iree_status_t loom_cmd_program_plan_prepare(const loom_module_t* source_module,
-                                            const loom_op_t* source_program_op,
-                                            iree_arena_block_pool_t* block_pool,
-                                            iree_allocator_t host_allocator,
-                                            loom_cmd_program_plan_t* out_plan) {
+iree_status_t loom_cmd_program_plan_prepare(
+    const loom_module_t* source_module,
+    const loom_op_t* const* source_program_ops,
+    iree_host_size_t source_program_count, iree_arena_block_pool_t* block_pool,
+    iree_allocator_t host_allocator, loom_cmd_program_plan_t* out_plan) {
   IREE_ASSERT_ARGUMENT(source_module);
-  IREE_ASSERT_ARGUMENT(source_program_op);
+  IREE_ASSERT_ARGUMENT(source_program_ops);
+  IREE_ASSERT_GT(source_program_count, 0u);
   IREE_ASSERT_ARGUMENT(block_pool);
   IREE_ASSERT_ARGUMENT(out_plan);
-  IREE_ASSERT(loom_command_program_def_isa(source_program_op));
   memset(out_plan, 0, sizeof(*out_plan));
 
   loom_cmd_program_plan_t plan = {
       .host_allocator = host_allocator,
   };
-  const loom_symbol_ref_t source_program_ref =
-      loom_command_program_def_callee(source_program_op);
-  const iree_string_view_t root_name =
-      loom_cmd_program_plan_symbol_name(source_module, source_program_ref);
-  const iree_string_view_t root_names[] = {root_name};
-  const loom_module_t* source_modules[] = {source_module};
-  loom_module_t* preparation_module = NULL;
-  iree_status_t status = loom_link_materialized_modules(
-      source_modules, IREE_ARRAYSIZE(source_modules),
-      &(loom_link_options_t){
-          .module_name = IREE_SV("command_program_root"),
-          .root_symbols =
-              {
-                  .count = IREE_ARRAYSIZE(root_names),
-                  .values = root_names,
-              },
-      },
-      block_pool, host_allocator, &preparation_module);
-
-  loom_op_t* root_program_op = NULL;
-  loom_func_like_t root_program = {0};
   iree_arena_allocator_t scratch_arena;
-  bool scratch_arena_initialized = false;
-  loom_cmd_schedule_plan_t schedule = {0};
-  loom_value_fact_table_t source_facts = {0};
-  loom_cmd_launch_graph_t launch_graph = {0};
+  iree_arena_initialize(block_pool, &scratch_arena);
+
+  iree_string_view_t* root_names = NULL;
+  loom_cmd_program_root_build_t* root_builds = NULL;
+  iree_status_t status =
+      iree_arena_allocate_array(&scratch_arena, source_program_count,
+                                sizeof(*root_names), (void**)&root_names);
   if (iree_status_is_ok(status)) {
-    root_program_op =
-        loom_cmd_program_plan_find_symbol(preparation_module, root_name);
-    root_program = loom_func_like_cast(preparation_module, root_program_op);
-    IREE_ASSERT(loom_func_like_isa(root_program));
-    if (!loom_symbol_ref_is_valid(
-            loom_command_program_def_target(root_program_op))) {
-      status = iree_make_status(
-          IREE_STATUS_FAILED_PRECONDITION,
-          "command root must have a selected target before preparation");
+    status =
+        iree_arena_allocate_array(&scratch_arena, source_program_count,
+                                  sizeof(*root_builds), (void**)&root_builds);
+  }
+  if (iree_status_is_ok(status)) {
+    memset(root_builds, 0, source_program_count * sizeof(*root_builds));
+    for (iree_host_size_t i = 0; i < source_program_count; ++i) {
+      IREE_ASSERT_ARGUMENT(source_program_ops[i]);
+      IREE_ASSERT(loom_command_program_def_isa(source_program_ops[i]));
+      const loom_symbol_ref_t source_program_ref =
+          loom_command_program_def_callee(source_program_ops[i]);
+      root_names[i] =
+          loom_cmd_program_plan_symbol_name(source_module, source_program_ref);
+      root_builds[i].name = root_names[i];
     }
   }
+
+  const loom_module_t* source_modules[] = {source_module};
+  loom_module_t* preparation_module = NULL;
   if (iree_status_is_ok(status)) {
-    iree_arena_initialize(block_pool, &scratch_arena);
-    scratch_arena_initialized = true;
-    status = loom_cmd_schedule_plan_build(preparation_module,
-                                          loom_func_like_body(root_program),
-                                          &scratch_arena, &schedule);
+    status = loom_link_materialized_modules(
+        source_modules, IREE_ARRAYSIZE(source_modules),
+        &(loom_link_options_t){
+            .module_name = IREE_SV("command_program_roots"),
+            .root_symbols =
+                {
+                    .count = source_program_count,
+                    .values = root_names,
+                },
+        },
+        block_pool, host_allocator, &preparation_module);
   }
+
+  iree_host_size_t dependency_capacity = 0;
+  for (iree_host_size_t i = 0;
+       i < source_program_count && iree_status_is_ok(status); ++i) {
+    loom_cmd_program_root_build_t* root = &root_builds[i];
+    root->program_op =
+        loom_cmd_program_plan_find_symbol(preparation_module, root->name);
+    root->program = loom_func_like_cast(preparation_module, root->program_op);
+    IREE_ASSERT(loom_func_like_isa(root->program));
+    if (!loom_symbol_ref_is_valid(
+            loom_command_program_def_target(root->program_op))) {
+      status = iree_make_status(
+          IREE_STATUS_FAILED_PRECONDITION,
+          "command root `%.*s` must have a selected target before preparation",
+          (int)root->name.size, root->name.data);
+      break;
+    }
+    status = loom_cmd_schedule_plan_build(preparation_module,
+                                          loom_func_like_body(root->program),
+                                          &scratch_arena, &root->schedule);
+    if (iree_status_is_ok(status)) {
+      if (root->schedule.command_count >
+          (iree_host_size_t)UINT32_MAX - dependency_capacity) {
+        status = iree_make_status(
+            IREE_STATUS_OUT_OF_RANGE,
+            "command program roots have too many dependency launch sites");
+      } else {
+        dependency_capacity += root->schedule.command_count;
+      }
+    }
+  }
+
+  loom_value_fact_table_t source_facts = {0};
   if (iree_status_is_ok(status)) {
     status = loom_value_fact_table_initialize(&source_facts, &scratch_arena,
                                               preparation_module->values.count);
   }
   if (iree_status_is_ok(status)) {
     loom_type_registry_configure_fact_context(&source_facts.context);
-    status = loom_value_fact_table_compute(&source_facts, preparation_module,
-                                           root_program);
   }
-  if (iree_status_is_ok(status)) {
+  for (iree_host_size_t i = 0;
+       i < source_program_count && iree_status_is_ok(status); ++i) {
+    status = loom_value_fact_table_compute(&source_facts, preparation_module,
+                                           root_builds[i].program);
+  }
+  for (iree_host_size_t i = 0;
+       i < source_program_count && iree_status_is_ok(status); ++i) {
+    loom_cmd_program_root_build_t* root = &root_builds[i];
     status = loom_cmd_launch_graph_materialize(
-        preparation_module, root_program_op, &schedule, block_pool,
-        host_allocator, &launch_graph);
+        preparation_module, root->program_op, &root->schedule, block_pool,
+        host_allocator, &root->launch_graph);
   }
 
-  loom_cmd_lower_plan_t lower_plan = {0};
   if (iree_status_is_ok(status)) {
+    status = loom_cmd_program_plan_allocate_tables(source_program_count,
+                                                   dependency_capacity, &plan);
+  }
+  const loom_op_t** dependency_launches = NULL;
+  if (iree_status_is_ok(status) && dependency_capacity > 0) {
+    status = iree_arena_allocate_array(&scratch_arena, dependency_capacity,
+                                       sizeof(*dependency_launches),
+                                       (void**)&dependency_launches);
+  }
+  for (iree_host_size_t i = 0;
+       i < source_program_count && iree_status_is_ok(status); ++i) {
+    loom_cmd_program_root_build_t* root = &root_builds[i];
     status = loom_cmd_program_plan_build_lower_plan(
-        &plan, preparation_module, root_program_op, &schedule, &source_facts,
-        &launch_graph, &scratch_arena, block_pool, &lower_plan);
+        &plan, preparation_module, root->program_op, &root->schedule,
+        &source_facts, &root->launch_graph, dependency_launches, &scratch_arena,
+        block_pool, &root->lower_plan);
   }
   if (iree_status_is_ok(status)) {
+    for (iree_host_size_t i = 0; i < source_program_count; ++i) {
+      root_builds[i].lower_plan.executable_count =
+          (uint32_t)plan.dependency_count;
+      root_builds[i].lower_plan.entry_count = (uint32_t)plan.dependency_count;
+    }
+  }
+  for (iree_host_size_t i = 0;
+       i < source_program_count && iree_status_is_ok(status); ++i) {
     loom_op_t* preparation_root_function = NULL;
-    status =
-        loom_cmd_lower_program_to_low(preparation_module, root_program_op,
-                                      &lower_plan, &preparation_root_function);
+    status = loom_cmd_lower_program_to_low(
+        preparation_module, root_builds[i].program_op,
+        &root_builds[i].lower_plan, &preparation_root_function);
   }
   if (iree_status_is_ok(status)) {
     const loom_module_t* root_source_modules[] = {preparation_module};
     status = loom_link_materialized_modules(
         root_source_modules, IREE_ARRAYSIZE(root_source_modules),
         &(loom_link_options_t){
-            .module_name = IREE_SV("command_program_root"),
+            .module_name = IREE_SV("command_program_roots"),
             .root_symbols =
                 {
-                    .count = IREE_ARRAYSIZE(root_names),
+                    .count = source_program_count,
                     .values = root_names,
                 },
         },
         block_pool, host_allocator, &plan.root_module);
   }
   if (iree_status_is_ok(status)) {
-    plan.root_function_op =
-        loom_cmd_program_plan_find_symbol(plan.root_module, root_name);
-    plan.launch_module = launch_graph.module;
-    plan.launch_function_op = launch_graph.host_function_op;
-    plan.launch_tuple_count = launch_graph.host_tuple_count;
-    launch_graph.module = NULL;
+    for (iree_host_size_t i = 0; i < source_program_count; ++i) {
+      loom_cmd_program_root_t* root = &plan.roots[i];
+      loom_cmd_program_root_build_t* build = &root_builds[i];
+      root->function_op =
+          loom_cmd_program_plan_find_symbol(plan.root_module, build->name);
+      root->launch_module = build->launch_graph.module;
+      root->launch_function_op = build->launch_graph.host_function_op;
+      root->launch_tuple_count = build->launch_graph.host_tuple_count;
+      build->launch_graph.module = NULL;
+    }
   }
 
-  if (scratch_arena_initialized) {
-    iree_arena_deinitialize(&scratch_arena);
+  if (root_builds) {
+    for (iree_host_size_t i = 0; i < source_program_count; ++i) {
+      loom_cmd_launch_graph_deinitialize(&root_builds[i].launch_graph);
+    }
   }
-  loom_cmd_launch_graph_deinitialize(&launch_graph);
   if (preparation_module) loom_module_free(preparation_module);
+  iree_arena_deinitialize(&scratch_arena);
   if (!iree_status_is_ok(status)) {
     loom_cmd_program_plan_deinitialize(&plan);
     return status;
@@ -279,7 +353,12 @@ void loom_cmd_program_plan_deinitialize(loom_cmd_program_plan_t* plan) {
     loom_cmd_kernel_unit_deinitialize(&plan->dependency_units[i]);
   }
   iree_allocator_free(plan->host_allocator, plan->dependency_units);
-  if (plan->launch_module) loom_module_free(plan->launch_module);
+  for (iree_host_size_t i = 0; i < plan->root_count; ++i) {
+    if (plan->roots[i].launch_module) {
+      loom_module_free(plan->roots[i].launch_module);
+    }
+  }
+  iree_allocator_free(plan->host_allocator, plan->roots);
   if (plan->root_module) loom_module_free(plan->root_module);
   memset(plan, 0, sizeof(*plan));
 }

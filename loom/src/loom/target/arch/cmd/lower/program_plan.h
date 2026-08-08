@@ -19,28 +19,41 @@
 extern "C" {
 #endif
 
-// One immutable command root and its independently compilable dependencies.
+// One prepared command root within a program plan.
 //
-// The root module is selectively linked from the source command symbol and
-// lowered to the portable cmd low ISA. The launch graph is an independently
-// owned pure host module. Each dependency unit owns a selectively linked and
-// specialized kernel module. No compilation or artifact emission occurs while
-// preparing the plan.
-typedef struct loom_cmd_program_plan_t {
-  // Owned module containing the lowered command root.
-  loom_module_t* root_module;
+// The lowered command function addresses the plan-wide dependency table. Its
+// independently owned launch module evaluates only this root's dynamic launch
+// counts. Both remain valid after the source module is released.
+typedef struct loom_cmd_program_root_t {
+  // Lowered command root in the plan's shared root module.
+  loom_op_t* function_op;
 
-  // Lowered command root in |root_module|.
-  loom_op_t* root_function_op;
-
-  // Owned module containing the aggregate host launch-count program.
+  // Owned module containing this root's host launch-count function.
   loom_module_t* launch_module;
 
-  // Aggregate host launch-count function in |launch_module|.
+  // Host launch-count function in |launch_module|.
   loom_op_t* launch_function_op;
 
   // Number of unique dynamic xyz tuples returned by |launch_function_op|.
   uint32_t launch_tuple_count;
+} loom_cmd_program_root_t;
+
+// Immutable command roots and their union dependency graph.
+//
+// The root module contains every selected command symbol lowered to the
+// portable cmd low ISA. Each root owns an independent pure host launch module.
+// Equivalent dependency launch sites across all roots share one selectively
+// linked and specialized kernel unit. No compilation or artifact emission
+// occurs while preparing the plan.
+typedef struct loom_cmd_program_plan_t {
+  // Owned module containing all lowered command roots.
+  loom_module_t* root_module;
+
+  // Selected roots in caller order.
+  loom_cmd_program_root_t* roots;
+
+  // Number of entries in |roots|.
+  iree_host_size_t root_count;
 
   // Unique independently owned dependencies in executable-slot order.
   loom_cmd_kernel_unit_t* dependency_units;
@@ -48,26 +61,27 @@ typedef struct loom_cmd_program_plan_t {
   // Number of entries in |dependency_units|.
   iree_host_size_t dependency_count;
 
-  // Host allocator used for the dependency-unit table.
+  // Host allocator used for the root and dependency-unit tables.
   iree_allocator_t host_allocator;
 } loom_cmd_program_plan_t;
 
-// Prepares one targeted command-program root for independent compilation.
+// Prepares targeted command-program roots for independent compilation.
 //
-// |source_program_op| must be a linked module-boundary command.program.def with
-// a selected target. Preparation selectively links its complete dependency
-// closure into a new root module, interns equivalent launch sites into private
-// dependency units, materializes the aggregate launch-count program, assigns
-// dense dependency slots, and lowers the command root. The source module is
-// unchanged and need not outlive the returned plan.
+// |source_program_ops| must contain unique linked module-boundary
+// command.program.def operations with selected targets. Preparation selectively
+// links their union dependency closure into one module, interns equivalent
+// launch sites across roots into private dependency units, materializes one
+// launch-count program per root, assigns plan-wide dense dependency slots, and
+// lowers every command root. The source module is unchanged and need not
+// outlive the returned plan.
 //
 // On success |out_plan| owns every module it references and must be
 // deinitialized. On failure |out_plan| is empty.
-iree_status_t loom_cmd_program_plan_prepare(const loom_module_t* source_module,
-                                            const loom_op_t* source_program_op,
-                                            iree_arena_block_pool_t* block_pool,
-                                            iree_allocator_t host_allocator,
-                                            loom_cmd_program_plan_t* out_plan);
+iree_status_t loom_cmd_program_plan_prepare(
+    const loom_module_t* source_module,
+    const loom_op_t* const* source_program_ops,
+    iree_host_size_t source_program_count, iree_arena_block_pool_t* block_pool,
+    iree_allocator_t host_allocator, loom_cmd_program_plan_t* out_plan);
 
 // Releases all storage owned by |plan| and resets it to empty.
 void loom_cmd_program_plan_deinitialize(loom_cmd_program_plan_t* plan);
