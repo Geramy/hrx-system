@@ -181,7 +181,7 @@ TEST(CmdProgramTest, ParsesCanonicalProgram) {
   EXPECT_EQ(command.payload.dispatch_direct.workgroup_count_z, 3u);
 }
 
-TEST(CmdProgramTest, RejectsCorruptHeader) {
+TEST(CmdProgramTest, RejectsMalformedHeader) {
   std::vector<uint8_t> data = BuildValidProgram();
   data[LOOM_CMD_PROGRAM_HEADER_MAGIC_OFFSET] ^= 0xFF;
   loom_cmd_program_t program = {};
@@ -189,7 +189,7 @@ TEST(CmdProgramTest, RejectsCorruptHeader) {
                         loom_cmd_program_parse(AsByteSpan(data), &program));
 }
 
-TEST(CmdProgramTest, RejectsCorruptBufferReference) {
+TEST(CmdProgramTest, RejectsMalformedBufferReference) {
   std::vector<uint8_t> data = BuildValidProgram();
   const uint32_t table_offset = iree_unaligned_load_le_u32(
       data.data() + LOOM_CMD_PROGRAM_HEADER_BUFFER_REF_TABLE_OFFSET);
@@ -201,7 +201,7 @@ TEST(CmdProgramTest, RejectsCorruptBufferReference) {
                         loom_cmd_program_parse(AsByteSpan(data), &program));
 }
 
-TEST(CmdProgramTest, RejectsCorruptArgument) {
+TEST(CmdProgramTest, RejectsMalformedArgument) {
   std::vector<uint8_t> data = BuildValidProgram();
   const uint32_t table_offset = iree_unaligned_load_le_u32(
       data.data() + LOOM_CMD_PROGRAM_HEADER_ARGUMENT_TABLE_OFFSET);
@@ -214,7 +214,7 @@ TEST(CmdProgramTest, RejectsCorruptArgument) {
                         loom_cmd_program_parse(AsByteSpan(data), &program));
 }
 
-TEST(CmdProgramTest, RejectsCorruptCommand) {
+TEST(CmdProgramTest, RejectsMalformedCommand) {
   std::vector<uint8_t> data = BuildValidProgram();
   const uint32_t table_offset = iree_unaligned_load_le_u32(
       data.data() + LOOM_CMD_PROGRAM_HEADER_COMMAND_TABLE_OFFSET);
