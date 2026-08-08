@@ -79,7 +79,6 @@ loom_cc_test(
   SRCS
     "amdgpu_lifecycle_test.cc"
   DEPS
-    ::recording
     iree::async
     iree::async::util::proactor_pool
     iree::base
@@ -92,9 +91,9 @@ loom_cc_test(
     loom::binding::c::target::amdgpu
     loom::binding::c::target::amdgpu::iree_hal
     loom::binding::c::target::cmd
+    loom::binding::c::target::cmd::iree_hal
     loom::binding::c::target::iree_hal
     loom::binding::c::test::test_util
-    loom::target::arch::cmd::program
   LABELS
     "iree-run-requirement=runtime.resource.amd_gpu"
     "runtime-resource=amd-gpu"

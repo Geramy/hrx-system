@@ -95,6 +95,7 @@ LOOMC_TARGET_IREE_HAL_PUBLIC_HDRS = [
 LOOMC_TARGET_CMD_PUBLIC_HDRS = [
     "include/loomc/target/cmd.h",
     "include/loomc/target/cmd/base.h",
+    "include/loomc/target/cmd/iree_hal.h",
     "include/loomc/target/cmd/program.h",
 ]
 
