@@ -64,22 +64,40 @@ static iree_status_t loom_cmd_program_plan_build_lower_plan(
 
   IREE_RETURN_IF_ERROR(loom_cmd_program_plan_allocate_dependencies(
       schedule->command_count, plan));
-  plan->dependency_count = schedule->command_count;
 
   loom_cmd_lower_launch_t* launches = NULL;
+  const loom_op_t** dependency_launches = NULL;
   if (schedule->command_count > 0) {
     IREE_RETURN_IF_ERROR(
         iree_arena_allocate_array(scratch_arena, schedule->command_count,
                                   sizeof(*launches), (void**)&launches));
+    IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+        scratch_arena, schedule->command_count, sizeof(*dependency_launches),
+        (void**)&dependency_launches));
   }
   for (iree_host_size_t i = 0; i < schedule->command_count; ++i) {
-    loom_cmd_kernel_unit_t* unit = &plan->dependency_units[i];
-    IREE_RETURN_IF_ERROR(loom_cmd_kernel_unit_materialize(
-        preparation_module, schedule->commands[i], source_facts, block_pool,
-        plan->host_allocator, unit));
+    const loom_op_t* source_launch = schedule->commands[i];
+    uint32_t dependency_index = 0;
+    while (dependency_index < plan->dependency_count &&
+           !loom_cmd_kernel_unit_launches_equivalent(
+               preparation_module, source_launch,
+               dependency_launches[dependency_index], source_facts)) {
+      ++dependency_index;
+    }
+    if (dependency_index == plan->dependency_count) {
+      loom_cmd_kernel_unit_t* new_unit =
+          &plan->dependency_units[dependency_index];
+      IREE_RETURN_IF_ERROR(loom_cmd_kernel_unit_materialize(
+          preparation_module, source_launch, source_facts, block_pool,
+          plan->host_allocator, new_unit));
+      dependency_launches[dependency_index] = source_launch;
+      ++plan->dependency_count;
+    }
+    const loom_cmd_kernel_unit_t* unit =
+        &plan->dependency_units[dependency_index];
     launches[i] = (loom_cmd_lower_launch_t){
-        .executable_index = (uint32_t)i,
-        .entry_index = (uint32_t)i,
+        .executable_index = dependency_index,
+        .entry_index = dependency_index,
         .argument_count = unit->argument_count,
         .source_argument_ordinals = unit->source_argument_ordinals,
     };
@@ -118,8 +136,8 @@ static iree_status_t loom_cmd_program_plan_build_lower_plan(
       .fixed_buffer_count = 0,
       .rebindable_binding_count =
           (uint32_t)binding_count + (has_host_launch_counts ? 1u : 0u),
-      .executable_count = (uint32_t)schedule->command_count,
-      .entry_count = (uint32_t)schedule->command_count,
+      .executable_count = (uint32_t)plan->dependency_count,
+      .entry_count = (uint32_t)plan->dependency_count,
       .launch_graph = launch_graph,
       .launch_count_binding =
           {
