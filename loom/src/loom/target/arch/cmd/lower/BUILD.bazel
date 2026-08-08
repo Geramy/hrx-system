@@ -279,7 +279,7 @@ loom_cc_test(
     deps = [
         ":launch_graph",
         "//loom/binding/c:loomc",
-        "//loom/binding/c/target/cmd:program_plan",
+        "//loom/binding/c/target/cmd",
         "//loom/binding/c/test:test_util",
         "//loom/src/loom/target/arch/cmd:program",
         "//loom/src/loom/target/arch/cmd/iree_hal:recording",

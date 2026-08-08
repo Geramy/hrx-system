@@ -4,7 +4,7 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "loom/binding/c/target/cmd/program_plan.h"
+#include "loom/binding/c/src/program_plan.h"
 
 #include <string.h>
 
@@ -14,7 +14,7 @@
 #include "loom/binding/c/src/module.h"
 #include "loom/binding/c/src/pass_program.h"
 #include "loom/binding/c/src/program.h"
-#include "loom/binding/c/src/program_plan.h"
+#include "loom/binding/c/src/program_environment.h"
 #include "loom/binding/c/src/result.h"
 #include "loom/binding/c/src/workspace.h"
 #include "loom/ops/op_defs.h"
@@ -24,6 +24,7 @@
 #include "loom/target/arch/cmd/program.h"
 #include "loomc/iree.h"
 #include "loomc/launch_config_module.h"
+#include "loomc/target/cmd.h"
 
 typedef struct loomc_cmd_program_plan_storage_t {
   // Compiler retained for independent dependency-unit compilation.
@@ -84,6 +85,17 @@ static bool loomc_cmd_program_plan_symbol_is_root(const loom_module_t* module,
   const loom_func_like_t function =
       loom_func_like_cast(module, symbol->defining_op);
   return loom_func_like_visibility(function) != 0;
+}
+
+static bool loomc_cmd_program_provider_matches(const loomc_module_t* module) {
+  const loom_module_t* internal_module = loomc_module_const_loom_module(module);
+  for (loom_symbol_id_t i = 0; i < internal_module->symbols.count; ++i) {
+    if (loomc_cmd_program_plan_symbol_is_root(
+            internal_module, &internal_module->symbols.entries[i])) {
+      return true;
+    }
+  }
+  return false;
 }
 
 static const loomc_artifact_t* loomc_cmd_program_find_artifact(
@@ -812,34 +824,17 @@ static loomc_status_t loomc_cmd_program_plan_create_public_plan(
   return status;
 }
 
-loomc_status_t loomc_cmd_program_plan_prepare_module(
+static loomc_status_t loomc_cmd_program_plan_prepare_module(
     loomc_compiler_t* compiler, loomc_workspace_t* workspace,
     const loomc_pass_program_t* unit_pass_program, loomc_module_t* module,
-    loomc_allocator_t allocator, loomc_program_plan_t** out_program_plan,
-    loomc_result_t** out_result) {
-  if (out_program_plan == NULL || out_result == NULL) {
+    const loomc_program_plan_options_t* options, loomc_result_t* result,
+    loomc_allocator_t allocator, loomc_program_plan_t** out_program_plan) {
+  (void)result;
+  if (options != NULL && options->next != NULL) {
     return loomc_make_status(
-        LOOMC_STATUS_INVALID_ARGUMENT,
-        "out_program_plan and out_result must not be NULL");
+        LOOMC_STATUS_UNIMPLEMENTED,
+        "command program preparation extensions are not supported");
   }
-  *out_program_plan = NULL;
-  *out_result = NULL;
-  if (compiler == NULL || workspace == NULL || unit_pass_program == NULL ||
-      module == NULL) {
-    return loomc_make_status(
-        LOOMC_STATUS_INVALID_ARGUMENT,
-        "compiler, workspace, unit_pass_program, and module are required");
-  }
-  if (loomc_pass_program_context(unit_pass_program) !=
-      loomc_module_context(module)) {
-    return loomc_make_status(
-        LOOMC_STATUS_INVALID_ARGUMENT,
-        "unit pass program and source module contexts must match");
-  }
-
-  loomc_result_t* result = NULL;
-  LOOMC_RETURN_IF_ERROR(
-      loomc_result_create(LOOMC_RESULT_STATE_SUCCEEDED, allocator, &result));
 
   const loom_module_t* internal_module = loomc_module_const_loom_module(module);
   iree_arena_allocator_t scratch_arena;
@@ -893,11 +888,20 @@ loomc_status_t loomc_cmd_program_plan_prepare_module(
   loomc_cmd_program_plan_destroy(storage, allocator);
   loom_cmd_program_plan_deinitialize(&internal_plan);
   iree_arena_deinitialize(&scratch_arena);
-  if (loomc_status_is_ok(status)) {
-    *out_result = result;
-    return loomc_ok_status();
-  }
-  return loomc_cmd_program_finish_failure(
-      result, status, loomc_make_cstring_view("PROGRAM_PLAN/PREPARE"),
-      out_result);
+  return status;
+}
+
+static const loomc_program_provider_t loomc_command_program_provider = {
+    .matches = loomc_cmd_program_provider_matches,
+    .prepare = loomc_cmd_program_plan_prepare_module,
+};
+
+loomc_status_t loomc_program_environment_create_command(
+    loomc_allocator_t allocator,
+    loomc_program_environment_t** out_program_environment) {
+  const loomc_program_provider_t* providers[] = {
+      &loomc_command_program_provider,
+  };
+  return loomc_program_environment_create(providers, IREE_ARRAYSIZE(providers),
+                                          allocator, out_program_environment);
 }

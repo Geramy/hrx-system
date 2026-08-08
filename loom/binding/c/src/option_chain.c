@@ -73,6 +73,27 @@ loomc_status_t loomc_sanitizer_options_resolve(
   return loomc_ok_status();
 }
 
+static loomc_status_t loomc_compiler_program_options_validate(
+    const loomc_compiler_program_options_t* options) {
+  if (options->type != LOOMC_STRUCTURE_TYPE_COMPILER_PROGRAM_OPTIONS) {
+    return loomc_make_status(
+        LOOMC_STATUS_INVALID_ARGUMENT,
+        "compiler program options have an unknown structure type");
+  }
+  if (options->structure_size != 0 &&
+      options->structure_size < sizeof(*options)) {
+    return loomc_make_status(
+        LOOMC_STATUS_INVALID_ARGUMENT,
+        "compiler program options structure_size is too small");
+  }
+  if (options->program_environment == NULL) {
+    return loomc_make_status(
+        LOOMC_STATUS_INVALID_ARGUMENT,
+        "compiler program options require a program environment");
+  }
+  return loomc_ok_status();
+}
+
 loomc_status_t loomc_option_chain_resolve(
     const void* next, loomc_option_chain_allowed_t allowed_options,
     loomc_option_chain_t* out_options) {
@@ -124,6 +145,26 @@ loomc_status_t loomc_option_chain_resolve(
             sanitizer_options, &out_options->sanitizer));
         out_options->has_sanitizer = true;
         next = sanitizer_options->next;
+        break;
+      }
+      case LOOMC_STRUCTURE_TYPE_COMPILER_PROGRAM_OPTIONS: {
+        if (!iree_all_bits_set(allowed_options,
+                               LOOMC_OPTION_CHAIN_ALLOW_PROGRAM_ENVIRONMENT)) {
+          return loomc_make_status(
+              LOOMC_STATUS_UNIMPLEMENTED,
+              "compiler program option extension is not supported here");
+        }
+        if (out_options->program_environment != NULL) {
+          return loomc_make_status(
+              LOOMC_STATUS_INVALID_ARGUMENT,
+              "option chain contains duplicate compiler program options");
+        }
+        const loomc_compiler_program_options_t* program_options =
+            (const loomc_compiler_program_options_t*)next;
+        LOOMC_RETURN_IF_ERROR(
+            loomc_compiler_program_options_validate(program_options));
+        out_options->program_environment = program_options->program_environment;
+        next = program_options->next;
         break;
       }
       case LOOMC_STRUCTURE_TYPE_NONE:

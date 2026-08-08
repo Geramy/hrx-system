@@ -7,6 +7,7 @@
 #ifndef LOOMC_PROGRAM_PLAN_H_
 #define LOOMC_PROGRAM_PLAN_H_
 
+#include "loomc/compile.h"
 #include "loomc/program.h"
 #include "loomc/result.h"
 #include "loomc/workspace.h"
@@ -36,6 +37,22 @@ extern "C" {
 /// queried concurrently. Unit compilation is concurrent when each invocation
 /// receives a distinct workspace.
 typedef struct loomc_program_plan_t loomc_program_plan_t;
+
+/// Program-plan preparation options.
+typedef struct loomc_program_plan_options_t {
+  /// Structure type. Must be `LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_OPTIONS` when
+  /// nonzero.
+  loomc_structure_type_t type;
+
+  /// Size of this structure in bytes.
+  loomc_host_size_t structure_size;
+
+  /// Unordered provider-owned preparation and output-policy extensions.
+  const void* next;
+
+  /// Program- and code-shaping configuration applied before partitioning.
+  loomc_config_options_t config;
+} loomc_program_plan_options_t;
 
 /// Plan-local selected-root token.
 typedef struct loomc_program_plan_root_t {
@@ -209,6 +226,30 @@ typedef struct loomc_program_plan_assembly_options_t {
   /// Unordered target-owned assembly extensions.
   const void* next;
 } loomc_program_plan_assembly_options_t;
+
+/// Prepares an immutable production plan for linked module-boundary roots.
+///
+/// `preparation_pass_program` runs once over the complete linked module before
+/// provider selection and partitioning. `unit_pass_program` is retained by the
+/// plan and runs independently for each cache miss passed to
+/// `loomc_program_plan_compile_unit`. Preparation itself emits no deployment
+/// artifacts and never compiles a partitioned unit.
+///
+/// Root selection is already represented by the linked module. This operation
+/// does not accept a second root list. One returned plan may expose several
+/// roots, including prefill, decode, and MTP entries that share dependency
+/// units.
+///
+/// @ownership
+/// The caller owns `out_result` on an OK return. A succeeded result also owns
+/// `out_program_plan`. The plan does not borrow the source module, workspace,
+/// or result and retains the compiler inputs needed for later unit work.
+LOOMC_API_EXPORT loomc_status_t loomc_prepare_programs(
+    loomc_compiler_t* compiler, loomc_workspace_t* workspace,
+    const loomc_pass_program_t* preparation_pass_program,
+    const loomc_pass_program_t* unit_pass_program, loomc_module_t* module,
+    const loomc_program_plan_options_t* options, loomc_allocator_t allocator,
+    loomc_program_plan_t** out_program_plan, loomc_result_t** out_result);
 
 /// Retains `program_plan` for another owner.
 LOOMC_API_EXPORT void loomc_program_plan_retain(

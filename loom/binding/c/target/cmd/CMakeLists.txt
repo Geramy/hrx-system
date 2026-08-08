@@ -11,9 +11,9 @@ iree_add_all_subdirs()
 
 loom_cc_library(
   NAME
-    program_plan
+    cmd
   HDRS
-    "program_plan.h"
+    "${PROJECT_SOURCE_DIR}/loom/binding/c/include/loomc/target/cmd.h"
   SRCS
     "program_plan.c"
   DEPS
@@ -21,7 +21,6 @@ loom_cc_library(
     iree::base::internal::arena
     loom::binding::c::loomc
     loom::ir
-    loom::ops::command
     loom::ops::op_defs
     loom::target::arch::cmd::lower::launch_artifact
     loom::target::arch::cmd::lower::program_plan
@@ -36,7 +35,7 @@ loom_cc_test(
   SRCS
     "program_plan_test.cc"
   DEPS
-    ::program_plan
+    ::cmd
     iree::base
     iree::testing::gtest
     iree::testing::gtest_main
