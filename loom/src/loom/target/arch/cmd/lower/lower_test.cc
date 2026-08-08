@@ -370,11 +370,17 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
       {LOOM_CMD_LOWER_BUFFER_ROLE_REBINDABLE, 3, 0, kBufferLength},
       {LOOM_CMD_LOWER_BUFFER_ROLE_REBINDABLE, 4, 0, kBufferLength},
   }};
+  const std::array<uint16_t, 3> prepare_argument_ordinals = {0, 1, 2};
+  const std::array<uint16_t, 2> projection_argument_ordinals = {0, 2};
   const std::array<loom_cmd_lower_launch_t, 4> launch_plan = {{
-      {0, 0},
-      {1, 1},
-      {1, 2},
-      {1, 3},
+      {0, 0, prepare_argument_ordinals.size(),
+       prepare_argument_ordinals.data()},
+      {1, 1, projection_argument_ordinals.size(),
+       projection_argument_ordinals.data()},
+      {1, 2, projection_argument_ordinals.size(),
+       projection_argument_ordinals.data()},
+      {1, 3, projection_argument_ordinals.size(),
+       projection_argument_ordinals.data()},
   }};
   const loom_cmd_lower_plan_t plan = {
       /*.command_target=*/FindSymbolRef(module.get(),
@@ -401,10 +407,19 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
   EXPECT_EQ(FindSymbol(module.get(), IREE_SV("attention")), low_function);
   VerifyLowModule(module.get());
 
-  std::array<iree_hal_executable_function_parameter_t, 3> parameters = {};
-  for (uint32_t i = 0; i < parameters.size(); ++i) {
-    parameters[i].type = IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_BINDING;
-    parameters[i].offset = i;
+  std::array<iree_hal_executable_function_parameter_t, 3> prepare_parameters =
+      {};
+  for (uint32_t i = 0; i < prepare_parameters.size(); ++i) {
+    prepare_parameters[i].type =
+        IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_BINDING;
+    prepare_parameters[i].offset = i;
+  }
+  std::array<iree_hal_executable_function_parameter_t, 2>
+      projection_parameters = {};
+  for (uint32_t i = 0; i < projection_parameters.size(); ++i) {
+    projection_parameters[i].type =
+        IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_BINDING;
+    projection_parameters[i].offset = i;
   }
   std::array<iree_hal_resource_t, 2> executable_storage = {};
   const std::array<iree_hal_executable_t*, 2> executables = {
@@ -415,9 +430,15 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
   for (uint32_t i = 0; i < entries.size(); ++i) {
     entries[i].executable_index = i == 0 ? 0 : 1;
     entries[i].function = iree_hal_executable_function_from_value(100 + i);
-    entries[i].info.binding_count = parameters.size();
-    entries[i].info.parameter_count = parameters.size();
-    entries[i].parameters = parameters.data();
+    if (i == 0) {
+      entries[i].info.binding_count = prepare_parameters.size();
+      entries[i].info.parameter_count = prepare_parameters.size();
+      entries[i].parameters = prepare_parameters.data();
+    } else {
+      entries[i].info.binding_count = projection_parameters.size();
+      entries[i].info.parameter_count = projection_parameters.size();
+      entries[i].parameters = projection_parameters.data();
+    }
   }
   iree_hal_resource_t fixed_buffer_storage = {};
   const iree_hal_buffer_ref_t fixed_buffer = iree_hal_make_buffer_ref(
@@ -467,18 +488,20 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
       EXPECT_EQ(dispatch.dispatch_config.workgroup_count_ref.length,
                 LOOM_CMD_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
     }
-    ASSERT_EQ(dispatch.bindings.size(), 3u);
+    ASSERT_EQ(dispatch.bindings.size(), i == 0 ? 3u : 2u);
     EXPECT_EQ(dispatch.bindings[0].buffer, fixed_buffer.buffer);
     EXPECT_EQ(dispatch.bindings[0].offset, fixed_buffer.offset);
     EXPECT_EQ(dispatch.bindings[0].length, kBufferLength);
     EXPECT_EQ(dispatch.bindings[1].buffer, nullptr);
-    EXPECT_EQ(dispatch.bindings[1].buffer_slot, i == 0 ? 0u : 1u);
+    EXPECT_EQ(dispatch.bindings[1].buffer_slot, i == 0 ? 0u : 1u + i);
     EXPECT_EQ(dispatch.bindings[1].offset, 0u);
     EXPECT_EQ(dispatch.bindings[1].length, kBufferLength);
-    EXPECT_EQ(dispatch.bindings[2].buffer, nullptr);
-    EXPECT_EQ(dispatch.bindings[2].buffer_slot, i == 0 ? 1u : 1u + i);
-    EXPECT_EQ(dispatch.bindings[2].offset, 0u);
-    EXPECT_EQ(dispatch.bindings[2].length, kBufferLength);
+    if (i == 0) {
+      EXPECT_EQ(dispatch.bindings[2].buffer, nullptr);
+      EXPECT_EQ(dispatch.bindings[2].buffer_slot, 1u);
+      EXPECT_EQ(dispatch.bindings[2].offset, 0u);
+      EXPECT_EQ(dispatch.bindings[2].length, kBufferLength);
+    }
   }
 
   iree_byte_span_t program_data = iree_byte_span_empty();
@@ -493,7 +516,7 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
   EXPECT_EQ(program.requirements.executable_count, 2u);
   EXPECT_EQ(program.requirements.entry_count, 4u);
   ASSERT_EQ(program.buffer_refs.count, 7u);
-  EXPECT_EQ(program.arguments.count, 12u);
+  EXPECT_EQ(program.arguments.count, 9u);
   ASSERT_EQ(program.commands.count, 5u);
   const loom_cmd_program_buffer_ref_t launch_count_ref =
       loom_cmd_program_buffer_ref_at(&program, 6);
@@ -590,7 +613,13 @@ command.program.def @residual(%value: index) launch() {
       iree_allocator_system(), &launch_graph));
   iree_arena_deinitialize(&schedule_arena);
 
-  const loom_cmd_lower_launch_t launch = {0, 0};
+  const uint16_t source_argument_ordinal = 0;
+  const loom_cmd_lower_launch_t launch = {
+      /*.executable_index=*/0,
+      /*.entry_index=*/0,
+      /*.argument_count=*/1,
+      /*.source_argument_ordinals=*/&source_argument_ordinal,
+  };
   const loom_cmd_lower_plan_t plan = {
       /*.command_target=*/FindSymbolRef(module.get(),
                                         IREE_SV("command_target")),

@@ -21,9 +21,11 @@
 #include "loom/ir/context.h"
 #include "loom/ir/module.h"
 #include "loom/ops/op_registry.h"
+#include "loom/ops/type_registry.h"
 #include "loom/target/arch/cmd/descriptors/low_registry.h"
 #include "loom/target/arch/cmd/iree_hal/recording.h"
 #include "loom/target/arch/cmd/iree_hal/recording_test_executable.h"
+#include "loom/target/arch/cmd/lower/kernel_unit.h"
 #include "loom/target/arch/cmd/lower/launch_artifact.h"
 #include "loom/target/arch/cmd/lower/lower.h"
 #include "loom/target/arch/cmd/lower/schedule.h"
@@ -265,6 +267,14 @@ kernel.def @increment(%element_count: index) {
   %one = index.constant 1 : index
   kernel.launch.config workgroups(%element_count, %one, %one) workgroup_size(%one, %one, %one) : index
 } launch(%source: buffer, %target: buffer) {
+  %base = index.constant 0 : offset
+  %workgroup = kernel.workgroup.id<x> : index
+  %one = scalar.constant 1 : i32
+  %source_view = buffer.view %source[%base] : buffer -> view<128xi32, #dense>
+  %target_view = buffer.view %target[%base] : buffer -> view<128xi32, #dense>
+  %value = view.load %source_view[%workgroup] : view<128xi32, #dense> -> i32
+  %incremented = scalar.addi %value, %one : i32
+  view.store %incremented, %target_view[%workgroup] : i32, view<128xi32, #dense>
   kernel.return
 }
 
@@ -285,6 +295,18 @@ command.program.def public @increment_elements(%element_count: index) launch(%so
         module.get(), loom_func_like_body(source_program_like), &schedule_arena,
         &schedule));
 
+    loom_value_fact_table_t source_facts = {};
+    IREE_CHECK_OK(loom_value_fact_table_initialize(
+        &source_facts, &schedule_arena, module->values.count));
+    loom_type_registry_configure_fact_context(&source_facts.context);
+    IREE_CHECK_OK(loom_value_fact_table_compute(&source_facts, module.get(),
+                                                source_program_like));
+    loom_cmd_kernel_unit_t kernel_unit = {};
+    IREE_CHECK_OK(loom_cmd_kernel_unit_materialize(
+        module.get(), schedule.commands[0], &source_facts, &block_pool_,
+        iree_allocator_system(), &kernel_unit));
+    IREE_ASSERT_EQ(kernel_unit.argument_count, 2u);
+
     loom_cmd_launch_graph_t launch_graph = {};
     IREE_CHECK_OK(loom_cmd_launch_graph_materialize(
         module.get(), source_program, &schedule, &block_pool_,
@@ -302,7 +324,12 @@ command.program.def public @increment_elements(%element_count: index) launch(%so
         {LOOM_CMD_LOWER_BUFFER_ROLE_REBINDABLE, 0, 0, kBufferByteLength},
         {LOOM_CMD_LOWER_BUFFER_ROLE_REBINDABLE, 1, 0, kBufferByteLength},
     }};
-    const loom_cmd_lower_launch_t launch_plan = {0, 0};
+    const loom_cmd_lower_launch_t launch_plan = {
+        /*.executable_index=*/0,
+        /*.entry_index=*/0,
+        /*.argument_count=*/kernel_unit.argument_count,
+        /*.source_argument_ordinals=*/kernel_unit.source_argument_ordinals,
+    };
     const loom_cmd_lower_plan_t plan = {
         /*.command_target=*/FindSymbolRef(module.get(),
                                           IREE_SV("command_target")),
@@ -319,6 +346,7 @@ command.program.def public @increment_elements(%element_count: index) launch(%so
     loom_op_t* low_function = nullptr;
     IREE_CHECK_OK(loom_cmd_lower_program_to_low(module.get(), source_program,
                                                 &plan, &low_function));
+    loom_cmd_kernel_unit_deinitialize(&kernel_unit);
     loom_cmd_launch_graph_deinitialize(&launch_graph);
     VerifyLowModule(module.get());
 

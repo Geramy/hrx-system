@@ -370,7 +370,7 @@ static iree_status_t loom_cmd_lower_build_launch_count_refs(
 
 static iree_status_t loom_cmd_lower_build_launch_arguments(
     loom_cmd_lower_state_t* state, const loom_op_t* launch_op,
-    loom_value_id_t* out_arguments) {
+    const loom_cmd_lower_launch_t* launch, loom_value_id_t* out_arguments) {
   *out_arguments = LOOM_VALUE_ID_INVALID;
   loom_op_t* arguments_op = NULL;
   IREE_RETURN_IF_ERROR(loom_cmd_lower_build_descriptor_op(
@@ -381,15 +381,21 @@ static iree_status_t loom_cmd_lower_build_launch_arguments(
 
   const loom_value_slice_t source_arguments =
       loom_kernel_launch_arguments(launch_op);
-  for (uint16_t i = 0; i < source_arguments.count; ++i) {
-    const loom_value_id_t source_value = source_arguments.values[i];
+  IREE_ASSERT(launch->argument_count == 0 ||
+              launch->source_argument_ordinals != NULL);
+  for (uint16_t i = 0; i < launch->argument_count; ++i) {
+    const uint16_t source_argument_ordinal =
+        launch->source_argument_ordinals[i];
+    IREE_ASSERT_LT(source_argument_ordinal, source_arguments.count);
+    const loom_value_id_t source_value =
+        source_arguments.values[source_argument_ordinal];
     if (source_value >= state->resources.source_value_count ||
         state->resources.source_value_map[source_value] ==
             LOOM_VALUE_ID_INVALID) {
       return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
                               "kernel launch argument %" PRIu16
                               " is not a direct command-program buffer binding",
-                              i);
+                              source_argument_ordinal);
     }
     const loom_value_id_t operands[] = {
         arguments,
@@ -414,8 +420,8 @@ static iree_status_t loom_cmd_lower_build_direct_launch(
   IREE_ASSERT_LT(launch->entry_index, state->plan->entry_count);
 
   loom_value_id_t arguments = LOOM_VALUE_ID_INVALID;
-  IREE_RETURN_IF_ERROR(
-      loom_cmd_lower_build_launch_arguments(state, source_op, &arguments));
+  IREE_RETURN_IF_ERROR(loom_cmd_lower_build_launch_arguments(
+      state, source_op, launch, &arguments));
   loom_value_id_t workgroup_count_x = LOOM_VALUE_ID_INVALID;
   loom_value_id_t workgroup_count_y = LOOM_VALUE_ID_INVALID;
   loom_value_id_t workgroup_count_z = LOOM_VALUE_ID_INVALID;
@@ -450,8 +456,8 @@ static iree_status_t loom_cmd_lower_build_host_launch(
                  state->plan->launch_graph->host_tuple_count);
 
   loom_value_id_t arguments = LOOM_VALUE_ID_INVALID;
-  IREE_RETURN_IF_ERROR(
-      loom_cmd_lower_build_launch_arguments(state, source_op, &arguments));
+  IREE_RETURN_IF_ERROR(loom_cmd_lower_build_launch_arguments(
+      state, source_op, launch, &arguments));
   const loom_value_id_t operands[] = {
       state->resources.executables[launch->executable_index],
       state->resources.entries[launch->entry_index],
