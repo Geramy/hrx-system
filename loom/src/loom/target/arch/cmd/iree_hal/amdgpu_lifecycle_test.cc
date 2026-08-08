@@ -7,8 +7,6 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
-#include <vector>
 
 #include "iree/async/frontier_tracker.h"
 #include "iree/async/util/proactor_pool.h"
@@ -17,12 +15,11 @@
 #include "iree/hal/drivers/init.h"
 #include "iree/testing/gtest.h"
 #include "iree/testing/status_matchers.h"
-#include "loom/target/arch/cmd/iree_hal/recording.h"
-#include "loom/target/arch/cmd/program.h"
 #include "loomc/loomc.h"
 #include "loomc/target/amdgpu.h"
 #include "loomc/target/amdgpu/iree_hal.h"
 #include "loomc/target/cmd.h"
+#include "loomc/target/cmd/iree_hal.h"
 #include "loomc/target/iree_hal.h"
 #include "test/util.h"
 
@@ -33,20 +30,19 @@ using loomc::testing::HandlePtr;
 
 using CompilerPtr = HandlePtr<loomc_compiler_t, loomc_compiler_release>;
 using ContextPtr = HandlePtr<loomc_context_t, loomc_context_release>;
-using ExecutablePtr =
-    HandlePtr<iree_hal_executable_t, iree_hal_executable_release>;
+using CmdHalPackagePtr =
+    HandlePtr<loomc_cmd_iree_hal_package_t, loomc_cmd_iree_hal_package_release>;
+using CmdHalProgramPtr =
+    HandlePtr<loomc_cmd_iree_hal_program_t, loomc_cmd_iree_hal_program_release>;
+using CmdProgramPtr = HandlePtr<loomc_cmd_program_t, loomc_cmd_program_release>;
 using FrontierTrackerPtr = HandlePtr<iree_async_frontier_tracker_t,
                                      iree_async_frontier_tracker_release>;
 using HalBufferPtr = HandlePtr<iree_hal_buffer_t, iree_hal_buffer_release>;
-using HalCommandBufferPtr =
-    HandlePtr<iree_hal_command_buffer_t, iree_hal_command_buffer_release>;
 using HalDevicePtr = HandlePtr<iree_hal_device_t, iree_hal_device_release>;
 using HalDeviceGroupPtr =
     HandlePtr<iree_hal_device_group_t, iree_hal_device_group_release>;
 using LaunchContextPtr = HandlePtr<loomc_launch_config_context_t,
                                    loomc_launch_config_context_release>;
-using LaunchModulePtr =
-    HandlePtr<loomc_launch_config_module_t, loomc_launch_config_module_release>;
 using ModulePtr = HandlePtr<loomc_module_t, loomc_module_release>;
 using PassProgramPtr =
     HandlePtr<loomc_pass_program_t, loomc_pass_program_release>;
@@ -119,27 +115,6 @@ static bool ResultSucceeded(const loomc_result_t* result) {
     return false;
   }
   return true;
-}
-
-static const loomc_artifact_t* FindArtifact(const loomc_program_t* program,
-                                            loomc_artifact_kind_t kind,
-                                            const char* format,
-                                            const char* identifier) {
-  const loomc_artifact_t* found = nullptr;
-  for (loomc_host_size_t i = 0; i < loomc_program_artifact_count(program);
-       ++i) {
-    const loomc_artifact_t* artifact = loomc_program_artifact_at(program, i);
-    if (artifact->kind != kind ||
-        !loomc_string_view_equal(artifact->format,
-                                 loomc_make_cstring_view(format)) ||
-        !loomc_string_view_equal(artifact->identifier,
-                                 loomc_make_cstring_view(identifier))) {
-      continue;
-    }
-    EXPECT_EQ(found, nullptr);
-    found = artifact;
-  }
-  return found;
 }
 
 static iree_status_t CreateAmdgpuDevice(
@@ -460,21 +435,80 @@ TEST(CommandAmdgpuLifecycleTest,
 
   ASSERT_EQ(loomc_program_export_count(program.get()), 2u);
   ASSERT_EQ(loomc_program_dependency_count(program.get()), 1u);
-  loomc_program_dependency_info_t dependency_info = {
-      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_DEPENDENCY_INFO,
-      /*.structure_size=*/sizeof(dependency_info),
+
+  std::array<loomc_program_export_t, 2> exports = {
+      loomc_program_export_invalid(),
+      loomc_program_export_invalid(),
+  };
+  LOOMC_ASSERT_OK(loomc_program_lookup_export(
+      program.get(), loomc_make_cstring_view("add_seven_once"), &exports[0]));
+  LOOMC_ASSERT_OK(loomc_program_lookup_export(
+      program.get(), loomc_make_cstring_view("add_seven_twice"), &exports[1]));
+  loomc_cmd_program_t* raw_once_command_program = nullptr;
+  LOOMC_ASSERT_OK(loomc_cmd_program_create_from_export(
+      program.get(), exports[0], loomc_allocator_system(),
+      &raw_once_command_program));
+  CmdProgramPtr once_command_program(raw_once_command_program);
+  loomc_cmd_program_t* raw_twice_command_program = nullptr;
+  LOOMC_ASSERT_OK(loomc_cmd_program_create_from_export(
+      program.get(), exports[1], loomc_allocator_system(),
+      &raw_twice_command_program));
+  CmdProgramPtr twice_command_program(raw_twice_command_program);
+
+  loomc_cmd_program_info_t once_info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_INFO,
+      /*.structure_size=*/sizeof(once_info),
   };
   LOOMC_ASSERT_OK(
-      loomc_program_dependency_info(program.get(), 0, &dependency_info));
-  ASSERT_NE(dependency_info.program, nullptr);
-  ASSERT_EQ(loomc_program_artifact_count(dependency_info.program), 1u);
-  const loomc_artifact_t* executable_artifact =
-      loomc_program_artifact_at(dependency_info.program, 0);
-  ASSERT_NE(executable_artifact, nullptr);
-  ASSERT_EQ(executable_artifact->kind, LOOMC_ARTIFACT_KIND_EXECUTABLE);
-  ASSERT_TRUE(loomc_string_view_equal(
-      executable_artifact->format,
-      loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_AMDGPU_HSACO)));
+      loomc_cmd_program_info(once_command_program.get(), &once_info));
+  EXPECT_EQ(once_info.fixed_buffer_count, 1u);
+  EXPECT_EQ(once_info.rebindable_binding_count, 2u);
+  EXPECT_EQ(once_info.parameter_root_count, 1u);
+  EXPECT_EQ(once_info.parameter_count, 1u);
+  EXPECT_EQ(once_info.transient.binding_index,
+            LOOMC_CMD_PROGRAM_BINDING_INVALID);
+  EXPECT_EQ(once_info.launch_counts.binding_index, 1u);
+  EXPECT_EQ(once_info.launch_counts.required_byte_length,
+            sizeof(loomc_dimension3_t));
+
+  loomc_cmd_program_info_t twice_info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_INFO,
+      /*.structure_size=*/sizeof(twice_info),
+  };
+  LOOMC_ASSERT_OK(
+      loomc_cmd_program_info(twice_command_program.get(), &twice_info));
+  EXPECT_EQ(twice_info.fixed_buffer_count, 1u);
+  EXPECT_EQ(twice_info.rebindable_binding_count, 3u);
+  EXPECT_EQ(twice_info.parameter_root_count, 1u);
+  EXPECT_EQ(twice_info.parameter_count, 1u);
+  EXPECT_EQ(twice_info.transient.binding_index, 1u);
+  EXPECT_EQ(twice_info.transient.required_byte_length, 512u);
+  EXPECT_EQ(twice_info.transient.minimum_alignment, 256u);
+  EXPECT_EQ(twice_info.launch_counts.binding_index, 2u);
+  EXPECT_EQ(twice_info.launch_counts.required_byte_length,
+            sizeof(loomc_dimension3_t));
+
+  loomc_cmd_program_parameter_root_info_t once_parameter_root = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PARAMETER_ROOT_INFO,
+      /*.structure_size=*/sizeof(once_parameter_root),
+  };
+  LOOMC_ASSERT_OK(loomc_cmd_program_parameter_root_info(
+      once_command_program.get(), 0, &once_parameter_root));
+  EXPECT_EQ(once_parameter_root.fixed_buffer_index, 0u);
+  EXPECT_EQ(once_parameter_root.required_byte_length, 512u);
+  EXPECT_EQ(once_parameter_root.minimum_alignment, 256u);
+  loomc_cmd_program_parameter_info_t once_parameter = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PARAMETER_INFO,
+      /*.structure_size=*/sizeof(once_parameter),
+  };
+  LOOMC_ASSERT_OK(loomc_cmd_program_parameter_info(once_command_program.get(),
+                                                   0, &once_parameter));
+  EXPECT_TRUE(loomc_string_view_equal(
+      once_parameter.key, loomc_make_cstring_view("source_values")));
+  EXPECT_EQ(once_parameter.fixed_buffer_index, 0u);
+  EXPECT_EQ(once_parameter.byte_offset, 0u);
+  EXPECT_EQ(once_parameter.byte_length, 512u);
+  EXPECT_EQ(once_parameter.minimum_alignment, 256u);
 
   const iree_hal_executable_target_selection_t target_selection = {
       /*.family=*/IREE_SV("amdgpu"),
@@ -482,217 +516,115 @@ TEST(CommandAmdgpuLifecycleTest,
       /*.kind_flags=*/IREE_HAL_EXECUTABLE_TARGET_KIND_FLAG_EXACT,
       /*.physical_device_affinity=*/0,
   };
-  const iree_hal_executable_target_selection_result_t target_result =
-      iree_hal_device_spec_select_executable_target(
-          iree_hal_device_spec(device.get()), &target_selection);
-  ASSERT_EQ(target_result.outcome,
-            IREE_HAL_EXECUTABLE_TARGET_SELECTION_OUTCOME_SELECTED);
-  iree_hal_executable_load_params_t load_params;
-  iree_hal_executable_load_params_initialize(&load_params);
-  load_params.executable_data =
-      iree_make_const_byte_span(executable_artifact->contents.data,
-                                executable_artifact->contents.data_length);
-  iree_hal_executable_t* raw_executable = nullptr;
-  IREE_ASSERT_OK(iree_hal_device_load_executable(
-      device.get(), IREE_HAL_QUEUE_AFFINITY_ANY, target_result.target,
-      &load_params, &raw_executable));
-  ExecutablePtr executable(raw_executable);
-
-  const iree_hal_executable_function_t function =
-      iree_hal_executable_function_from_index(0);
-  iree_hal_executable_function_info_t function_info = {};
-  IREE_ASSERT_OK(iree_hal_executable_function_info(executable.get(), function,
-                                                   &function_info));
-  std::vector<iree_hal_executable_function_parameter_t> parameters(
-      function_info.parameter_count);
-  IREE_ASSERT_OK(iree_hal_executable_function_parameters(
-      executable.get(), function, parameters.size(), parameters.data()));
-
-  const loomc_artifact_t* once_command_artifact =
-      FindArtifact(program.get(), LOOMC_ARTIFACT_KIND_EXECUTABLE,
-                   LOOMC_ARTIFACT_FORMAT_COMMAND_PROGRAM, "add_seven_once");
-  ASSERT_NE(once_command_artifact, nullptr);
-  loom_cmd_program_t once_command_program = {};
-  IREE_ASSERT_OK(loom_cmd_program_parse(
-      iree_make_const_byte_span(once_command_artifact->contents.data,
-                                once_command_artifact->contents.data_length),
-      &once_command_program));
-  ASSERT_EQ(once_command_program.requirements.fixed_buffer_count, 1u);
-  ASSERT_EQ(once_command_program.requirements.rebindable_binding_count, 2u);
-  ASSERT_EQ(once_command_program.requirements.executable_count, 1u);
-  ASSERT_EQ(once_command_program.requirements.entry_count, 1u);
-  EXPECT_EQ(once_command_program.requirements.transient.binding_index,
-            UINT32_MAX);
-  EXPECT_EQ(once_command_program.requirements.transient.required_byte_length,
-            0u);
-  EXPECT_EQ(once_command_program.requirements.launch_counts.binding_index, 1u);
-  EXPECT_EQ(
-      once_command_program.requirements.launch_counts.required_byte_length,
-      LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
-  EXPECT_EQ(once_command_program.requirements.launch_counts.minimum_alignment,
-            LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_ALIGNMENT);
-  ASSERT_EQ(once_command_program.parameter_roots.count, 1u);
-  const loom_cmd_program_parameter_root_t once_parameter_root =
-      loom_cmd_program_parameter_root_at(&once_command_program, 0);
-  EXPECT_EQ(once_parameter_root.fixed_buffer_index, 0u);
-  EXPECT_EQ(once_parameter_root.required_byte_length, 512u);
-  EXPECT_EQ(once_parameter_root.minimum_alignment, 256u);
-  ASSERT_EQ(once_command_program.parameters.count, 1u);
-  const loom_cmd_program_parameter_t once_parameter =
-      loom_cmd_program_parameter_at(&once_command_program, 0);
-  EXPECT_TRUE(
-      iree_string_view_equal(once_parameter.key, IREE_SV("source_values")));
-  EXPECT_EQ(once_parameter.fixed_buffer_index, 0u);
-  EXPECT_EQ(once_parameter.byte_offset, 0u);
-  EXPECT_EQ(once_parameter.byte_length, 512u);
-  EXPECT_EQ(once_parameter.minimum_alignment, 256u);
-  ASSERT_EQ(once_command_program.commands.count, 1u);
-  EXPECT_EQ(loom_cmd_program_command_at(&once_command_program, 0).kind,
-            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
-
-  const loomc_artifact_t* twice_command_artifact =
-      FindArtifact(program.get(), LOOMC_ARTIFACT_KIND_EXECUTABLE,
-                   LOOMC_ARTIFACT_FORMAT_COMMAND_PROGRAM, "add_seven_twice");
-  ASSERT_NE(twice_command_artifact, nullptr);
-  loom_cmd_program_t twice_command_program = {};
-  IREE_ASSERT_OK(loom_cmd_program_parse(
-      iree_make_const_byte_span(twice_command_artifact->contents.data,
-                                twice_command_artifact->contents.data_length),
-      &twice_command_program));
-  ASSERT_EQ(twice_command_program.requirements.fixed_buffer_count, 1u);
-  ASSERT_EQ(twice_command_program.requirements.rebindable_binding_count, 3u);
-  ASSERT_EQ(twice_command_program.requirements.executable_count, 1u);
-  ASSERT_EQ(twice_command_program.requirements.entry_count, 1u);
-  EXPECT_EQ(twice_command_program.requirements.transient.binding_index, 1u);
-  EXPECT_EQ(twice_command_program.requirements.transient.required_byte_length,
-            512u);
-  EXPECT_EQ(twice_command_program.requirements.transient.minimum_alignment,
-            256u);
-  EXPECT_EQ(twice_command_program.requirements.launch_counts.binding_index, 2u);
-  EXPECT_EQ(
-      twice_command_program.requirements.launch_counts.required_byte_length,
-      LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
-  EXPECT_EQ(twice_command_program.requirements.launch_counts.minimum_alignment,
-            LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_ALIGNMENT);
-  ASSERT_EQ(twice_command_program.parameter_roots.count, 1u);
-  ASSERT_EQ(twice_command_program.parameters.count, 1u);
-  EXPECT_TRUE(iree_string_view_equal(
-      loom_cmd_program_parameter_at(&twice_command_program, 0).key,
-      IREE_SV("source_values")));
-  ASSERT_EQ(twice_command_program.commands.count, 3u);
-  EXPECT_EQ(loom_cmd_program_command_at(&twice_command_program, 0).kind,
-            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
-  EXPECT_EQ(loom_cmd_program_command_at(&twice_command_program, 1).kind,
-            LOOM_CMD_PROGRAM_COMMAND_KIND_EXECUTION_BARRIER);
-  EXPECT_EQ(loom_cmd_program_command_at(&twice_command_program, 2).kind,
-            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
-
-  const std::array<iree_hal_executable_t*, 1> executables = {
-      executable.get(),
+  const loomc_cmd_iree_hal_package_options_t package_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_IREE_HAL_PACKAGE_OPTIONS,
+      /*.structure_size=*/sizeof(package_options),
+      /*.next=*/nullptr,
+      /*.device=*/device.get(),
+      /*.executable_queue_affinity=*/IREE_HAL_QUEUE_AFFINITY_ANY,
+      /*.target_selection=*/target_selection,
+      /*.executable_artifact_format=*/
+      loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_AMDGPU_HSACO),
   };
-  const std::array<loom_cmd_iree_hal_entry_t, 1> entries = {{
-      {
-          /*.executable_index=*/0,
-          /*.function=*/function,
-          /*.info=*/function_info,
-          /*.parameters=*/parameters.data(),
-      },
-  }};
-  const loomc_artifact_t* launch_artifact = FindArtifact(
-      program.get(), LOOMC_ARTIFACT_KIND_LAUNCH_CONFIG,
-      LOOMC_ARTIFACT_FORMAT_LOOM_BYTECODE, "command-program-launch.loombc");
-  ASSERT_NE(launch_artifact, nullptr);
-  loomc_launch_config_module_t* raw_launch_module = nullptr;
-  LOOMC_ASSERT_OK(loomc_launch_config_module_load(
-      launch_artifact, /*options=*/nullptr, loomc_allocator_system(),
-      &raw_launch_module));
-  LaunchModulePtr launch_module(raw_launch_module);
-  loomc_launch_config_context_t* raw_launch_context = nullptr;
-  LOOMC_ASSERT_OK(loomc_launch_config_context_create(
-      launch_module.get(), /*options=*/nullptr, loomc_allocator_system(),
-      &raw_launch_context));
-  LaunchContextPtr launch_context(raw_launch_context);
-  ASSERT_EQ(loomc_launch_config_module_function_count(launch_module.get()), 2u);
-  loomc_launch_config_function_t once_launch_function =
-      loomc_launch_config_function_invalid();
-  LOOMC_ASSERT_OK(loomc_launch_config_module_lookup_function_by_name(
-      launch_module.get(), loomc_make_cstring_view("add_seven_once"),
-      &once_launch_function));
-  loomc_launch_config_function_info_t once_launch_function_info = {
-      /*.type=*/LOOMC_STRUCTURE_TYPE_LAUNCH_CONFIG_FUNCTION_INFO,
-      /*.structure_size=*/sizeof(once_launch_function_info),
-  };
-  LOOMC_ASSERT_OK(loomc_launch_config_module_function_info(
-      launch_module.get(), once_launch_function, &once_launch_function_info));
-  ASSERT_EQ(once_launch_function_info.workload_argument_count, 1u);
-  ASSERT_EQ(once_launch_function_info.result_count, 1u);
-  ASSERT_GT(once_launch_function_info.output_byte_length, 0u);
-
-  loomc_launch_config_function_t twice_launch_function =
-      loomc_launch_config_function_invalid();
-  LOOMC_ASSERT_OK(loomc_launch_config_module_lookup_function_by_name(
-      launch_module.get(), loomc_make_cstring_view("add_seven_twice"),
-      &twice_launch_function));
-  loomc_launch_config_function_info_t twice_launch_function_info = {
-      /*.type=*/LOOMC_STRUCTURE_TYPE_LAUNCH_CONFIG_FUNCTION_INFO,
-      /*.structure_size=*/sizeof(twice_launch_function_info),
-  };
-  LOOMC_ASSERT_OK(loomc_launch_config_module_function_info(
-      launch_module.get(), twice_launch_function, &twice_launch_function_info));
-  ASSERT_EQ(twice_launch_function_info.workload_argument_count, 1u);
-  ASSERT_EQ(twice_launch_function_info.result_count, 1u);
-  ASSERT_EQ(twice_launch_function_info.output_byte_length,
-            once_launch_function_info.output_byte_length);
+  loomc_cmd_iree_hal_package_t* raw_hal_package = nullptr;
+  LOOMC_ASSERT_OK(loomc_cmd_iree_hal_package_create(
+      program.get(), &package_options, loomc_allocator_system(),
+      &raw_hal_package));
+  CmdHalPackagePtr hal_package(raw_hal_package);
 
   static constexpr iree_host_size_t kElementCount = 128;
   static constexpr iree_host_size_t kWorkload = 73;
   const iree_device_size_t kBufferByteLength =
       once_parameter_root.required_byte_length;
+  iree_hal_buffer_t* raw_once_source_buffer = nullptr;
+  IREE_ASSERT_OK(AllocateStorageBuffer(device.get(), kBufferByteLength,
+                                       &raw_once_source_buffer));
+  HalBufferPtr once_source_buffer(raw_once_source_buffer);
+  iree_hal_buffer_t* raw_twice_source_buffer = nullptr;
+  IREE_ASSERT_OK(AllocateStorageBuffer(device.get(), kBufferByteLength,
+                                       &raw_twice_source_buffer));
+  HalBufferPtr twice_source_buffer(raw_twice_source_buffer);
+  const iree_hal_buffer_ref_t once_fixed_source = iree_hal_make_buffer_ref(
+      once_source_buffer.get(), 0, IREE_HAL_WHOLE_BUFFER);
+  const iree_hal_buffer_ref_t twice_fixed_source = iree_hal_make_buffer_ref(
+      twice_source_buffer.get(), 0, IREE_HAL_WHOLE_BUFFER);
+
+  const loomc_cmd_iree_hal_program_options_t once_program_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_IREE_HAL_PROGRAM_OPTIONS,
+      /*.structure_size=*/sizeof(once_program_options),
+      /*.next=*/nullptr,
+      /*.command_buffer_mode=*/IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT,
+      /*.queue_affinity=*/IREE_HAL_QUEUE_AFFINITY_ANY,
+      /*.fixed_buffers=*/&once_fixed_source,
+      /*.fixed_buffer_count=*/1,
+  };
+  loomc_cmd_iree_hal_program_t* raw_once_hal_program = nullptr;
+  LOOMC_ASSERT_OK(loomc_cmd_iree_hal_program_create(
+      hal_package.get(), once_command_program.get(), &once_program_options,
+      loomc_allocator_system(), &raw_once_hal_program));
+  CmdHalProgramPtr once_hal_program(raw_once_hal_program);
+
+  const loomc_cmd_iree_hal_program_options_t twice_program_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_IREE_HAL_PROGRAM_OPTIONS,
+      /*.structure_size=*/sizeof(twice_program_options),
+      /*.next=*/nullptr,
+      /*.command_buffer_mode=*/IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT,
+      /*.queue_affinity=*/IREE_HAL_QUEUE_AFFINITY_ANY,
+      /*.fixed_buffers=*/&twice_fixed_source,
+      /*.fixed_buffer_count=*/1,
+  };
+  loomc_cmd_iree_hal_program_t* raw_twice_hal_program = nullptr;
+  LOOMC_ASSERT_OK(loomc_cmd_iree_hal_program_create(
+      hal_package.get(), twice_command_program.get(), &twice_program_options,
+      loomc_allocator_system(), &raw_twice_hal_program));
+  CmdHalProgramPtr twice_hal_program(raw_twice_hal_program);
+
+  loomc_launch_config_module_t* launch_module =
+      loomc_cmd_iree_hal_program_launch_module(once_hal_program.get());
+  ASSERT_NE(launch_module, nullptr);
+  EXPECT_EQ(launch_module,
+            loomc_cmd_iree_hal_program_launch_module(twice_hal_program.get()));
+  ASSERT_EQ(loomc_launch_config_module_function_count(launch_module), 2u);
+  const loomc_launch_config_function_t once_launch_function =
+      loomc_cmd_iree_hal_program_launch_function(once_hal_program.get());
+  loomc_launch_config_function_info_t once_launch_function_info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_LAUNCH_CONFIG_FUNCTION_INFO,
+      /*.structure_size=*/sizeof(once_launch_function_info),
+  };
+  LOOMC_ASSERT_OK(loomc_launch_config_module_function_info(
+      launch_module, once_launch_function, &once_launch_function_info));
+  ASSERT_EQ(once_launch_function_info.workload_argument_count, 1u);
+  ASSERT_EQ(once_launch_function_info.result_count, 1u);
+  ASSERT_GT(once_launch_function_info.output_byte_length, 0u);
+
+  const loomc_launch_config_function_t twice_launch_function =
+      loomc_cmd_iree_hal_program_launch_function(twice_hal_program.get());
+  loomc_launch_config_function_info_t twice_launch_function_info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_LAUNCH_CONFIG_FUNCTION_INFO,
+      /*.structure_size=*/sizeof(twice_launch_function_info),
+  };
+  LOOMC_ASSERT_OK(loomc_launch_config_module_function_info(
+      launch_module, twice_launch_function, &twice_launch_function_info));
+  ASSERT_EQ(twice_launch_function_info.workload_argument_count, 1u);
+  ASSERT_EQ(twice_launch_function_info.result_count, 1u);
+  ASSERT_EQ(twice_launch_function_info.output_byte_length,
+            once_launch_function_info.output_byte_length);
+
+  loomc_launch_config_context_t* raw_launch_context = nullptr;
+  LOOMC_ASSERT_OK(loomc_launch_config_context_create(
+      launch_module, /*options=*/nullptr, loomc_allocator_system(),
+      &raw_launch_context));
+  LaunchContextPtr launch_context(raw_launch_context);
   const iree_device_size_t launch_count_byte_length =
       once_launch_function_info.output_byte_length;
-  iree_hal_buffer_t* raw_source_buffer = nullptr;
-  IREE_ASSERT_OK(AllocateStorageBuffer(device.get(), kBufferByteLength,
-                                       &raw_source_buffer));
-  HalBufferPtr source_buffer(raw_source_buffer);
-  const iree_hal_buffer_ref_t fixed_source =
-      iree_hal_make_buffer_ref(source_buffer.get(), 0, IREE_HAL_WHOLE_BUFFER);
-  const loom_cmd_iree_hal_inputs_t once_materialization_inputs = {
-      /*.binding_count=*/2,
-      /*.fixed_buffer_count=*/1,
-      /*.fixed_buffers=*/&fixed_source,
-      /*.executable_count=*/executables.size(),
-      /*.executables=*/executables.data(),
-      /*.entry_count=*/entries.size(),
-      /*.entries=*/entries.data(),
-  };
-  iree_hal_command_buffer_t* raw_once_command_buffer = nullptr;
-  IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program(
-      &once_command_program, &once_materialization_inputs, device.get(),
-      IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT, IREE_HAL_QUEUE_AFFINITY_ANY,
-      &raw_once_command_buffer, iree_allocator_system()));
-  HalCommandBufferPtr once_command_buffer(raw_once_command_buffer);
-
-  const loom_cmd_iree_hal_inputs_t twice_materialization_inputs = {
-      /*.binding_count=*/3,
-      /*.fixed_buffer_count=*/1,
-      /*.fixed_buffers=*/&fixed_source,
-      /*.executable_count=*/executables.size(),
-      /*.executables=*/executables.data(),
-      /*.entry_count=*/entries.size(),
-      /*.entries=*/entries.data(),
-  };
-  iree_hal_command_buffer_t* raw_twice_command_buffer = nullptr;
-  IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program(
-      &twice_command_program, &twice_materialization_inputs, device.get(),
-      IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT, IREE_HAL_QUEUE_AFFINITY_ANY,
-      &raw_twice_command_buffer, iree_allocator_system()));
-  HalCommandBufferPtr twice_command_buffer(raw_twice_command_buffer);
 
   program.reset();
   for (ProgramPtr& unit_program : unit_programs) unit_program.reset();
   plan.reset();
   coordinator_workspace.reset();
-  executable.reset();
+  once_command_program.reset();
+  twice_command_program.reset();
+  hal_package.reset();
 
   iree_hal_buffer_t* raw_intermediate_buffer = nullptr;
   IREE_ASSERT_OK(AllocateStorageBuffer(device.get(), kBufferByteLength,
@@ -711,13 +643,19 @@ TEST(CommandAmdgpuLifecycleTest,
       device.get(), launch_count_byte_length, &raw_launch_count_buffer));
   HalBufferPtr launch_count_buffer(raw_launch_count_buffer);
 
-  std::array<uint32_t, kElementCount> source_values = {};
-  for (iree_host_size_t i = 0; i < source_values.size(); ++i) {
-    source_values[i] = 1000u + static_cast<uint32_t>(i);
+  std::array<uint32_t, kElementCount> once_source_values = {};
+  std::array<uint32_t, kElementCount> twice_source_values = {};
+  for (iree_host_size_t i = 0; i < once_source_values.size(); ++i) {
+    once_source_values[i] = 1000u + static_cast<uint32_t>(i);
+    twice_source_values[i] = 2000u + static_cast<uint32_t>(i);
   }
   const std::array<uint32_t, kElementCount> zero_values = {};
   IREE_ASSERT_OK(iree_hal_device_transfer_h2d(
-      device.get(), source_values.data(), source_buffer.get(), 0,
+      device.get(), once_source_values.data(), once_source_buffer.get(), 0,
+      kBufferByteLength, IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT,
+      iree_infinite_timeout()));
+  IREE_ASSERT_OK(iree_hal_device_transfer_h2d(
+      device.get(), twice_source_values.data(), twice_source_buffer.get(), 0,
       kBufferByteLength, IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT,
       iree_infinite_timeout()));
   IREE_ASSERT_OK(iree_hal_device_transfer_h2d(
@@ -763,9 +701,11 @@ TEST(CommandAmdgpuLifecycleTest,
       /*launch_count=*/
       {launch_count_buffer.get(), 0, launch_count_byte_length},
   };
-  IREE_ASSERT_OK(SubmitAndWait(device.get(), once_command_buffer.get(),
-                               {/*.count=*/IREE_ARRAYSIZE(once_bindings),
-                                /*.bindings=*/once_bindings}));
+  IREE_ASSERT_OK(SubmitAndWait(
+      device.get(),
+      loomc_cmd_iree_hal_program_command_buffer(once_hal_program.get()),
+      {/*.count=*/IREE_ARRAYSIZE(once_bindings),
+       /*.bindings=*/once_bindings}));
 
   loomc_launch_config_outputs_t twice_outputs = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_LAUNCH_CONFIG_OUTPUTS,
@@ -786,9 +726,11 @@ TEST(CommandAmdgpuLifecycleTest,
       /*launch_count=*/
       {launch_count_buffer.get(), 0, launch_count_byte_length},
   };
-  IREE_ASSERT_OK(SubmitAndWait(device.get(), twice_command_buffer.get(),
-                               {/*.count=*/IREE_ARRAYSIZE(twice_bindings),
-                                /*.bindings=*/twice_bindings}));
+  IREE_ASSERT_OK(SubmitAndWait(
+      device.get(),
+      loomc_cmd_iree_hal_program_command_buffer(twice_hal_program.get()),
+      {/*.count=*/IREE_ARRAYSIZE(twice_bindings),
+       /*.bindings=*/twice_bindings}));
 
   std::array<uint32_t, kElementCount> once_actual_values = {};
   IREE_ASSERT_OK(iree_hal_device_transfer_d2h(
@@ -801,9 +743,10 @@ TEST(CommandAmdgpuLifecycleTest,
       kBufferByteLength, IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT,
       iree_infinite_timeout()));
   for (iree_host_size_t i = 0; i < once_actual_values.size(); ++i) {
-    const uint32_t expected = i < kWorkload ? source_values[i] + 7 : 0;
+    const uint32_t expected = i < kWorkload ? once_source_values[i] + 7 : 0;
     EXPECT_EQ(once_actual_values[i], expected) << "element " << i;
-    const uint32_t twice_expected = i < kWorkload ? source_values[i] + 14 : 0;
+    const uint32_t twice_expected =
+        i < kWorkload ? twice_source_values[i] + 14 : 0;
     EXPECT_EQ(twice_actual_values[i], twice_expected) << "element " << i;
   }
 
