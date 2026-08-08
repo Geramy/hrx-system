@@ -152,6 +152,18 @@ static PassProgramPtr CreateEmptyPassProgram(loomc_context_t* context) {
   return PassProgramPtr(pass_program);
 }
 
+static PassProgramPtr CreateCommandPreparationPassProgram(
+    loomc_context_t* context) {
+  loomc_pass_program_t* pass_program = nullptr;
+  loomc_result_t* result = nullptr;
+  LOOMC_EXPECT_OK(loomc_pass_program_create_from_pipeline_text(
+      context, loomc_make_cstring_view("unroll-scf-for,canonicalize,cse"),
+      /*options=*/nullptr, loomc_allocator_system(), &pass_program, &result));
+  ResultPtr result_ptr(result);
+  EXPECT_TRUE(loomc_result_succeeded(result_ptr.get()));
+  return PassProgramPtr(pass_program);
+}
+
 static PassProgramPtr CreateTargetPassProgram(loomc_context_t* context) {
   const loomc_target_pipeline_options_t options = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_TARGET_PIPELINE_OPTIONS,
@@ -727,6 +739,178 @@ command.program.def public target(@command_target) @parameter_root() launch(%par
   EXPECT_EQ(parameter_info.byte_offset, 0u);
   EXPECT_EQ(parameter_info.byte_length, 512u);
   EXPECT_EQ(parameter_info.minimum_alignment, 256u);
+}
+
+TEST(CmdProgramPlanTest, LowersModelShapedScheduleAfterPreparation) {
+  ContextPtr context = CreateContext();
+  WorkspacePtr coordinator_workspace = CreateWorkspace();
+  SourcePtr source = CreateSource(R"(
+spirv.target<vulkan1_3> @kernel_target {abi = hal_kernel}
+
+target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
+
+kernel.def target(@kernel_target) @stage(%element_count: index) {
+  %one = index.constant 1 : index
+  %bounded_count = index.assume %element_count [range(%element_count, 1, 512)] : index
+  kernel.launch.config workgroups(%bounded_count, %one, %one) workgroup_size(%one, %one, %one) : index
+} launch(%left: view<1xi32, #dense>, %right: view<1xi32, #dense>, %input: buffer, %scratch: buffer, %output: buffer) {
+  kernel.return
+}
+
+command.program.def public target(@command_target) @decode(%element_count: index) launch(%attention_parameters: buffer, %expert_parameters: buffer, %input: buffer, %output: buffer) where [range(%element_count, 1, 512)] {
+  %layer_begin = index.constant 0 : index
+  %layer_end = index.constant 48 : index
+  %layer_step = index.constant 1 : index
+  %scratch_bytes = index.constant 256 : offset
+  %scratch = buffer.alloca %scratch_bytes {base_alignment = 256, memory_space = global} : buffer
+
+  %token_embedding = command.parameter %attention_parameters, "token_embd.weight"[] : view<1xi32, #dense>
+  %output_norm = command.parameter %attention_parameters, "output_norm.weight"[] : view<1xi32, #dense>
+  %output_projection = command.parameter %attention_parameters, "output.weight"[] : view<1xi32, #dense>
+  kernel.launch @stage[%element_count](%token_embedding, %token_embedding, %input, %scratch, %output) : [index](view<1xi32, #dense>, view<1xi32, #dense>, buffer, buffer, buffer)
+  kernel.launch @stage[%element_count](%output_norm, %output_norm, %input, %scratch, %output) : [index](view<1xi32, #dense>, view<1xi32, #dense>, buffer, buffer, buffer)
+  kernel.launch @stage[%element_count](%output_projection, %output_projection, %input, %scratch, %output) : [index](view<1xi32, #dense>, view<1xi32, #dense>, buffer, buffer, buffer)
+
+  scf.for %layer = [%layer_begin to %layer_end step %layer_step] unroll {
+    %attention_norm = command.parameter %attention_parameters, "blk.{}.attn_norm.weight"[%layer] : view<1xi32, #dense>
+    %query = command.parameter %attention_parameters, "blk.{}.attn_q.weight"[%layer] : view<1xi32, #dense>
+    %key = command.parameter %attention_parameters, "blk.{}.attn_k.weight"[%layer] : view<1xi32, #dense>
+    %value = command.parameter %attention_parameters, "blk.{}.attn_v.weight"[%layer] : view<1xi32, #dense>
+    %attention_output = command.parameter %attention_parameters, "blk.{}.attn_output.weight"[%layer] : view<1xi32, #dense>
+    %ffn_norm = command.parameter %attention_parameters, "blk.{}.ffn_norm.weight"[%layer] : view<1xi32, #dense>
+    %router = command.parameter %expert_parameters, "blk.{}.ffn_gate_inp.weight"[%layer] : view<1xi32, #dense>
+    %gate = command.parameter %expert_parameters, "blk.{}.ffn_gate.weight"[%layer] : view<1xi32, #dense>
+    %up = command.parameter %expert_parameters, "blk.{}.ffn_up.weight"[%layer] : view<1xi32, #dense>
+    %down = command.parameter %expert_parameters, "blk.{}.ffn_down.weight"[%layer] : view<1xi32, #dense>
+    %expert_scale = command.parameter %expert_parameters, "blk.{}.ffn_gate_exps.weight"[%layer] : view<1xi32, #dense>
+    %shared_scale = command.parameter %expert_parameters, "blk.{}.ffn_gate_shexp.weight"[%layer] : view<1xi32, #dense>
+    command.concurrent {
+      kernel.launch @stage[%element_count](%attention_norm, %query, %input, %scratch, %output) : [index](view<1xi32, #dense>, view<1xi32, #dense>, buffer, buffer, buffer)
+      kernel.launch @stage[%element_count](%key, %value, %input, %scratch, %output) : [index](view<1xi32, #dense>, view<1xi32, #dense>, buffer, buffer, buffer)
+      kernel.launch @stage[%element_count](%attention_output, %ffn_norm, %input, %scratch, %output) : [index](view<1xi32, #dense>, view<1xi32, #dense>, buffer, buffer, buffer)
+    }
+    kernel.launch @stage[%element_count](%router, %gate, %input, %scratch, %output) : [index](view<1xi32, #dense>, view<1xi32, #dense>, buffer, buffer, buffer)
+    kernel.launch @stage[%element_count](%up, %down, %input, %scratch, %output) : [index](view<1xi32, #dense>, view<1xi32, #dense>, buffer, buffer, buffer)
+    kernel.launch @stage[%element_count](%expert_scale, %shared_scale, %input, %scratch, %output) : [index](view<1xi32, #dense>, view<1xi32, #dense>, buffer, buffer, buffer)
+    scf.yield
+  }
+  command.return
+}
+)");
+  ModulePtr module = DeserializeModule(
+      context.get(), coordinator_workspace.get(), source.get());
+  PassProgramPtr preparation_pass_program =
+      CreateCommandPreparationPassProgram(context.get());
+  PassProgramPtr unit_pass_program = CreateTargetPassProgram(context.get());
+  CompilerPtr compiler = CreateCompiler(context.get());
+  const loomc_cmd_program_plan_options_t command_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PLAN_OPTIONS,
+      /*.structure_size=*/sizeof(command_options),
+      /*.next=*/nullptr,
+      /*.dependency_artifact_format=*/
+      loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_SPIRV),
+  };
+  const loomc_program_plan_options_t plan_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_OPTIONS,
+      /*.structure_size=*/sizeof(plan_options),
+      /*.next=*/&command_options,
+  };
+
+  loomc_program_plan_t* raw_plan = nullptr;
+  loomc_result_t* raw_result = nullptr;
+  LOOMC_ASSERT_OK(loomc_prepare_programs(
+      compiler.get(), coordinator_workspace.get(),
+      preparation_pass_program.get(), unit_pass_program.get(), module.get(),
+      &plan_options, loomc_allocator_system(), &raw_plan, &raw_result));
+  PlanPtr plan(raw_plan);
+  ResultPtr result(raw_result);
+  ASSERT_TRUE(loomc_result_succeeded(result.get()));
+  ASSERT_EQ(loomc_program_plan_root_count(plan.get()), 1u);
+  ASSERT_EQ(loomc_program_plan_unit_count(plan.get()), 2u);
+
+  WorkspacePtr worker_workspace = CreateWorkspace();
+  loomc_program_t* raw_root_program = nullptr;
+  LOOMC_ASSERT_OK(loomc_program_plan_compile_unit(
+      plan.get(), worker_workspace.get(), loomc_program_plan_unit_from_index(0),
+      /*options=*/nullptr, loomc_allocator_system(), &raw_root_program,
+      &raw_result));
+  ProgramPtr root_program(raw_root_program);
+  result.reset(raw_result);
+  ASSERT_TRUE(loomc_result_succeeded(result.get()));
+
+  loomc_program_export_t root_export = loomc_program_export_invalid();
+  LOOMC_ASSERT_OK(loomc_program_lookup_export(
+      root_program.get(), loomc_make_cstring_view("decode"), &root_export));
+  loomc_cmd_program_t* raw_command_program = nullptr;
+  LOOMC_ASSERT_OK(loomc_cmd_program_create_from_export(
+      root_program.get(), root_export, loomc_allocator_system(),
+      &raw_command_program));
+  CmdProgramPtr command_program(raw_command_program);
+
+  loomc_cmd_program_info_t info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_INFO,
+      /*.structure_size=*/sizeof(info),
+  };
+  LOOMC_ASSERT_OK(loomc_cmd_program_info(command_program.get(), &info));
+  EXPECT_EQ(info.fixed_buffer_count, 2u);
+  EXPECT_EQ(info.rebindable_binding_count, 4u);
+  EXPECT_EQ(info.parameter_root_count, 2u);
+  EXPECT_EQ(info.parameter_count, 579u);
+  EXPECT_EQ(info.transient.binding_index, 2u);
+  EXPECT_EQ(info.transient.required_byte_length, 256u);
+  EXPECT_EQ(info.launch_counts.binding_index, 3u);
+  EXPECT_EQ(info.launch_counts.required_byte_length,
+            sizeof(loomc_dimension3_t));
+
+  loomc_cmd_program_parameter_root_info_t attention_root = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PARAMETER_ROOT_INFO,
+      /*.structure_size=*/sizeof(attention_root),
+  };
+  LOOMC_ASSERT_OK(loomc_cmd_program_parameter_root_info(command_program.get(),
+                                                        0, &attention_root));
+  EXPECT_EQ(attention_root.fixed_buffer_index, 0u);
+  EXPECT_EQ(attention_root.required_byte_length, 74244u);
+  EXPECT_EQ(attention_root.minimum_alignment, 256u);
+  loomc_cmd_program_parameter_root_info_t expert_root = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PARAMETER_ROOT_INFO,
+      /*.structure_size=*/sizeof(expert_root),
+  };
+  LOOMC_ASSERT_OK(loomc_cmd_program_parameter_root_info(command_program.get(),
+                                                        1, &expert_root));
+  EXPECT_EQ(expert_root.fixed_buffer_index, 1u);
+  EXPECT_EQ(expert_root.required_byte_length, 73476u);
+  EXPECT_EQ(expert_root.minimum_alignment, 256u);
+
+  loomc_cmd_program_parameter_info_t final_parameter = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PARAMETER_INFO,
+      /*.structure_size=*/sizeof(final_parameter),
+  };
+  LOOMC_ASSERT_OK(loomc_cmd_program_parameter_info(command_program.get(), 578,
+                                                   &final_parameter));
+  EXPECT_TRUE(loomc_string_view_equal(
+      final_parameter.key,
+      loomc_make_cstring_view("blk.47.ffn_gate_shexp.weight")));
+  EXPECT_EQ(final_parameter.fixed_buffer_index, 1u);
+
+  const loomc_artifact_t* artifact =
+      FindArtifact(root_program.get(), LOOMC_ARTIFACT_KIND_EXECUTABLE,
+                   LOOMC_ARTIFACT_FORMAT_COMMAND_PROGRAM, "decode");
+  ASSERT_NE(artifact, nullptr);
+  loom_cmd_program_t parsed = {};
+  IREE_ASSERT_OK(loom_cmd_program_parse(
+      iree_make_const_byte_span(artifact->contents.data,
+                                artifact->contents.data_length),
+      &parsed));
+  uint32_t dispatch_count = 0;
+  for (uint32_t i = 0; i < parsed.commands.count; ++i) {
+    const loom_cmd_program_command_t command =
+        loom_cmd_program_command_at(&parsed, i);
+    if (command.kind ==
+        LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC) {
+      ++dispatch_count;
+    }
+  }
+  EXPECT_EQ(dispatch_count, 291u);
 }
 
 }  // namespace
