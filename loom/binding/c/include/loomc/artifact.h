@@ -46,6 +46,9 @@ extern "C" {
 /// Binary Loom bytecode module artifact format.
 #define LOOMC_ARTIFACT_FORMAT_LOOM_BYTECODE "loombc"
 
+/// Portable Loom command program artifact format.
+#define LOOMC_ARTIFACT_FORMAT_COMMAND_PROGRAM "loom-cmd"
+
 /// JSON report artifact format.
 #define LOOMC_ARTIFACT_FORMAT_JSON "json"
 

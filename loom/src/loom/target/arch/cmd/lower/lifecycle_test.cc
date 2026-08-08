@@ -6,46 +6,35 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 #include "iree/async/frontier_tracker.h"
 #include "iree/async/util/proactor_pool.h"
-#include "iree/base/internal/arena.h"
 #include "iree/hal/api.h"
 #include "iree/hal/drivers/local_sync/sync_device.h"
 #include "iree/hal/local/loaders/static_library_loader.h"
 #include "iree/testing/gtest.h"
 #include "iree/testing/status_matchers.h"
-#include "loom/binding/c/src/context.h"
-#include "loom/binding/c/src/module.h"
-#include "loom/binding/c/src/workspace.h"
-#include "loom/codegen/low/verify.h"
-#include "loom/format/text/parser.h"
-#include "loom/ir/context.h"
-#include "loom/ir/module.h"
-#include "loom/ops/op_registry.h"
-#include "loom/target/arch/cmd/descriptors/low_registry.h"
+#include "loom/binding/c/target/cmd/program_plan.h"
 #include "loom/target/arch/cmd/iree_hal/recording.h"
 #include "loom/target/arch/cmd/iree_hal/recording_test_executable.h"
-#include "loom/target/arch/cmd/lower/launch_artifact.h"
-#include "loom/target/arch/cmd/lower/program_plan.h"
-#include "loom/target/arch/cmd/lower/serialize.h"
-#include "loom/testing/diagnostic_matchers.h"
-#include "loom/testing/module_ptr.h"
-#include "loom/verify/verify.h"
+#include "loom/target/arch/cmd/lower/launch_graph.h"
+#include "loom/target/arch/cmd/program.h"
 #include "loomc/compile.h"
 #include "loomc/launch_config_module.h"
 #include "loomc/module.h"
 #include "loomc/pass.h"
+#include "loomc/program.h"
+#include "loomc/program_plan.h"
 #include "loomc/result.h"
+#include "loomc/source.h"
 #include "loomc/workspace.h"
 #include "test/util.h"
 
 namespace loom {
 namespace {
 
-using ::loom::testing::DiagnosticEmissionCapture;
-using InternalModulePtr = ::loom::testing::ModulePtr;
 using LaunchModulePtr =
     loomc::testing::HandlePtr<loomc_launch_config_module_t,
                               loomc_launch_config_module_release>;
@@ -64,20 +53,12 @@ using CompilerPtr =
     loomc::testing::HandlePtr<loomc_compiler_t, loomc_compiler_release>;
 using PassProgramPtr =
     loomc::testing::HandlePtr<loomc_pass_program_t, loomc_pass_program_release>;
-
-struct CommandRootArtifacts {
-  // Closed portable command-program bytes.
-  std::vector<uint8_t> command_program;
-};
-
-struct CommandArtifacts {
-  // Multi-entry evaluation-ready launch-configuration Loombc.
-  std::vector<uint8_t> launch_config;
-  // Per-root artifacts in requested export order.
-  std::vector<CommandRootArtifacts> roots;
-  // Independently compiled dependency-unit Loombc artifacts.
-  std::vector<std::vector<uint8_t>> dependency_modules;
-};
+using PlanPtr =
+    loomc::testing::HandlePtr<loomc_program_plan_t, loomc_program_plan_release>;
+using ProgramPtr =
+    loomc::testing::HandlePtr<loomc_program_t, loomc_program_release>;
+using SourcePtr =
+    loomc::testing::HandlePtr<loomc_source_t, loomc_source_release>;
 
 static iree_hal_device_t* CreateSyncDevice() {
   iree_async_proactor_pool_t* proactor_pool = nullptr;
@@ -215,6 +196,27 @@ static iree_status_t SubmitAndWait(
   return status;
 }
 
+static const loomc_artifact_t* FindArtifact(const loomc_program_t* program,
+                                            loomc_artifact_kind_t kind,
+                                            const char* format,
+                                            const char* identifier) {
+  const loomc_artifact_t* found = nullptr;
+  for (loomc_host_size_t i = 0; i < loomc_program_artifact_count(program);
+       ++i) {
+    const loomc_artifact_t* artifact = loomc_program_artifact_at(program, i);
+    if (artifact->kind != kind ||
+        !loomc_string_view_equal(artifact->format,
+                                 loomc_make_cstring_view(format)) ||
+        !loomc_string_view_equal(artifact->identifier,
+                                 loomc_make_cstring_view(identifier))) {
+      continue;
+    }
+    EXPECT_EQ(found, nullptr);
+    found = artifact;
+  }
+  return found;
+}
+
 class CommandLifecycleTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -226,117 +228,15 @@ class CommandLifecycleTest : public ::testing::Test {
     LOOMC_ASSERT_OK(loomc_workspace_create(
         /*options=*/nullptr, loomc_allocator_system(), &workspace));
     coordinator_workspace_.reset(workspace);
-    context_ = loomc_context_loom_context(context_handle_.get());
-    block_pool_ = loomc_workspace_block_pool(coordinator_workspace_.get());
-    loom_cmd_low_descriptor_registry_initialize(&registry_);
   }
 
   void TearDown() override {
-    block_pool_ = nullptr;
-    context_ = nullptr;
     coordinator_workspace_.reset();
     context_handle_.reset();
   }
 
-  InternalModulePtr ParseAndVerifySource(const char* source) {
-    loom_text_parse_options_t parse_options = {};
-    parse_options.max_errors = 20;
-    loom_module_t* module = nullptr;
-    IREE_CHECK_OK(loom_text_parse(
-        iree_make_cstring_view(source), IREE_SV("command_lifecycle_test.loom"),
-        context_, block_pool_, &parse_options, &module));
-    InternalModulePtr module_ptr(module);
-
-    loom_verify_options_t verify_options = {};
-    verify_options.max_errors = 20;
-    loom_verify_result_t result = {};
-    IREE_CHECK_OK(loom_verify_module(module, &verify_options, &result));
-    IREE_ASSERT_EQ(result.error_count, 0u);
-    return module_ptr;
-  }
-
-  void VerifyLowModule(loom_module_t* module) {
-    DiagnosticEmissionCapture capture;
-    loom_low_verify_options_t verify_options = {};
-    verify_options.descriptor_registry = &registry_.registry;
-    verify_options.emitter = capture.emitter();
-    verify_options.max_errors = 20;
-    loom_low_verify_scratch_t scratch =
-        loom_low_verify_scratch_for_module(module);
-    loom_low_verify_result_t result = {};
-    IREE_ASSERT_OK(
-        loom_low_verify_module(module, &verify_options, &scratch, &result));
-    IREE_ASSERT_EQ(result.error_count, 0u);
-    IREE_ASSERT(capture.emissions.empty());
-  }
-
-  loom_op_t* FindSymbol(loom_module_t* module, iree_string_view_t name) {
-    const loom_string_id_t name_id = loom_module_lookup_string(module, name);
-    IREE_ASSERT_NE(name_id, LOOM_STRING_ID_INVALID);
-    const loom_symbol_id_t symbol_id = loom_module_find_symbol(module, name_id);
-    IREE_ASSERT_NE(symbol_id, LOOM_SYMBOL_ID_INVALID);
-    return module->symbols.entries[symbol_id].defining_op;
-  }
-
-  void CompileDependencyModules(loom_cmd_program_plan_t* plan,
-                                CommandArtifacts* artifacts) {
-    loomc_compiler_t* compiler = nullptr;
-    LOOMC_ASSERT_OK(loomc_compiler_create(context_handle_.get(),
-                                          /*options=*/nullptr,
-                                          loomc_allocator_system(), &compiler));
-    CompilerPtr compiler_ptr(compiler);
-
-    loomc_pass_program_t* pass_program = nullptr;
-    LOOMC_ASSERT_OK(loomc_pass_program_create_empty(
-        context_handle_.get(), /*options=*/nullptr, loomc_allocator_system(),
-        &pass_program));
-    PassProgramPtr pass_program_ptr(pass_program);
-
-    artifacts->dependency_modules.resize(plan->dependency_count);
-    for (iree_host_size_t i = 0; i < plan->dependency_count; ++i) {
-      loomc_module_t* module = nullptr;
-      LOOMC_ASSERT_OK(loomc_module_create_empty(
-          context_handle_.get(), coordinator_workspace_.get(),
-          loomc_allocator_system(), &module));
-      ModulePtr module_ptr(module);
-      LOOMC_ASSERT_OK(loomc_module_set_loom_module(
-          module_ptr.get(), plan->dependency_units[i].module));
-      plan->dependency_units[i].module = nullptr;
-
-      loomc_workspace_t* worker_workspace = nullptr;
-      LOOMC_ASSERT_OK(loomc_workspace_create(
-          /*options=*/nullptr, loomc_allocator_system(), &worker_workspace));
-      WorkspacePtr worker_workspace_ptr(worker_workspace);
-      const loomc_compile_options_t compile_options = {
-          /*.type=*/LOOMC_STRUCTURE_TYPE_COMPILE_OPTIONS,
-          /*.structure_size=*/sizeof(compile_options),
-          /*.next=*/nullptr,
-          /*.module_name=*/loomc_make_cstring_view("dependency"),
-          /*.artifact_flags=*/LOOMC_COMPILE_ARTIFACT_FLAG_MODULE_BYTECODE,
-      };
-      loomc_result_t* result = nullptr;
-      LOOMC_ASSERT_OK(loomc_compile_module(
-          compiler_ptr.get(), worker_workspace_ptr.get(),
-          pass_program_ptr.get(), module_ptr.get(), &compile_options,
-          loomc_allocator_system(), &result));
-      ResultPtr result_ptr(result);
-      ASSERT_TRUE(loomc_result_succeeded(result_ptr.get()));
-      ASSERT_EQ(loomc_result_artifact_count(result_ptr.get()), 1u);
-      const loomc_artifact_t* artifact =
-          loomc_result_artifact_at(result_ptr.get(), 0);
-      ASSERT_NE(artifact, nullptr);
-      EXPECT_EQ(artifact->kind, LOOMC_ARTIFACT_KIND_MODULE);
-      EXPECT_TRUE(loomc_string_view_equal(
-          artifact->format,
-          loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_LOOM_BYTECODE)));
-      artifacts->dependency_modules[i].assign(
-          artifact->contents.data,
-          artifact->contents.data + artifact->contents.data_length);
-    }
-  }
-
-  CommandArtifacts CompileArtifacts() {
-    InternalModulePtr module = ParseAndVerifySource(R"(
+  void CompileProgram(ProgramPtr* out_program) {
+    static const char kSource[] = R"(
 target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
 
 kernel.def @increment(%element_count: index) {
@@ -364,87 +264,150 @@ command.program.def public target(@command_target) @increment_twice(%element_cou
   kernel.launch @increment[%element_count](%intermediate, %target) : [index](buffer, buffer)
   command.return
 }
-)");
-
-    const loom_op_t* source_programs[] = {
-        FindSymbol(module.get(), IREE_SV("increment_once")),
-        FindSymbol(module.get(), IREE_SV("increment_twice")),
+)";
+    const loomc_source_options_t source_options = {
+        /*.type=*/LOOMC_STRUCTURE_TYPE_SOURCE_OPTIONS,
+        /*.structure_size=*/sizeof(source_options),
+        /*.next=*/nullptr,
+        /*.format=*/LOOMC_SOURCE_FORMAT_TEXT,
+        /*.identifier=*/loomc_make_cstring_view("command_lifecycle_test.loom"),
+        /*.contents=*/loomc_make_byte_span(kSource, std::strlen(kSource)),
+        /*.storage=*/LOOMC_SOURCE_STORAGE_COPY,
     };
-    loom_cmd_program_plan_t plan = {};
-    IREE_CHECK_OK(loom_cmd_program_plan_prepare(
-        module.get(), source_programs, IREE_ARRAYSIZE(source_programs),
-        block_pool_, iree_allocator_system(), &plan));
+    loomc_source_t* raw_source = nullptr;
+    LOOMC_ASSERT_OK(loomc_source_create(&source_options,
+                                        loomc_allocator_system(), &raw_source));
+    SourcePtr source(raw_source);
+
+    loomc_module_t* raw_module = nullptr;
+    loomc_result_t* raw_parse_result = nullptr;
+    LOOMC_ASSERT_OK(loomc_module_deserialize_from_source(
+        context_handle_.get(), coordinator_workspace_.get(), source.get(),
+        /*options=*/nullptr, loomc_allocator_system(), &raw_module,
+        &raw_parse_result));
+    ModulePtr module(raw_module);
+    ResultPtr parse_result(raw_parse_result);
+    ASSERT_TRUE(loomc_result_succeeded(parse_result.get()));
+
+    loomc_compiler_t* raw_compiler = nullptr;
+    LOOMC_ASSERT_OK(
+        loomc_compiler_create(context_handle_.get(), /*options=*/nullptr,
+                              loomc_allocator_system(), &raw_compiler));
+    CompilerPtr compiler(raw_compiler);
+    loomc_pass_program_t* raw_pass_program = nullptr;
+    LOOMC_ASSERT_OK(loomc_pass_program_create_empty(
+        context_handle_.get(), /*options=*/nullptr, loomc_allocator_system(),
+        &raw_pass_program));
+    PassProgramPtr pass_program(raw_pass_program);
+
+    loomc_program_plan_t* raw_plan = nullptr;
+    loomc_result_t* raw_prepare_result = nullptr;
+    LOOMC_ASSERT_OK(loomc_cmd_program_plan_prepare_module(
+        compiler.get(), coordinator_workspace_.get(), pass_program.get(),
+        module.get(), loomc_allocator_system(), &raw_plan,
+        &raw_prepare_result));
+    PlanPtr plan(raw_plan);
+    ResultPtr prepare_result(raw_prepare_result);
+    ASSERT_TRUE(loomc_result_succeeded(prepare_result.get()));
     module.reset();
-    IREE_ASSERT_EQ(plan.root_count, 2u);
-    IREE_ASSERT_EQ(plan.dependency_count, 1u);
-    VerifyLowModule(plan.root_module);
+    source.reset();
+    parse_result.reset();
+    prepare_result.reset();
+    pass_program.reset();
+    compiler.reset();
 
-    CommandArtifacts artifacts;
-    iree_byte_span_t launch_config_data = iree_byte_span_empty();
-    IREE_CHECK_OK(loom_cmd_launch_program_serialize(
-        plan.launch_module, block_pool_, iree_allocator_system(),
-        &launch_config_data));
-    artifacts.launch_config.assign(
-        launch_config_data.data,
-        launch_config_data.data + launch_config_data.data_length);
-    iree_allocator_free(iree_allocator_system(), launch_config_data.data);
+    ASSERT_EQ(loomc_program_plan_root_count(plan.get()), 2u);
+    ASSERT_EQ(loomc_program_plan_unit_count(plan.get()), 2u);
+    loomc_program_plan_root_t once_root = loomc_program_plan_root_invalid();
+    LOOMC_ASSERT_OK(loomc_program_plan_lookup_root(
+        plan.get(), loomc_make_cstring_view("increment_once"), &once_root));
+    loomc_program_plan_root_t twice_root = loomc_program_plan_root_invalid();
+    LOOMC_ASSERT_OK(loomc_program_plan_lookup_root(
+        plan.get(), loomc_make_cstring_view("increment_twice"), &twice_root));
 
-    artifacts.roots.resize(plan.root_count);
-    for (iree_host_size_t i = 0; i < plan.root_count; ++i) {
-      const loom_cmd_program_root_t& root = plan.roots[i];
-      IREE_ASSERT_EQ(root.launch_tuple_count, 1u);
-      iree_byte_span_t command_program_data = iree_byte_span_empty();
-      IREE_CHECK_OK(loom_cmd_program_serialize_low(
-          plan.root_module, root.function_op, &command_program_data,
-          iree_allocator_system()));
-
-      CommandRootArtifacts& root_artifacts = artifacts.roots[i];
-      root_artifacts.command_program.assign(
-          command_program_data.data,
-          command_program_data.data + command_program_data.data_length);
-      iree_allocator_free(iree_allocator_system(), command_program_data.data);
+    const loomc_host_size_t unit_count =
+        loomc_program_plan_unit_count(plan.get());
+    std::vector<ProgramPtr> unit_programs(unit_count);
+    std::vector<loomc_program_t*> unit_table_values(unit_count);
+    for (uint32_t i = 0; i < unit_count; ++i) {
+      loomc_workspace_t* raw_worker_workspace = nullptr;
+      LOOMC_ASSERT_OK(loomc_workspace_create(
+          /*options=*/nullptr, loomc_allocator_system(),
+          &raw_worker_workspace));
+      WorkspacePtr worker_workspace(raw_worker_workspace);
+      loomc_program_t* raw_unit_program = nullptr;
+      loomc_result_t* raw_compile_result = nullptr;
+      LOOMC_ASSERT_OK(loomc_program_plan_compile_unit(
+          plan.get(), worker_workspace.get(),
+          loomc_program_plan_unit_from_index(i), /*options=*/nullptr,
+          loomc_allocator_system(), &raw_unit_program, &raw_compile_result));
+      unit_programs[i].reset(raw_unit_program);
+      ResultPtr compile_result(raw_compile_result);
+      ASSERT_TRUE(loomc_result_succeeded(compile_result.get()));
+      unit_table_values[i] = unit_programs[i].get();
     }
-    CompileDependencyModules(&plan, &artifacts);
-    loom_cmd_program_plan_deinitialize(&plan);
-    return artifacts;
+
+    const loomc_program_plan_unit_table_t unit_table = {
+        /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_UNIT_TABLE,
+        /*.structure_size=*/sizeof(unit_table),
+        /*.next=*/nullptr,
+        /*.programs=*/unit_table_values.data(),
+        /*.program_count=*/unit_table_values.size(),
+    };
+    const loomc_program_plan_root_t selected_roots[] = {once_root, twice_root};
+    loomc_program_t* raw_program = nullptr;
+    loomc_result_t* raw_assemble_result = nullptr;
+    LOOMC_ASSERT_OK(loomc_program_plan_assemble(
+        plan.get(), coordinator_workspace_.get(), selected_roots,
+        IREE_ARRAYSIZE(selected_roots), &unit_table, /*options=*/nullptr,
+        loomc_allocator_system(), &raw_program, &raw_assemble_result));
+    ResultPtr assemble_result(raw_assemble_result);
+    ASSERT_TRUE(loomc_result_succeeded(assemble_result.get()));
+    out_program->reset(raw_program);
+
+    plan.reset();
+    assemble_result.reset();
+    for (ProgramPtr& unit_program : unit_programs) unit_program.reset();
   }
 
-  // Public context retaining the internal source dialect context.
+  // Public context shared by source, plan, and compilation operations.
   LoomContextPtr context_handle_;
-  // Workspace retaining the arena block pool backing prepared modules.
+  // Coordinator scratch used for plan preparation and assembly.
   WorkspacePtr coordinator_workspace_;
-  // Internal dialect context borrowed from |context_handle_|.
-  loom_context_t* context_ = nullptr;
-  // Arena block pool borrowed from |coordinator_workspace_|.
-  iree_arena_block_pool_t* block_pool_ = nullptr;
-  // Portable command descriptor registry used by low verification.
-  loom_target_low_descriptor_registry_t registry_ = {};
 };
 
 TEST_F(CommandLifecycleTest,
        CompilesSharedDependenciesAndReplaysAssembledRoots) {
-  CommandArtifacts artifacts = CompileArtifacts();
-  ASSERT_EQ(artifacts.roots.size(), 2u);
-  ASSERT_FALSE(artifacts.launch_config.empty());
-  ASSERT_FALSE(artifacts.roots[0].command_program.empty());
-  ASSERT_FALSE(artifacts.roots[1].command_program.empty());
-  ASSERT_EQ(artifacts.dependency_modules.size(), 1u);
-  EXPECT_FALSE(artifacts.dependency_modules[0].empty());
-
-  const loomc_artifact_t launch_artifact = {
-      /*.kind=*/LOOMC_ARTIFACT_KIND_LAUNCH_CONFIG,
-      /*.format=*/loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_LOOM_BYTECODE),
-      /*.identifier=*/loomc_make_cstring_view("command_program_launch.loombc"),
-      /*.contents=*/
-      loomc_make_byte_span(artifacts.launch_config.data(),
-                           artifacts.launch_config.size()),
+  ProgramPtr program;
+  CompileProgram(&program);
+  ASSERT_EQ(loomc_program_export_count(program.get()), 2u);
+  ASSERT_EQ(loomc_program_dependency_count(program.get()), 1u);
+  loomc_program_dependency_info_t dependency_info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_DEPENDENCY_INFO,
+      /*.structure_size=*/sizeof(dependency_info),
   };
+  LOOMC_ASSERT_OK(
+      loomc_program_dependency_info(program.get(), 0, &dependency_info));
+  EXPECT_EQ(dependency_info.slot, 0u);
+  ASSERT_NE(dependency_info.program, nullptr);
+  ASSERT_EQ(loomc_program_artifact_count(dependency_info.program), 1u);
+  const loomc_artifact_t* dependency_artifact =
+      loomc_program_artifact_at(dependency_info.program, 0);
+  ASSERT_NE(dependency_artifact, nullptr);
+  EXPECT_EQ(dependency_artifact->kind, LOOMC_ARTIFACT_KIND_MODULE);
+  EXPECT_TRUE(loomc_string_view_equal(
+      dependency_artifact->format,
+      loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_LOOM_BYTECODE)));
+
+  const loomc_artifact_t* launch_artifact = FindArtifact(
+      program.get(), LOOMC_ARTIFACT_KIND_LAUNCH_CONFIG,
+      LOOMC_ARTIFACT_FORMAT_LOOM_BYTECODE, "command-program-launch.loombc");
+  ASSERT_NE(launch_artifact, nullptr);
   loomc_launch_config_module_t* raw_launch_module = nullptr;
   LOOMC_ASSERT_OK(loomc_launch_config_module_load(
-      &launch_artifact, /*options=*/nullptr, loomc_allocator_system(),
+      launch_artifact, /*options=*/nullptr, loomc_allocator_system(),
       &raw_launch_module));
   LaunchModulePtr launch_module(raw_launch_module);
-  artifacts.launch_config.clear();
 
   loomc_launch_config_function_t once_launch_function =
       loomc_launch_config_function_invalid();
@@ -482,10 +445,14 @@ TEST_F(CommandLifecycleTest,
       &raw_launch_context));
   LaunchContextPtr launch_context(raw_launch_context);
 
+  const loomc_artifact_t* once_artifact =
+      FindArtifact(program.get(), LOOMC_ARTIFACT_KIND_EXECUTABLE,
+                   LOOMC_ARTIFACT_FORMAT_COMMAND_PROGRAM, "increment_once");
+  ASSERT_NE(once_artifact, nullptr);
   loom_cmd_program_t once_program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
-      iree_make_const_byte_span(artifacts.roots[0].command_program.data(),
-                                artifacts.roots[0].command_program.size()),
+      iree_make_const_byte_span(once_artifact->contents.data,
+                                once_artifact->contents.data_length),
       &once_program));
   ASSERT_EQ(once_program.requirements.fixed_buffer_count, 0u);
   ASSERT_EQ(once_program.requirements.rebindable_binding_count, 3u);
@@ -495,10 +462,14 @@ TEST_F(CommandLifecycleTest,
   EXPECT_EQ(loom_cmd_program_command_at(&once_program, 0).kind,
             LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
 
+  const loomc_artifact_t* twice_artifact =
+      FindArtifact(program.get(), LOOMC_ARTIFACT_KIND_EXECUTABLE,
+                   LOOMC_ARTIFACT_FORMAT_COMMAND_PROGRAM, "increment_twice");
+  ASSERT_NE(twice_artifact, nullptr);
   loom_cmd_program_t twice_program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
-      iree_make_const_byte_span(artifacts.roots[1].command_program.data(),
-                                artifacts.roots[1].command_program.size()),
+      iree_make_const_byte_span(twice_artifact->contents.data,
+                                twice_artifact->contents.data_length),
       &twice_program));
   ASSERT_EQ(twice_program.requirements.fixed_buffer_count, 0u);
   ASSERT_EQ(twice_program.requirements.rebindable_binding_count, 4u);
@@ -562,9 +533,7 @@ TEST_F(CommandLifecycleTest,
       &twice_program, &twice_inputs, device,
       IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT, IREE_HAL_QUEUE_AFFINITY_ANY,
       &twice_command_buffer, iree_allocator_system()));
-  artifacts.roots[0].command_program.clear();
-  artifacts.roots[1].command_program.clear();
-  artifacts.dependency_modules.clear();
+  program.reset();
   iree_hal_executable_release(executable);
 
   static constexpr iree_host_size_t kElementCount = 128;
