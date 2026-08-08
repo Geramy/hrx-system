@@ -1,0 +1,6 @@
+// RUN: roundtrip
+
+func.def @pack_dynamic_ranges(%header_bytes: offset, %payload_bytes: offset) -> (offset, offset, offset) {
+  %total, %header_offset, %payload_offset = buffer.pack %header_bytes, %payload_bytes {minimum_alignments = [16, 256]} : offset, offset, offset
+  func.return %total, %header_offset, %payload_offset : offset, offset, offset
+}
