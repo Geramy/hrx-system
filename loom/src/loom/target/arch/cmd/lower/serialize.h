@@ -12,6 +12,7 @@
 #include "iree/base/api.h"
 #include "loom/ir/ir.h"
 #include "loom/target/arch/cmd/lower/parameters.h"
+#include "loom/target/arch/cmd/lower/transients.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,11 +25,13 @@ extern "C" {
 // buffer-reference, logical-argument, command, and parameter requirement tables
 // and retains no module, operation, value, symbol, or string storage.
 // |parameter_requirements| may be NULL when the program has no named
-// parameters. The caller owns the returned bytes and must free them with
-// |host_allocator|.
+// parameters. |transient_requirement| may be NULL when the program has no
+// command-program allocations. The caller owns the returned bytes and must
+// free them with |host_allocator|.
 iree_status_t loom_cmd_program_serialize_low(
     loom_module_t* module, const loom_op_t* function_op,
     const loom_cmd_parameter_requirement_table_t* parameter_requirements,
+    const loom_cmd_transient_requirement_t* transient_requirement,
     iree_byte_span_t* out_data, iree_allocator_t host_allocator);
 
 #ifdef __cplusplus

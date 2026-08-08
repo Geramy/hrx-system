@@ -20,8 +20,29 @@ loom_cc_library(
     iree::base
     iree::base::internal::arena
     loom::ir
+    loom::ops::buffer
     loom::ops::command
     loom::ops::kernel
+  PUBLIC
+)
+
+loom_cc_library(
+  NAME
+    transients
+  HDRS
+    "transients.h"
+  SRCS
+    "transients.c"
+  DEPS
+    ::lower
+    iree::base
+    iree::base::internal
+    iree::base::internal::arena
+    loom::ir
+    loom::ir::facts
+    loom::ops::buffer
+    loom::util::fact_table
+    loom::util::walk
   PUBLIC
 )
 
@@ -147,6 +168,7 @@ loom_cc_library(
     ::lower
     ::parameters
     ::schedule
+    ::transients
     iree::base
     iree::base::internal::arena
     loom::ir
@@ -167,6 +189,7 @@ loom_cc_library(
     "serialize.c"
   DEPS
     ::parameters
+    ::transients
     iree::base
     iree::base::core_headers
     iree::base::internal::arena

@@ -122,6 +122,8 @@ typedef struct loom_cmd_serialize_build_t {
   loom_cmd_serialize_command_table_t commands;
   // Compiler-owned named parameter requirements to persist.
   const loom_cmd_parameter_requirement_table_t* parameter_requirements;
+  // Compiler-owned aggregate transient requirement to persist.
+  const loom_cmd_transient_requirement_t* transient_requirement;
   // Total concatenated byte length of all parameter keys.
   uint32_t parameter_key_length;
 } loom_cmd_serialize_build_t;
@@ -693,6 +695,20 @@ static void loom_cmd_serialize_write_header(
   iree_unaligned_store_le_u32(
       data.data + LOOM_CMD_PROGRAM_HEADER_PARAMETER_KEY_TABLE_OFFSET,
       layout->parameter_key_offset);
+  iree_unaligned_store_le_u32(
+      data.data + LOOM_CMD_PROGRAM_HEADER_TRANSIENT_BINDING_INDEX_OFFSET,
+      build->transient_requirement ? build->transient_requirement->binding_index
+                                   : UINT32_MAX);
+  iree_unaligned_store_le_u64(
+      data.data + LOOM_CMD_PROGRAM_HEADER_TRANSIENT_BYTE_LENGTH_OFFSET,
+      build->transient_requirement
+          ? build->transient_requirement->required_byte_length
+          : 0);
+  iree_unaligned_store_le_u64(
+      data.data + LOOM_CMD_PROGRAM_HEADER_TRANSIENT_MINIMUM_ALIGNMENT_OFFSET,
+      build->transient_requirement
+          ? build->transient_requirement->minimum_alignment
+          : 0);
 }
 
 static void loom_cmd_serialize_write_buffer_refs(
@@ -849,6 +865,7 @@ static void loom_cmd_serialize_write_program(
 iree_status_t loom_cmd_program_serialize_low(
     loom_module_t* module, const loom_op_t* function_op,
     const loom_cmd_parameter_requirement_table_t* parameter_requirements,
+    const loom_cmd_transient_requirement_t* transient_requirement,
     iree_byte_span_t* out_data, iree_allocator_t host_allocator) {
   IREE_ASSERT_ARGUMENT(module);
   IREE_ASSERT_ARGUMENT(function_op);
@@ -895,6 +912,7 @@ iree_status_t loom_cmd_program_serialize_low(
       .value_domain = &value_domain,
       .value_count = value_domain.value_count,
       .parameter_requirements = parameter_requirements,
+      .transient_requirement = transient_requirement,
   };
   if (iree_status_is_ok(status) && build.value_count != 0) {
     status =

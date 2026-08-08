@@ -201,8 +201,8 @@ command.program.def public target(@command_target) @pipeline(%element_count: ind
 
   iree_byte_span_t program_data = iree_byte_span_empty();
   IREE_ASSERT_OK(loom_cmd_program_serialize_low(
-      plan.root_module, root.function_op, &root.parameters, &program_data,
-      iree_allocator_system()));
+      plan.root_module, root.function_op, &root.parameters, &root.transient,
+      &program_data, iree_allocator_system()));
   loom_cmd_program_t program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
       iree_make_const_byte_span(program_data.data, program_data.data_length),
@@ -300,8 +300,8 @@ command.program.def public target(@command_target) @parameterized() launch(%para
 
   iree_byte_span_t program_data = iree_byte_span_empty();
   IREE_ASSERT_OK(loom_cmd_program_serialize_low(
-      plan.root_module, root.function_op, &root.parameters, &program_data,
-      iree_allocator_system()));
+      plan.root_module, root.function_op, &root.parameters, &root.transient,
+      &program_data, iree_allocator_system()));
   loom_cmd_program_t program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
       iree_make_const_byte_span(program_data.data, program_data.data_length),
@@ -421,7 +421,7 @@ command.program.def public target(@command_target) @pipeline(%element_count: ind
   iree_byte_span_t program_data = iree_byte_span_empty();
   IREE_ASSERT_OK(loom_cmd_program_serialize_low(
       plan.root_module, plan.roots[0].function_op, &plan.roots[0].parameters,
-      &program_data, iree_allocator_system()));
+      &plan.roots[0].transient, &program_data, iree_allocator_system()));
   loom_cmd_program_t program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
       iree_make_const_byte_span(program_data.data, program_data.data_length),
@@ -563,7 +563,7 @@ command.program.def public target(@command_target) @increment_twice(%element_cou
 
   iree_byte_span_t twice_program_data = iree_byte_span_empty();
   IREE_ASSERT_OK(loom_cmd_program_serialize_low(
-      plan.root_module, twice.function_op, &twice.parameters,
+      plan.root_module, twice.function_op, &twice.parameters, &twice.transient,
       &twice_program_data, iree_allocator_system()));
   loom_cmd_program_t twice_program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
@@ -583,7 +583,7 @@ command.program.def public target(@command_target) @increment_twice(%element_cou
 
   iree_byte_span_t mixed_program_data = iree_byte_span_empty();
   IREE_ASSERT_OK(loom_cmd_program_serialize_low(
-      plan.root_module, mixed.function_op, &mixed.parameters,
+      plan.root_module, mixed.function_op, &mixed.parameters, &mixed.transient,
       &mixed_program_data, iree_allocator_system()));
   loom_cmd_program_t mixed_program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(

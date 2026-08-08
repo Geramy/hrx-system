@@ -522,7 +522,8 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
   iree_byte_span_t program_data = iree_byte_span_empty();
   IREE_ASSERT_OK(loom_cmd_program_serialize_low(
       module.get(), low_function, /*parameter_requirements=*/nullptr,
-      &program_data, iree_allocator_system()));
+      /*transient_requirement=*/nullptr, &program_data,
+      iree_allocator_system()));
   loom_cmd_program_t program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
       iree_make_const_byte_span(program_data.data, program_data.data_length),

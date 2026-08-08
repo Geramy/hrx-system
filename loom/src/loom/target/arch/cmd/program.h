@@ -120,6 +120,16 @@ typedef struct loom_cmd_program_command_t {
   } payload;
 } loom_cmd_program_command_t;
 
+// Aggregate issue-time storage required by command-program allocations.
+typedef struct loom_cmd_program_transient_requirement_t {
+  // Dense rebindable root index, or UINT32_MAX when no slab is required.
+  uint32_t binding_index;
+  // Minimum byte length of the supplied transient slab.
+  uint64_t required_byte_length;
+  // Minimum required alignment of the supplied transient slab.
+  uint64_t minimum_alignment;
+} loom_cmd_program_transient_requirement_t;
+
 // External resource counts required to materialize one command program.
 typedef struct loom_cmd_program_requirements_t {
   // Number of fixed buffer roots supplied during materialization.
@@ -130,6 +140,8 @@ typedef struct loom_cmd_program_requirements_t {
   uint32_t executable_count;
   // Number of program-local executable entry tokens.
   uint32_t entry_count;
+  // Aggregate issue-time storage required by command-program allocations.
+  loom_cmd_program_transient_requirement_t transient;
 } loom_cmd_program_requirements_t;
 
 // Aggregate storage requirement for one fixed parameter-buffer root.

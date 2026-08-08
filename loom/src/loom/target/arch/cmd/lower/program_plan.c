@@ -15,6 +15,7 @@
 #include "loom/target/arch/cmd/lower/lower.h"
 #include "loom/target/arch/cmd/lower/parameters.h"
 #include "loom/target/arch/cmd/lower/schedule.h"
+#include "loom/target/arch/cmd/lower/transients.h"
 #include "loom/util/fact_table.h"
 
 static iree_string_view_t loom_cmd_program_plan_symbol_name(
@@ -47,6 +48,7 @@ typedef struct loom_cmd_program_root_build_t {
   loom_cmd_launch_graph_t launch_graph;
   loom_cmd_lower_plan_t lower_plan;
   loom_cmd_parameter_requirement_table_t parameters;
+  loom_cmd_transient_requirement_t transient;
   uint32_t* dependency_unit_indices;
   uint32_t dependency_count;
 } loom_cmd_program_root_build_t;
@@ -83,6 +85,7 @@ static iree_status_t loom_cmd_program_plan_build_lower_plan(
     const loom_op_t** dependency_launches,
     iree_arena_allocator_t* scratch_arena, iree_arena_block_pool_t* block_pool,
     loom_cmd_parameter_requirement_table_t* out_parameters,
+    loom_cmd_transient_requirement_t* out_transient,
     loom_cmd_lower_plan_t* out_lower_plan,
     uint32_t** out_dependency_unit_indices, uint32_t* out_dependency_count) {
   *out_dependency_unit_indices = NULL;
@@ -160,6 +163,35 @@ static iree_status_t loom_cmd_program_plan_build_lower_plan(
       preparation_module, root_program, source_facts, scratch_arena,
       plan->host_allocator, bindings, binding_count, out_parameters,
       &parameter_layout));
+  loom_cmd_transient_layout_t transient_layout = {0};
+  IREE_RETURN_IF_ERROR(loom_cmd_transient_layout_build(
+      preparation_module, root_program, source_facts,
+      parameter_layout.rebindable_binding_count, scratch_arena,
+      &transient_layout));
+  *out_transient = transient_layout.requirement;
+
+  iree_host_size_t buffer_range_count = 0;
+  if (!iree_host_size_checked_add(parameter_layout.buffer_range_count,
+                                  transient_layout.buffer_range_count,
+                                  &buffer_range_count)) {
+    return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
+                            "command buffer range table is too large");
+  }
+  loom_cmd_lower_buffer_range_t* buffer_ranges = NULL;
+  if (buffer_range_count != 0) {
+    IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+        scratch_arena, buffer_range_count, sizeof(*buffer_ranges),
+        (void**)&buffer_ranges));
+    if (parameter_layout.buffer_range_count != 0) {
+      memcpy(buffer_ranges, parameter_layout.buffer_ranges,
+             parameter_layout.buffer_range_count * sizeof(*buffer_ranges));
+    }
+    if (transient_layout.buffer_range_count != 0) {
+      memcpy(buffer_ranges + parameter_layout.buffer_range_count,
+             transient_layout.buffer_ranges,
+             transient_layout.buffer_range_count * sizeof(*buffer_ranges));
+    }
+  }
 
   uint32_t* owned_dependency_unit_indices = NULL;
   if (dependency_count > 0) {
@@ -178,21 +210,25 @@ static iree_status_t loom_cmd_program_plan_build_lower_plan(
   }
 
   const bool has_host_launch_counts = launch_graph->host_tuple_count > 0;
+  const bool has_transient =
+      transient_layout.requirement.binding_index != UINT32_MAX;
   *out_lower_plan = (loom_cmd_lower_plan_t){
       .command_target = loom_func_like_target(root_program),
       .bindings = bindings,
       .binding_count = binding_count,
-      .buffer_ranges = parameter_layout.buffer_ranges,
-      .buffer_range_count = parameter_layout.buffer_range_count,
+      .buffer_ranges = buffer_ranges,
+      .buffer_range_count = buffer_range_count,
       .fixed_buffer_count = parameter_layout.fixed_buffer_count,
       .rebindable_binding_count = parameter_layout.rebindable_binding_count +
+                                  (has_transient ? 1u : 0u) +
                                   (has_host_launch_counts ? 1u : 0u),
       .executable_count = dependency_count,
       .entry_count = dependency_count,
       .launch_graph = launch_graph,
       .launch_count_binding =
           {
-              .resource_index = parameter_layout.rebindable_binding_count,
+              .resource_index = parameter_layout.rebindable_binding_count +
+                                (has_transient ? 1u : 0u),
               .byte_offset = 0,
           },
       .launches = launches,
@@ -328,7 +364,7 @@ iree_status_t loom_cmd_program_plan_prepare(
     status = loom_cmd_program_plan_build_lower_plan(
         &plan, preparation_module, root->program_op, &root->schedule,
         &source_facts, &root->launch_graph, dependency_launches, &scratch_arena,
-        block_pool, &root->parameters, &root->lower_plan,
+        block_pool, &root->parameters, &root->transient, &root->lower_plan,
         &root->dependency_unit_indices, &root->dependency_count);
   }
   for (iree_host_size_t i = 0;
@@ -386,6 +422,7 @@ iree_status_t loom_cmd_program_plan_prepare(
       root->dependency_unit_indices = build->dependency_unit_indices;
       root->dependency_count = build->dependency_count;
       root->parameters = build->parameters;
+      root->transient = build->transient;
       build->dependency_unit_indices = NULL;
       build->dependency_count = 0;
       memset(&build->parameters, 0, sizeof(build->parameters));
