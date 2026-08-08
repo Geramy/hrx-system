@@ -36,9 +36,11 @@ loom_cc_library(
     hdrs = ["transients.h"],
     deps = [
         ":lower",
+        ":schedule",
         "//loom/src/loom/ir",
         "//loom/src/loom/ir:facts",
         "//loom/src/loom/ops/buffer",
+        "//loom/src/loom/ops/kernel",
         "//loom/src/loom/util:fact_table",
         "//loom/src/loom/util:walk",
         "//runtime/src/iree/base",
@@ -199,6 +201,26 @@ loom_cc_test(
         "//loom/src/loom/ops:op_registry",
         "//loom/src/loom/ops/kernel",
         "//loom/src/loom/testing:module_ptr",
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/base/internal:arena",
+        "//runtime/src/iree/testing:gtest",
+        "//runtime/src/iree/testing:gtest_main",
+    ],
+)
+
+loom_cc_test(
+    name = "transients_test",
+    srcs = ["transients_test.cc"],
+    deps = [
+        ":program_plan",
+        ":serialize",
+        "//loom/src/loom/format/text:parser",
+        "//loom/src/loom/ir",
+        "//loom/src/loom/ops:op_registry",
+        "//loom/src/loom/target/arch/cmd:program",
+        "//loom/src/loom/testing:diagnostic_matchers",
+        "//loom/src/loom/testing:module_ptr",
+        "//loom/src/loom/verify",
         "//runtime/src/iree/base",
         "//runtime/src/iree/base/internal:arena",
         "//runtime/src/iree/testing:gtest",

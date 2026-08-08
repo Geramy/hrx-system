@@ -13,6 +13,7 @@
 #include "iree/base/internal/arena.h"
 #include "loom/ir/ir.h"
 #include "loom/target/arch/cmd/lower/lower.h"
+#include "loom/target/arch/cmd/lower/schedule.h"
 #include "loom/util/fact_table.h"
 
 #ifdef __cplusplus
@@ -45,13 +46,16 @@ typedef struct loom_cmd_transient_layout_t {
 
 // Packs device-global buffer.alloca roots into one issue-time slab.
 //
-// Allocation roots and statically resolved derived views are assigned
-// source-order ranges honoring each root's declared base alignment. Allocation
-// lengths must have finite nonnegative maxima after source specialization. The
-// resulting ranges and requirement remain valid until |scratch_arena| resets.
+// Allocation roots and statically resolved derived views are assigned aligned
+// ranges. Roots whose scheduled-use intervals do not overlap may alias the same
+// bytes; roots used by commands in the same concurrent wave never alias.
+// Allocation lengths must have finite nonnegative maxima after source
+// specialization. The resulting ranges and requirement remain valid until
+// |scratch_arena| resets.
 iree_status_t loom_cmd_transient_layout_build(
     const loom_module_t* module, loom_func_like_t program,
-    const loom_value_fact_table_t* fact_table, uint32_t binding_index,
+    const loom_value_fact_table_t* fact_table,
+    const loom_cmd_schedule_plan_t* schedule, uint32_t binding_index,
     iree_arena_allocator_t* scratch_arena,
     loom_cmd_transient_layout_t* out_layout);
 

@@ -165,7 +165,7 @@ static iree_status_t loom_cmd_program_plan_build_lower_plan(
       &parameter_layout));
   loom_cmd_transient_layout_t transient_layout = {0};
   IREE_RETURN_IF_ERROR(loom_cmd_transient_layout_build(
-      preparation_module, root_program, source_facts,
+      preparation_module, root_program, source_facts, schedule,
       parameter_layout.rebindable_binding_count, scratch_arena,
       &transient_layout));
   *out_transient = transient_layout.requirement;

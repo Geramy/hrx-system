@@ -35,12 +35,14 @@ loom_cc_library(
     "transients.c"
   DEPS
     ::lower
+    ::schedule
     iree::base
     iree::base::internal
     iree::base::internal::arena
     loom::ir
     loom::ir::facts
     loom::ops::buffer
+    loom::ops::kernel
     loom::util::fact_table
     loom::util::walk
   PUBLIC
@@ -219,6 +221,27 @@ loom_cc_test(
     loom::ops::kernel
     loom::ops::op_registry
     loom::testing::module_ptr
+)
+
+loom_cc_test(
+  NAME
+    transients_test
+  SRCS
+    "transients_test.cc"
+  DEPS
+    ::program_plan
+    ::serialize
+    iree::base
+    iree::base::internal::arena
+    iree::testing::gtest
+    iree::testing::gtest_main
+    loom::format::text::parser
+    loom::ir
+    loom::ops::op_registry
+    loom::target::arch::cmd::program
+    loom::testing::diagnostic_matchers
+    loom::testing::module_ptr
+    loom::verify
 )
 
 loom_cc_test(
