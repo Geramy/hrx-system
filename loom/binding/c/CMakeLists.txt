@@ -39,6 +39,7 @@ loom_cc_library(
     "include/loomc/status.h"
     "include/loomc/target.h"
     "include/loomc/workspace.h"
+    "src/artifact_storage.h"
     "src/config.h"
     "src/context.h"
     "src/diagnostic.h"
@@ -54,6 +55,7 @@ loom_cc_library(
   SRCS
     "src/artifact.c"
     "src/artifact_manifest.c"
+    "src/artifact_storage.c"
     "src/base.c"
     "src/base_system.c"
     "src/compile.c"
