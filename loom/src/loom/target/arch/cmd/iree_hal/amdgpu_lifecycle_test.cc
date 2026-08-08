@@ -89,8 +89,10 @@ command.program.def public target(@command_target) @add_seven_once(%element_coun
   command.return
 }
 
-command.program.def public target(@command_target) @add_seven_twice(%element_count: index) launch(%parameters: buffer, %intermediate: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+command.program.def public target(@command_target) @add_seven_twice(%element_count: index) launch(%parameters: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
   %source = command.parameter %parameters, "source_values"[] : view<128xi32, #dense>
+  %intermediate_byte_length = index.constant 512 : offset
+  %intermediate = buffer.alloca %intermediate_byte_length {base_alignment = 256, memory_space = global} : buffer
   kernel.launch @add_seven[%element_count](%source, %intermediate) : [index](view<128xi32, #dense>, buffer)
   %zero = index.constant 0 : offset
   %intermediate_view = buffer.view %intermediate[%zero] : buffer -> view<128xi32, #dense>
@@ -519,6 +521,10 @@ TEST(CommandAmdgpuLifecycleTest,
   ASSERT_EQ(once_command_program.requirements.rebindable_binding_count, 2u);
   ASSERT_EQ(once_command_program.requirements.executable_count, 1u);
   ASSERT_EQ(once_command_program.requirements.entry_count, 1u);
+  EXPECT_EQ(once_command_program.requirements.transient.binding_index,
+            UINT32_MAX);
+  EXPECT_EQ(once_command_program.requirements.transient.required_byte_length,
+            0u);
   ASSERT_EQ(once_command_program.parameter_roots.count, 1u);
   const loom_cmd_program_parameter_root_t once_parameter_root =
       loom_cmd_program_parameter_root_at(&once_command_program, 0);
@@ -551,6 +557,11 @@ TEST(CommandAmdgpuLifecycleTest,
   ASSERT_EQ(twice_command_program.requirements.rebindable_binding_count, 3u);
   ASSERT_EQ(twice_command_program.requirements.executable_count, 1u);
   ASSERT_EQ(twice_command_program.requirements.entry_count, 1u);
+  EXPECT_EQ(twice_command_program.requirements.transient.binding_index, 1u);
+  EXPECT_EQ(twice_command_program.requirements.transient.required_byte_length,
+            512u);
+  EXPECT_EQ(twice_command_program.requirements.transient.minimum_alignment,
+            256u);
   ASSERT_EQ(twice_command_program.parameter_roots.count, 1u);
   ASSERT_EQ(twice_command_program.parameters.count, 1u);
   EXPECT_TRUE(iree_string_view_equal(
@@ -757,9 +768,9 @@ TEST(CommandAmdgpuLifecycleTest,
       &launch_count_mapping, /*byte_offset=*/0, launch_count_byte_length));
 
   const iree_hal_buffer_binding_t twice_bindings[] = {
-      /*intermediate=*/
-      {intermediate_buffer.get(), 0, IREE_HAL_WHOLE_BUFFER},
       /*target=*/{twice_target_buffer.get(), 0, IREE_HAL_WHOLE_BUFFER},
+      /*transient=*/
+      {intermediate_buffer.get(), 0, IREE_HAL_WHOLE_BUFFER},
       /*launch_count=*/
       {launch_count_buffer.get(), 0, launch_count_byte_length},
   };

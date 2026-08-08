@@ -590,6 +590,36 @@ static iree_status_t loom_cmd_program_validate_parameters(
   return iree_ok_status();
 }
 
+static iree_status_t loom_cmd_program_validate_transient(
+    const loom_cmd_program_t* program) {
+  const loom_cmd_program_transient_requirement_t transient =
+      program->requirements.transient;
+  if (transient.binding_index == UINT32_MAX) {
+    if (transient.required_byte_length != 0 ||
+        transient.minimum_alignment != 0) {
+      return iree_make_status(
+          IREE_STATUS_INVALID_ARGUMENT,
+          "command program without a transient binding declares storage");
+    }
+    return iree_ok_status();
+  }
+  if (transient.binding_index >=
+      program->requirements.rebindable_binding_count) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                            "command transient selects binding %" PRIu32
+                            " outside the rebindable table",
+                            transient.binding_index);
+  }
+  if (transient.required_byte_length == 0 ||
+      !iree_is_power_of_two_uint64(transient.minimum_alignment)) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "command transient requires a positive length and power-of-two "
+        "alignment");
+  }
+  return iree_ok_status();
+}
+
 iree_status_t loom_cmd_program_parse(iree_const_byte_span_t data,
                                      loom_cmd_program_t* out_program) {
   IREE_ASSERT_ARGUMENT(out_program);
@@ -631,9 +661,7 @@ iree_status_t loom_cmd_program_parse(iree_const_byte_span_t data,
       iree_unaligned_load_le_u32(
           data.data + LOOM_CMD_PROGRAM_HEADER_RESERVED_1_OFFSET) != 0 ||
       iree_unaligned_load_le_u32(
-          data.data + LOOM_CMD_PROGRAM_HEADER_RESERVED_2_OFFSET) != 0 ||
-      iree_unaligned_load_le_u32(
-          data.data + LOOM_CMD_PROGRAM_HEADER_RESERVED_3_OFFSET) != 0) {
+          data.data + LOOM_CMD_PROGRAM_HEADER_TRANSIENT_RESERVED_OFFSET) != 0) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "command program header reserved fields are set");
   }
@@ -651,6 +679,18 @@ iree_status_t loom_cmd_program_parse(iree_const_byte_span_t data,
                   data.data + LOOM_CMD_PROGRAM_HEADER_EXECUTABLE_COUNT_OFFSET),
               .entry_count = iree_unaligned_load_le_u32(
                   data.data + LOOM_CMD_PROGRAM_HEADER_ENTRY_COUNT_OFFSET),
+              .transient =
+                  {
+                      .binding_index = iree_unaligned_load_le_u32(
+                          data.data +
+                          LOOM_CMD_PROGRAM_HEADER_TRANSIENT_BINDING_INDEX_OFFSET),
+                      .required_byte_length = iree_unaligned_load_le_u64(
+                          data.data +
+                          LOOM_CMD_PROGRAM_HEADER_TRANSIENT_BYTE_LENGTH_OFFSET),
+                      .minimum_alignment = iree_unaligned_load_le_u64(
+                          data.data +
+                          LOOM_CMD_PROGRAM_HEADER_TRANSIENT_MINIMUM_ALIGNMENT_OFFSET),
+                  },
           },
       .buffer_refs =
           {
@@ -717,6 +757,7 @@ iree_status_t loom_cmd_program_parse(iree_const_byte_span_t data,
   program.parameter_keys = iree_make_const_byte_span(
       data.data + layout.parameter_key_offset, parameter_key_length);
 
+  IREE_RETURN_IF_ERROR(loom_cmd_program_validate_transient(&program));
   IREE_RETURN_IF_ERROR(loom_cmd_program_validate_buffer_refs(&program));
   IREE_RETURN_IF_ERROR(loom_cmd_program_validate_arguments(&program));
   IREE_RETURN_IF_ERROR(loom_cmd_program_validate_commands(&program));

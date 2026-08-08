@@ -269,7 +269,8 @@ static loomc_status_t loomc_cmd_program_compile_root_unit(
     status = loomc_status_from_iree(loom_cmd_program_serialize_low(
         loomc_module_loom_module(storage->root_module),
         storage->plan.roots[i].function_op, &storage->plan.roots[i].parameters,
-        &artifact_data, iree_allocator_from_loomc(allocator)));
+        &storage->plan.roots[i].transient, &artifact_data,
+        iree_allocator_from_loomc(allocator)));
     if (loomc_status_is_ok(status)) {
       status = loomc_result_add_artifact_take_contents(
           result, LOOMC_ARTIFACT_KIND_EXECUTABLE,

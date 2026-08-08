@@ -11,6 +11,7 @@
 
 #include "loom/ir/context.h"
 #include "loom/ir/module.h"
+#include "loom/ops/buffer/ops.h"
 #include "loom/ops/command/ops.h"
 #include "loom/ops/kernel/ops.h"
 
@@ -181,6 +182,10 @@ static iree_status_t loom_cmd_schedule_build_commands(
       child_mode = LOOM_CMD_SCHEDULE_MODE_CONCURRENT;
     } else if (loom_kernel_launch_isa(op)) {
       IREE_RETURN_IF_ERROR(loom_cmd_schedule_append_command(build, frame, op));
+      continue;
+    } else if (loom_buffer_alloca_isa(op)) {
+      // Allocation declarations contribute to the transient frame but do not
+      // themselves emit executable commands.
       continue;
     } else if (op->region_count == 0 &&
                iree_any_bit_set(loom_op_effective_traits(build->module, op),

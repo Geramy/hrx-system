@@ -185,6 +185,9 @@ static std::vector<uint8_t> BuildValidProgram() {
   iree_unaligned_store_le_u32(
       data.data() + LOOM_CMD_PROGRAM_HEADER_PARAMETER_KEY_TABLE_OFFSET,
       layout.parameter_key_offset);
+  iree_unaligned_store_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_TRANSIENT_BINDING_INDEX_OFFSET,
+      UINT32_MAX);
 
   StoreBufferRef(data, layout.buffer_ref_offset, 0,
                  LOOM_CMD_PROGRAM_BUFFER_ROLE_FIXED, 0, 0, 256);
@@ -238,6 +241,9 @@ TEST(CmdProgramTest, ParsesCanonicalProgram) {
 
   EXPECT_EQ(program.requirements.fixed_buffer_count, 1u);
   EXPECT_EQ(program.requirements.rebindable_binding_count, 1u);
+  EXPECT_EQ(program.requirements.transient.binding_index, UINT32_MAX);
+  EXPECT_EQ(program.requirements.transient.required_byte_length, 0u);
+  EXPECT_EQ(program.requirements.transient.minimum_alignment, 0u);
   EXPECT_EQ(program.requirements.executable_count, 1u);
   EXPECT_EQ(program.requirements.entry_count, 1u);
   EXPECT_EQ(program.buffer_refs.count, 2u);
@@ -274,6 +280,25 @@ TEST(CmdProgramTest, ParsesCanonicalProgram) {
   EXPECT_EQ(parameter.byte_offset, 256u);
   EXPECT_EQ(parameter.byte_length, 128u);
   EXPECT_EQ(parameter.minimum_alignment, 256u);
+}
+
+TEST(CmdProgramTest, ParsesTransientRequirement) {
+  std::vector<uint8_t> data = BuildValidProgram();
+  iree_unaligned_store_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_BINDING_COUNT_OFFSET, 2);
+  iree_unaligned_store_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_TRANSIENT_BINDING_INDEX_OFFSET, 1);
+  iree_unaligned_store_le_u64(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_TRANSIENT_BYTE_LENGTH_OFFSET, 4096);
+  iree_unaligned_store_le_u64(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_TRANSIENT_MINIMUM_ALIGNMENT_OFFSET,
+      256);
+
+  loom_cmd_program_t program = {};
+  IREE_ASSERT_OK(loom_cmd_program_parse(AsByteSpan(data), &program));
+  EXPECT_EQ(program.requirements.transient.binding_index, 1u);
+  EXPECT_EQ(program.requirements.transient.required_byte_length, 4096u);
+  EXPECT_EQ(program.requirements.transient.minimum_alignment, 256u);
 }
 
 TEST(CmdProgramTest, RelocatesDependencyIndices) {

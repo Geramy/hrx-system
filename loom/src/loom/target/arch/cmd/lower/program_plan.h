@@ -15,6 +15,7 @@
 #include "loom/target/arch/cmd/lower/kernel_unit.h"
 #include "loom/target/arch/cmd/lower/launch_graph.h"
 #include "loom/target/arch/cmd/lower/parameters.h"
+#include "loom/target/arch/cmd/lower/transients.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,6 +44,9 @@ typedef struct loom_cmd_program_root_t {
 
   // Concrete immutable parameter requirements and their fixed placement.
   loom_cmd_parameter_requirement_table_t parameters;
+
+  // Aggregate issue-time storage required by command-program allocas.
+  loom_cmd_transient_requirement_t transient;
 } loom_cmd_program_root_t;
 
 // Immutable command roots and their union dependency graph.
