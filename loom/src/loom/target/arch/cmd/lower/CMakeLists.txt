@@ -292,10 +292,8 @@ loom_cc_test(
   SRCS
     "lifecycle_test.cc"
   DEPS
-    ::kernel_unit
     ::launch_artifact
-    ::lower
-    ::schedule
+    ::program_plan
     ::serialize
     iree::async
     iree::async::util::proactor_pool
@@ -312,14 +310,12 @@ loom_cc_test(
     loom::format::text::parser
     loom::ir
     loom::ops::op_registry
-    loom::ops::type_registry
     loom::target::arch::cmd::descriptors::low_registry
     loom::target::arch::cmd::iree_hal::recording
     loom::target::arch::cmd::iree_hal::recording_test_executable
     loom::target::arch::cmd::program
     loom::testing::diagnostic_matchers
     loom::testing::module_ptr
-    loom::util::fact_table
     loom::verify
 )
 
