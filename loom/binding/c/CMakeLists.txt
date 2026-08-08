@@ -42,6 +42,7 @@ loom_cc_library(
     "include/loomc/target.h"
     "include/loomc/workspace.h"
     "src/artifact_storage.h"
+    "src/compile.h"
     "src/config.h"
     "src/context.h"
     "src/diagnostic.h"
@@ -50,6 +51,7 @@ loom_cc_library(
     "src/option_chain.h"
     "src/pass_program.h"
     "src/program.h"
+    "src/program_environment.h"
     "src/program_plan.h"
     "src/result.h"
     "src/source.h"
@@ -78,6 +80,7 @@ loom_cc_library(
     "src/option_chain.c"
     "src/pass_program.c"
     "src/program.c"
+    "src/program_environment.c"
     "src/program_plan.c"
     "src/result.c"
     "src/source.c"
@@ -178,6 +181,7 @@ loom_cc_library(
     "include/loomc/source.h"
     "include/loomc/status.h"
     "include/loomc/target.h"
+    "include/loomc/target/cmd.h"
     "include/loomc/target/iree_hal.h"
     "include/loomc/target/spirv.h"
     "include/loomc/target/spirv/base.h"
@@ -189,6 +193,7 @@ loom_cc_library(
     "include/loomc/workspace.h"
   DEPS
     ::loomc
+    loom::binding::c::target::cmd
     loom::binding::c::target::iree_hal
     loom::binding::c::target::spirv
     loom::binding::c::target::spirv::iree_hal

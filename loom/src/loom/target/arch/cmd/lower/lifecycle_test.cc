@@ -16,7 +16,6 @@
 #include "iree/hal/local/loaders/static_library_loader.h"
 #include "iree/testing/gtest.h"
 #include "iree/testing/status_matchers.h"
-#include "loom/binding/c/target/cmd/program_plan.h"
 #include "loom/target/arch/cmd/iree_hal/recording.h"
 #include "loom/target/arch/cmd/iree_hal/recording_test_executable.h"
 #include "loom/target/arch/cmd/lower/launch_graph.h"
@@ -29,6 +28,7 @@
 #include "loomc/program_plan.h"
 #include "loomc/result.h"
 #include "loomc/source.h"
+#include "loomc/target/cmd.h"
 #include "loomc/workspace.h"
 #include "test/util.h"
 
@@ -55,6 +55,9 @@ using PassProgramPtr =
     loomc::testing::HandlePtr<loomc_pass_program_t, loomc_pass_program_release>;
 using PlanPtr =
     loomc::testing::HandlePtr<loomc_program_plan_t, loomc_program_plan_release>;
+using ProgramEnvironmentPtr =
+    loomc::testing::HandlePtr<loomc_program_environment_t,
+                              loomc_program_environment_release>;
 using ProgramPtr =
     loomc::testing::HandlePtr<loomc_program_t, loomc_program_release>;
 using SourcePtr =
@@ -290,8 +293,23 @@ command.program.def public target(@command_target) @increment_twice(%element_cou
     ASSERT_TRUE(loomc_result_succeeded(parse_result.get()));
 
     loomc_compiler_t* raw_compiler = nullptr;
+    loomc_program_environment_t* raw_program_environment = nullptr;
+    LOOMC_ASSERT_OK(loomc_program_environment_create_command(
+        loomc_allocator_system(), &raw_program_environment));
+    ProgramEnvironmentPtr program_environment(raw_program_environment);
+    const loomc_compiler_program_options_t program_options = {
+        /*.type=*/LOOMC_STRUCTURE_TYPE_COMPILER_PROGRAM_OPTIONS,
+        /*.structure_size=*/sizeof(program_options),
+        /*.next=*/nullptr,
+        /*.program_environment=*/program_environment.get(),
+    };
+    const loomc_compiler_options_t compiler_options = {
+        /*.type=*/LOOMC_STRUCTURE_TYPE_COMPILER_OPTIONS,
+        /*.structure_size=*/sizeof(compiler_options),
+        /*.next=*/&program_options,
+    };
     LOOMC_ASSERT_OK(
-        loomc_compiler_create(context_handle_.get(), /*options=*/nullptr,
+        loomc_compiler_create(context_handle_.get(), &compiler_options,
                               loomc_allocator_system(), &raw_compiler));
     CompilerPtr compiler(raw_compiler);
     loomc_pass_program_t* raw_pass_program = nullptr;
@@ -302,10 +320,10 @@ command.program.def public target(@command_target) @increment_twice(%element_cou
 
     loomc_program_plan_t* raw_plan = nullptr;
     loomc_result_t* raw_prepare_result = nullptr;
-    LOOMC_ASSERT_OK(loomc_cmd_program_plan_prepare_module(
+    LOOMC_ASSERT_OK(loomc_prepare_programs(
         compiler.get(), coordinator_workspace_.get(), pass_program.get(),
-        module.get(), loomc_allocator_system(), &raw_plan,
-        &raw_prepare_result));
+        pass_program.get(), module.get(), /*options=*/nullptr,
+        loomc_allocator_system(), &raw_plan, &raw_prepare_result));
     PlanPtr plan(raw_plan);
     ResultPtr prepare_result(raw_prepare_result);
     ASSERT_TRUE(loomc_result_succeeded(prepare_result.get()));

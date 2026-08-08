@@ -4,7 +4,7 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "loom/binding/c/target/cmd/program_plan.h"
+#include "loomc/program_plan.h"
 
 #include <array>
 #include <cstring>
@@ -20,6 +20,7 @@
 #include "loomc/launch_config_module.h"
 #include "loomc/program.h"
 #include "loomc/source.h"
+#include "loomc/target/cmd.h"
 #include "test/util.h"
 
 namespace {
@@ -34,6 +35,8 @@ using ModulePtr = HandlePtr<loomc_module_t, loomc_module_release>;
 using PassProgramPtr =
     HandlePtr<loomc_pass_program_t, loomc_pass_program_release>;
 using PlanPtr = HandlePtr<loomc_program_plan_t, loomc_program_plan_release>;
+using ProgramEnvironmentPtr =
+    HandlePtr<loomc_program_environment_t, loomc_program_environment_release>;
 using ProgramPtr = HandlePtr<loomc_program_t, loomc_program_release>;
 using ResultPtr = HandlePtr<loomc_result_t, loomc_result_release>;
 using SourcePtr = HandlePtr<loomc_source_t, loomc_source_release>;
@@ -94,6 +97,29 @@ static ModulePtr DeserializeModule(loomc_context_t* context,
 }
 
 static CompilerPtr CreateCompiler(loomc_context_t* context) {
+  loomc_program_environment_t* program_environment = nullptr;
+  LOOMC_EXPECT_OK(loomc_program_environment_create_command(
+      loomc_allocator_system(), &program_environment));
+  ProgramEnvironmentPtr program_environment_ptr(program_environment);
+  const loomc_compiler_program_options_t program_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_COMPILER_PROGRAM_OPTIONS,
+      /*.structure_size=*/sizeof(program_options),
+      /*.next=*/nullptr,
+      /*.program_environment=*/program_environment_ptr.get(),
+  };
+  const loomc_compiler_options_t options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_COMPILER_OPTIONS,
+      /*.structure_size=*/sizeof(options),
+      /*.next=*/&program_options,
+  };
+  loomc_compiler_t* compiler = nullptr;
+  LOOMC_EXPECT_OK(loomc_compiler_create(context, &options,
+                                        loomc_allocator_system(), &compiler));
+  return CompilerPtr(compiler);
+}
+
+static CompilerPtr CreateCompilerWithoutProgramEnvironment(
+    loomc_context_t* context) {
   loomc_compiler_t* compiler = nullptr;
   LOOMC_EXPECT_OK(loomc_compiler_create(context, /*options=*/nullptr,
                                         loomc_allocator_system(), &compiler));
@@ -229,14 +255,31 @@ command.program.def public target(@command_target) @add_eleven_once(%element_cou
 )");
   ModulePtr module = DeserializeModule(
       context.get(), coordinator_workspace.get(), source.get());
-  CompilerPtr compiler = CreateCompiler(context.get());
   PassProgramPtr pass_program = CreateEmptyPassProgram(context.get());
+
+  CompilerPtr compiler_without_program_environment =
+      CreateCompilerWithoutProgramEnvironment(context.get());
+  loomc_program_plan_t* rejected_plan = nullptr;
+  loomc_result_t* rejected_result = nullptr;
+  LOOMC_EXPECT_STATUS_IS(
+      LOOMC_STATUS_FAILED_PRECONDITION,
+      loomc_prepare_programs(compiler_without_program_environment.get(),
+                             coordinator_workspace.get(), pass_program.get(),
+                             pass_program.get(), module.get(),
+                             /*options=*/nullptr, loomc_allocator_system(),
+                             &rejected_plan, &rejected_result));
+  EXPECT_EQ(rejected_plan, nullptr);
+  EXPECT_EQ(rejected_result, nullptr);
+  compiler_without_program_environment.reset();
+
+  CompilerPtr compiler = CreateCompiler(context.get());
 
   loomc_program_plan_t* raw_plan = nullptr;
   loomc_result_t* raw_prepare_result = nullptr;
-  LOOMC_ASSERT_OK(loomc_cmd_program_plan_prepare_module(
+  LOOMC_ASSERT_OK(loomc_prepare_programs(
       compiler.get(), coordinator_workspace.get(), pass_program.get(),
-      module.get(), loomc_allocator_system(), &raw_plan, &raw_prepare_result));
+      pass_program.get(), module.get(), /*options=*/nullptr,
+      loomc_allocator_system(), &raw_plan, &raw_prepare_result));
   PlanPtr plan(raw_plan);
   ResultPtr prepare_result(raw_prepare_result);
   ASSERT_TRUE(loomc_result_succeeded(prepare_result.get()));

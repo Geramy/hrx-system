@@ -4,7 +4,7 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "loomc/compile.h"
+#include "compile.h"
 
 #include <string.h>
 
@@ -20,7 +20,9 @@
 #include "loom/util/stream.h"
 #include "loomc/iree.h"
 #include "module.h"
+#include "option_chain.h"
 #include "pass_program.h"
+#include "program_environment.h"
 #include "result.h"
 #include "source.h"
 #include "target.h"
@@ -35,6 +37,9 @@ struct loomc_compiler_t {
 
   // Context retained by the prepared compiler.
   loomc_context_t* context;
+
+  // Optional immutable program-root compiler capabilities.
+  loomc_program_environment_t* program_environment;
 };
 
 typedef struct loomc_compile_diagnostic_capture_t {
@@ -52,7 +57,9 @@ static loomc_status_t loomc_compile_validate_string_view(
 }
 
 static loomc_status_t loomc_compile_validate_compiler_options(
-    const loomc_compiler_options_t* options) {
+    const loomc_compiler_options_t* options,
+    loomc_program_environment_t** out_program_environment) {
+  *out_program_environment = NULL;
   if (options == NULL) {
     return loomc_ok_status();
   }
@@ -66,10 +73,11 @@ static loomc_status_t loomc_compile_validate_compiler_options(
     return loomc_make_status(LOOMC_STATUS_INVALID_ARGUMENT,
                              "compiler options structure_size is too small");
   }
-  if (options->next != NULL) {
-    return loomc_make_status(LOOMC_STATUS_UNIMPLEMENTED,
-                             "compiler option extensions are not supported");
-  }
+  loomc_option_chain_t option_chain = {0};
+  LOOMC_RETURN_IF_ERROR(loomc_option_chain_resolve(
+      options->next, LOOMC_OPTION_CHAIN_ALLOW_PROGRAM_ENVIRONMENT,
+      &option_chain));
+  *out_program_environment = option_chain.program_environment;
   return loomc_ok_status();
 }
 
@@ -399,7 +407,9 @@ loomc_status_t loomc_compiler_create(loomc_context_t* context,
     return loomc_make_status(LOOMC_STATUS_INVALID_ARGUMENT,
                              "context must not be NULL");
   }
-  LOOMC_RETURN_IF_ERROR(loomc_compile_validate_compiler_options(options));
+  loomc_program_environment_t* program_environment = NULL;
+  LOOMC_RETURN_IF_ERROR(
+      loomc_compile_validate_compiler_options(options, &program_environment));
 
   loomc_compiler_t* compiler = NULL;
   LOOMC_RETURN_IF_ERROR(
@@ -409,6 +419,8 @@ loomc_status_t loomc_compiler_create(loomc_context_t* context,
   compiler->allocator = allocator;
   compiler->context = context;
   loomc_context_retain(context);
+  compiler->program_environment = program_environment;
+  loomc_program_environment_retain(program_environment);
   *out_compiler = compiler;
   return loomc_ok_status();
 }
@@ -520,6 +532,12 @@ void loomc_compiler_release(loomc_compiler_t* compiler) {
     return;
   }
   loomc_allocator_t allocator = compiler->allocator;
+  loomc_program_environment_release(compiler->program_environment);
   loomc_context_release(compiler->context);
   loomc_allocator_free(allocator, compiler);
+}
+
+loomc_program_environment_t* loomc_compiler_program_environment(
+    const loomc_compiler_t* compiler) {
+  return compiler ? compiler->program_environment : NULL;
 }

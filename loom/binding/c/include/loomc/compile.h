@@ -98,6 +98,19 @@ extern "C" {
 /// threads. Invocation-local scratch belongs in `loomc_workspace_t`.
 typedef struct loomc_compiler_t loomc_compiler_t;
 
+/// Immutable set of program-root compiler capabilities.
+///
+/// A program environment contains the root representations understood by a
+/// prepared compiler, such as command programs or full host programs. It does
+/// not select hardware targets or deployment outputs. Package-specific
+/// factories construct environments from the providers linked into an
+/// embedding.
+///
+/// @thread_safety
+/// Program environments are immutable after creation and may be shared across
+/// prepared compilers and threads.
+typedef struct loomc_program_environment_t loomc_program_environment_t;
+
 /// Compile artifact request bits.
 typedef enum loomc_compile_artifact_flag_bits_e {
   /// Return textual Loom module IR after successful compilation.
@@ -130,6 +143,26 @@ typedef struct loomc_compiler_options_t {
   /// Extension chain for future compiler options.
   const void* next;
 } loomc_compiler_options_t;
+
+/// Compiler option extension that installs a program environment.
+///
+/// Put this descriptor on `loomc_compiler_options_t::next`. The compiler
+/// retains the environment on success, so the caller may release its reference
+/// after `loomc_compiler_create` returns.
+typedef struct loomc_compiler_program_options_t {
+  /// Structure type. Must be
+  /// `LOOMC_STRUCTURE_TYPE_COMPILER_PROGRAM_OPTIONS`.
+  loomc_structure_type_t type;
+
+  /// Size of this structure in bytes.
+  loomc_host_size_t structure_size;
+
+  /// Additional compiler option extensions.
+  const void* next;
+
+  /// Program-root compiler capabilities to install.
+  loomc_program_environment_t* program_environment;
+} loomc_compiler_program_options_t;
 
 /// Compile invocation options.
 ///
@@ -182,6 +215,14 @@ typedef struct loomc_compile_options_t {
 LOOMC_API_EXPORT loomc_status_t loomc_compiler_create(
     loomc_context_t* context, const loomc_compiler_options_t* options,
     loomc_allocator_t allocator, loomc_compiler_t** out_compiler);
+
+/// Retains `program_environment` for another owner.
+LOOMC_API_EXPORT void loomc_program_environment_retain(
+    loomc_program_environment_t* program_environment);
+
+/// Releases `program_environment` from one owner. Passing `NULL` is allowed.
+LOOMC_API_EXPORT void loomc_program_environment_release(
+    loomc_program_environment_t* program_environment);
 
 /// Compiles a mutable module into in-memory artifacts.
 ///

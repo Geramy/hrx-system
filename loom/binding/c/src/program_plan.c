@@ -8,8 +8,15 @@
 
 #include <string.h>
 
+#include "compile.h"
+#include "config.h"
+#include "diagnostic.h"
 #include "iree/base/api.h"
 #include "iree/base/internal/atomics.h"
+#include "module.h"
+#include "pass_program.h"
+#include "program_environment.h"
+#include "result.h"
 
 typedef struct loomc_program_plan_root_storage_t {
   // Owned public root name.
@@ -188,6 +195,107 @@ loomc_status_t loomc_program_plan_create(
     loomc_program_plan_destroy(program_plan);
   }
   return status;
+}
+
+static loomc_status_t loomc_program_plan_validate_options(
+    const loomc_program_plan_options_t* options) {
+  if (options == NULL) return loomc_ok_status();
+  if (options->type != LOOMC_STRUCTURE_TYPE_NONE &&
+      options->type != LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_OPTIONS) {
+    return loomc_make_status(
+        LOOMC_STATUS_INVALID_ARGUMENT,
+        "program plan options have an unknown structure type");
+  }
+  if (options->structure_size != 0 &&
+      options->structure_size < sizeof(*options)) {
+    return loomc_make_status(
+        LOOMC_STATUS_INVALID_ARGUMENT,
+        "program plan options structure_size is too small");
+  }
+  return loomc_config_validate_options(&options->config);
+}
+
+static loomc_status_t loomc_program_plan_finish_preparation_failure(
+    loomc_result_t* result, loomc_status_t status,
+    loomc_result_t** out_result) {
+  if (!loomc_status_is_result_diagnostic(status)) {
+    loomc_result_release(result);
+    return status;
+  }
+  loomc_status_t add_status = loomc_result_fail_status_diagnostic_consume(
+      result, /*source=*/NULL, LOOMC_DIAGNOSTIC_SEVERITY_ERROR,
+      loomc_make_cstring_view("PROGRAM_PLAN/PREPARE"), status);
+  if (loomc_status_is_ok(add_status)) {
+    *out_result = result;
+  } else {
+    loomc_result_release(result);
+  }
+  return add_status;
+}
+
+loomc_status_t loomc_prepare_programs(
+    loomc_compiler_t* compiler, loomc_workspace_t* workspace,
+    const loomc_pass_program_t* preparation_pass_program,
+    const loomc_pass_program_t* unit_pass_program, loomc_module_t* module,
+    const loomc_program_plan_options_t* options, loomc_allocator_t allocator,
+    loomc_program_plan_t** out_program_plan, loomc_result_t** out_result) {
+  if (out_program_plan == NULL || out_result == NULL) {
+    return loomc_make_status(
+        LOOMC_STATUS_INVALID_ARGUMENT,
+        "out_program_plan and out_result must not be NULL");
+  }
+  *out_program_plan = NULL;
+  *out_result = NULL;
+  if (compiler == NULL || workspace == NULL ||
+      preparation_pass_program == NULL || unit_pass_program == NULL ||
+      module == NULL) {
+    return loomc_make_status(
+        LOOMC_STATUS_INVALID_ARGUMENT,
+        "compiler, workspace, pass programs, and module are required");
+  }
+  LOOMC_RETURN_IF_ERROR(loomc_program_plan_validate_options(options));
+  loomc_context_t* module_context = loomc_module_context(module);
+  if (loomc_pass_program_context(preparation_pass_program) != module_context ||
+      loomc_pass_program_context(unit_pass_program) != module_context) {
+    return loomc_make_status(
+        LOOMC_STATUS_INVALID_ARGUMENT,
+        "program plan pass programs and source module contexts must match");
+  }
+  loomc_program_environment_t* program_environment =
+      loomc_compiler_program_environment(compiler);
+  if (program_environment == NULL) {
+    return loomc_make_status(LOOMC_STATUS_FAILED_PRECONDITION,
+                             "compiler has no program-root providers");
+  }
+
+  const loomc_compile_options_t compile_options = {
+      .type = LOOMC_STRUCTURE_TYPE_COMPILE_OPTIONS,
+      .structure_size = sizeof(compile_options),
+      .config = options ? options->config : (loomc_config_options_t){0},
+  };
+  loomc_result_t* result = NULL;
+  LOOMC_RETURN_IF_ERROR(
+      loomc_compile_module(compiler, workspace, preparation_pass_program,
+                           module, &compile_options, allocator, &result));
+  if (!loomc_result_succeeded(result)) {
+    *out_result = result;
+    return loomc_ok_status();
+  }
+
+  const loomc_program_provider_t* provider = NULL;
+  loomc_status_t status = loomc_program_environment_select_provider(
+      program_environment, module, &provider);
+  if (loomc_status_is_ok(status)) {
+    status = provider->prepare(compiler, workspace, unit_pass_program, module,
+                               options, result, allocator, out_program_plan);
+  }
+  if (loomc_status_is_ok(status)) {
+    IREE_ASSERT(*out_program_plan != NULL);
+    *out_result = result;
+    return loomc_ok_status();
+  }
+  return loomc_program_plan_finish_preparation_failure(result, status,
+                                                       out_result);
 }
 
 void loomc_program_plan_retain(loomc_program_plan_t* program_plan) {
