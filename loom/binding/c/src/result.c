@@ -116,6 +116,12 @@ loomc_allocator_t loomc_result_allocator(const loomc_result_t* result) {
   return result->allocator;
 }
 
+loomc_artifact_storage_t* loomc_result_artifact_storage(
+    const loomc_result_t* result) {
+  IREE_ASSERT_ARGUMENT(result);
+  return result->artifact_storage;
+}
+
 loomc_status_t loomc_result_set_state(loomc_result_t* result,
                                       loomc_result_state_t state) {
   if (result == NULL) {

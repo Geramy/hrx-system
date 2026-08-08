@@ -286,6 +286,12 @@ typedef enum loomc_structure_type_e {
 
   /// `loomc_launch_config_outputs_t`.
   LOOMC_STRUCTURE_TYPE_LAUNCH_CONFIG_OUTPUTS = 40,
+
+  /// `loomc_program_export_info_t`.
+  LOOMC_STRUCTURE_TYPE_PROGRAM_EXPORT_INFO = 41,
+
+  /// `loomc_program_dependency_info_t`.
+  LOOMC_STRUCTURE_TYPE_PROGRAM_DEPENDENCY_INFO = 42,
 } loomc_structure_type_t;
 
 /// One loose string option entry.

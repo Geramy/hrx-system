@@ -7,6 +7,7 @@
 #ifndef LOOMC_RESULT_STORAGE_H_
 #define LOOMC_RESULT_STORAGE_H_
 
+#include "artifact_storage.h"
 #include "loomc/result.h"
 #include "visibility.h"
 
@@ -22,6 +23,10 @@ loomc_result_create(loomc_result_state_t state, loomc_allocator_t allocator,
 // Returns the allocator owned by result.
 LOOMC_API_PRIVATE loomc_allocator_t
 loomc_result_allocator(const loomc_result_t* result);
+
+// Returns artifact storage borrowed from |result|.
+LOOMC_API_PRIVATE loomc_artifact_storage_t* loomc_result_artifact_storage(
+    const loomc_result_t* result);
 
 // Sets the result state while the result is still being built.
 LOOMC_API_PRIVATE loomc_status_t
