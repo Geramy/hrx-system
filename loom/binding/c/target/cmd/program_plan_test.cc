@@ -631,7 +631,7 @@ command.program.def public target(@command_target) @add_eleven_once(%element_cou
       command_info.name, loomc_make_cstring_view("add_eleven_once")));
 }
 
-TEST(CmdProgramPlanTest, SelectsParameterAbiFromCompiledRoot) {
+TEST(CmdProgramPlanTest, MapsParameterViewToOpaqueKernelBufferAbi) {
   ContextPtr context = CreateContext();
   WorkspacePtr coordinator_workspace = CreateWorkspace();
   SourcePtr source = CreateSource(R"(
@@ -642,13 +642,21 @@ target.generic<reference> @command_target {abi = command_program, contract_set_k
 kernel.def target(@kernel_target) @consume_parameter() {
   %one = index.constant 1 : index
   kernel.launch.config workgroups(%one, %one, %one) workgroup_size(%one, %one, %one) : index
-} launch(%source: view<128xi32, #dense>) {
+} launch(%source: buffer, %target: buffer) {
+  %zero_offset = index.constant 0 : offset
+  %zero_index = index.constant 0 : index
+  %source_aligned = buffer.assume.alignment %source {minimum_alignment = 4} : buffer
+  %target_aligned = buffer.assume.alignment %target {minimum_alignment = 4} : buffer
+  %source_view = buffer.view %source_aligned[%zero_offset] : buffer -> view<128xi32, #dense>
+  %target_view = buffer.view %target_aligned[%zero_offset] : buffer -> view<1xi32, #dense>
+  %value = view.load %source_view[%zero_index] : view<128xi32, #dense> -> i32
+  view.store %value, %target_view[%zero_index] : i32, view<1xi32, #dense>
   kernel.return
 }
 
-command.program.def public target(@command_target) @parameter_root() launch(%parameters: buffer) {
+command.program.def public target(@command_target) @parameter_root() launch(%parameters: buffer, %target: buffer) {
   %source = command.parameter %parameters, "source_values"[] : view<128xi32, #dense>
-  kernel.launch @consume_parameter[](%source) : [](view<128xi32, #dense>)
+  kernel.launch @consume_parameter[](%source, %target) : [](view<128xi32, #dense>, buffer)
   command.return
 }
 )");
@@ -711,7 +719,7 @@ command.program.def public target(@command_target) @parameter_root() launch(%par
   };
   LOOMC_ASSERT_OK(loomc_cmd_program_info(command_program.get(), &command_info));
   EXPECT_EQ(command_info.fixed_buffer_count, 1u);
-  EXPECT_EQ(command_info.rebindable_binding_count, 0u);
+  EXPECT_EQ(command_info.rebindable_binding_count, 1u);
   EXPECT_EQ(command_info.parameter_root_count, 1u);
   EXPECT_EQ(command_info.parameter_count, 1u);
   EXPECT_EQ(command_info.launch_counts.binding_index,
@@ -739,6 +747,27 @@ command.program.def public target(@command_target) @parameter_root() launch(%par
   EXPECT_EQ(parameter_info.byte_offset, 0u);
   EXPECT_EQ(parameter_info.byte_length, 512u);
   EXPECT_EQ(parameter_info.minimum_alignment, 256u);
+
+  loomc_program_t* raw_dependency_program = nullptr;
+  LOOMC_ASSERT_OK(loomc_program_plan_compile_unit(
+      plan.get(), worker_workspace.get(), loomc_program_plan_unit_from_index(1),
+      /*options=*/nullptr, loomc_allocator_system(), &raw_dependency_program,
+      &raw_result));
+  ProgramPtr dependency_program(raw_dependency_program);
+  result.reset(raw_result);
+  if (!loomc_result_succeeded(result.get())) {
+    for (loomc_host_size_t i = 0;
+         i < loomc_result_diagnostic_count(result.get()); ++i) {
+      const loomc_diagnostic_t* diagnostic =
+          loomc_result_diagnostic_at(result.get(), i);
+      ADD_FAILURE() << std::string(diagnostic->code.data, diagnostic->code.size)
+                    << ": "
+                    << std::string(diagnostic->message.data,
+                                   diagnostic->message.size);
+    }
+  }
+  ASSERT_TRUE(loomc_result_succeeded(result.get()));
+  EXPECT_EQ(loomc_program_artifact_count(dependency_program.get()), 1u);
 }
 
 TEST(CmdProgramPlanTest, LowersModelShapedScheduleAfterPreparation) {
