@@ -280,7 +280,11 @@ loom_link_module(
     ],
     mode = "selective",
     output = "qwen3_moe_attention_qkv_postprocess_fused.loom",
-    roots = ["@qwen3_moe_attention_qkv_postprocess_fused_decode"],
+    roots = [
+        "@qwen3_moe_attention_qkv_postprocess_fused_decode",
+        "@qwen3_moe_attention_qkv_postprocess_fused_decode_q4",
+        "@qwen3_moe_attention_qkv_postprocess_fused_decode_q6",
+    ],
     strip_check = True,
 )
 
