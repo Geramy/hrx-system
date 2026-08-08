@@ -271,6 +271,7 @@ loomc_status_t loomc_prepare_programs(
   const loomc_compile_options_t compile_options = {
       .type = LOOMC_STRUCTURE_TYPE_COMPILE_OPTIONS,
       .structure_size = sizeof(compile_options),
+      .next = options ? options->target_specialization : NULL,
       .config = options ? options->config : (loomc_config_options_t){0},
   };
   loomc_result_t* result = NULL;

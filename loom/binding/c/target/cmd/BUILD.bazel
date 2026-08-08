@@ -8,6 +8,7 @@ load(
     "//loom/build_tools/bazel:build_defs.bzl",
     "loom_cc_library",
     "loom_cc_test",
+    "loom_config_compatible_with",
 )
 
 package(
@@ -15,6 +16,11 @@ package(
     features = ["layering_check"],
     licenses = ["notice"],  # Apache 2.0
 )
+
+_SPIRV_COMPATIBLE_WITH = loom_config_compatible_with([
+    "//loom/config/target/arch:spirv",
+    "//loom/config/emit:spirv",
+])
 
 loom_cc_library(
     name = "cmd",
@@ -37,9 +43,11 @@ loom_cc_library(
 loom_cc_test(
     name = "program_plan_test",
     srcs = ["program_plan_test.cc"],
+    target_compatible_with = _SPIRV_COMPATIBLE_WITH,
     deps = [
         ":cmd",
         "//loom/binding/c:loomc",
+        "//loom/binding/c/target/spirv",
         "//loom/binding/c/test:test_util",
         "//loom/src/loom/target/arch/cmd:program",
         "//runtime/src/iree/base",

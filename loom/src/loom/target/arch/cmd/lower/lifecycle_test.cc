@@ -35,6 +35,8 @@
 namespace loom {
 namespace {
 
+static constexpr char kStaticLibraryArtifactFormat[] = "test-static-library";
+
 using LaunchModulePtr =
     loomc::testing::HandlePtr<loomc_launch_config_module_t,
                               loomc_launch_config_module_release>;
@@ -121,7 +123,8 @@ static iree_hal_device_group_t* CreateSyncDeviceGroup() {
 }
 
 static iree_status_t LoadTestExecutable(
-    iree_hal_device_t* device, iree_hal_executable_t** out_executable) {
+    iree_hal_device_t* device, const loomc_artifact_t* artifact,
+    iree_hal_executable_t** out_executable) {
   *out_executable = nullptr;
   const iree_hal_executable_target_selection_t target_selection = {
       /*.family=*/IREE_SV("cpu"),
@@ -137,11 +140,10 @@ static iree_status_t LoadTestExecutable(
     return iree_make_status(IREE_STATUS_NOT_FOUND,
                             "local device has no exact CPU target");
   }
-  static const char kExecutableName[] = "loom_cmd_recording_test";
   iree_hal_executable_load_params_t load_params;
   iree_hal_executable_load_params_initialize(&load_params);
   load_params.executable_data = iree_make_const_byte_span(
-      kExecutableName, IREE_ARRAYSIZE(kExecutableName));
+      artifact->contents.data, artifact->contents.data_length);
   return iree_hal_device_load_executable(device, IREE_HAL_QUEUE_AFFINITY_ANY,
                                          target_result.target, &load_params,
                                          out_executable);
@@ -318,11 +320,24 @@ command.program.def public target(@command_target) @increment_twice(%element_cou
         &raw_pass_program));
     PassProgramPtr pass_program(raw_pass_program);
 
+    const loomc_cmd_program_plan_options_t command_options = {
+        /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PLAN_OPTIONS,
+        /*.structure_size=*/sizeof(command_options),
+        /*.next=*/nullptr,
+        /*.dependency_artifact_format=*/
+        loomc_make_cstring_view(kStaticLibraryArtifactFormat),
+    };
+    const loomc_program_plan_options_t plan_options = {
+        /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_OPTIONS,
+        /*.structure_size=*/sizeof(plan_options),
+        /*.next=*/&command_options,
+    };
+
     loomc_program_plan_t* raw_plan = nullptr;
     loomc_result_t* raw_prepare_result = nullptr;
     LOOMC_ASSERT_OK(loomc_prepare_programs(
         compiler.get(), coordinator_workspace_.get(), pass_program.get(),
-        pass_program.get(), module.get(), /*options=*/nullptr,
+        pass_program.get(), module.get(), &plan_options,
         loomc_allocator_system(), &raw_plan, &raw_prepare_result));
     PlanPtr plan(raw_plan);
     ResultPtr prepare_result(raw_prepare_result);
@@ -348,17 +363,39 @@ command.program.def public target(@command_target) @increment_twice(%element_cou
     std::vector<ProgramPtr> unit_programs(unit_count);
     std::vector<loomc_program_t*> unit_table_values(unit_count);
     for (uint32_t i = 0; i < unit_count; ++i) {
-      loomc_workspace_t* raw_worker_workspace = nullptr;
-      LOOMC_ASSERT_OK(loomc_workspace_create(
-          /*options=*/nullptr, loomc_allocator_system(),
-          &raw_worker_workspace));
-      WorkspacePtr worker_workspace(raw_worker_workspace);
       loomc_program_t* raw_unit_program = nullptr;
       loomc_result_t* raw_compile_result = nullptr;
-      LOOMC_ASSERT_OK(loomc_program_plan_compile_unit(
-          plan.get(), worker_workspace.get(),
-          loomc_program_plan_unit_from_index(i), /*options=*/nullptr,
-          loomc_allocator_system(), &raw_unit_program, &raw_compile_result));
+      if (i == 0) {
+        loomc_workspace_t* raw_worker_workspace = nullptr;
+        LOOMC_ASSERT_OK(loomc_workspace_create(
+            /*options=*/nullptr, loomc_allocator_system(),
+            &raw_worker_workspace));
+        WorkspacePtr worker_workspace(raw_worker_workspace);
+        LOOMC_ASSERT_OK(loomc_program_plan_compile_unit(
+            plan.get(), worker_workspace.get(),
+            loomc_program_plan_unit_from_index(i), /*options=*/nullptr,
+            loomc_allocator_system(), &raw_unit_program, &raw_compile_result));
+      } else {
+        loomc_program_plan_unit_info_t unit_info = {
+            /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_UNIT_INFO,
+            /*.structure_size=*/sizeof(unit_info),
+        };
+        LOOMC_ASSERT_OK(loomc_program_plan_unit_info(
+            plan.get(), loomc_program_plan_unit_from_index(i), &unit_info));
+        static const char kExecutableName[] = "loom_cmd_recording_test";
+        const loomc_artifact_t artifact = {
+            /*.kind=*/LOOMC_ARTIFACT_KIND_EXECUTABLE,
+            /*.format=*/
+            loomc_make_cstring_view(kStaticLibraryArtifactFormat),
+            /*.identifier=*/unit_info.identifier,
+            /*.contents=*/
+            loomc_make_byte_span(kExecutableName,
+                                 IREE_ARRAYSIZE(kExecutableName)),
+        };
+        LOOMC_ASSERT_OK(loomc_program_plan_load_unit_program(
+            plan.get(), loomc_program_plan_unit_from_index(i), &artifact, 1,
+            loomc_allocator_system(), &raw_unit_program, &raw_compile_result));
+      }
       unit_programs[i].reset(raw_unit_program);
       ResultPtr compile_result(raw_compile_result);
       ASSERT_TRUE(loomc_result_succeeded(compile_result.get()));
@@ -412,10 +449,10 @@ TEST_F(CommandLifecycleTest,
   const loomc_artifact_t* dependency_artifact =
       loomc_program_artifact_at(dependency_info.program, 0);
   ASSERT_NE(dependency_artifact, nullptr);
-  EXPECT_EQ(dependency_artifact->kind, LOOMC_ARTIFACT_KIND_MODULE);
+  EXPECT_EQ(dependency_artifact->kind, LOOMC_ARTIFACT_KIND_EXECUTABLE);
   EXPECT_TRUE(loomc_string_view_equal(
       dependency_artifact->format,
-      loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_LOOM_BYTECODE)));
+      loomc_make_cstring_view(kStaticLibraryArtifactFormat)));
 
   const loomc_artifact_t* launch_artifact = FindArtifact(
       program.get(), LOOMC_ARTIFACT_KIND_LAUNCH_CONFIG,
@@ -504,7 +541,7 @@ TEST_F(CommandLifecycleTest,
   iree_hal_device_group_t* device_group = CreateSyncDeviceGroup();
   iree_hal_device_t* device = iree_hal_device_group_device_at(device_group, 0);
   iree_hal_executable_t* executable = nullptr;
-  IREE_ASSERT_OK(LoadTestExecutable(device, &executable));
+  IREE_ASSERT_OK(LoadTestExecutable(device, dependency_artifact, &executable));
   const iree_hal_executable_function_t function =
       iree_hal_executable_function_from_index(1);
   iree_hal_executable_function_info_t function_info = {};

@@ -21,6 +21,7 @@
 #include "loomc/program.h"
 #include "loomc/source.h"
 #include "loomc/target/cmd.h"
+#include "loomc/target/spirv.h"
 #include "test/util.h"
 
 namespace {
@@ -40,6 +41,8 @@ using ProgramEnvironmentPtr =
 using ProgramPtr = HandlePtr<loomc_program_t, loomc_program_release>;
 using ResultPtr = HandlePtr<loomc_result_t, loomc_result_release>;
 using SourcePtr = HandlePtr<loomc_source_t, loomc_source_release>;
+using TargetEnvironmentPtr =
+    HandlePtr<loomc_target_environment_t, loomc_target_environment_release>;
 using WorkspacePtr = HandlePtr<loomc_workspace_t, loomc_workspace_release>;
 
 struct OwnedArtifact {
@@ -54,9 +57,24 @@ struct OwnedArtifact {
 };
 
 static ContextPtr CreateContext() {
+  loomc_target_environment_t* target_environment = nullptr;
+  LOOMC_EXPECT_OK(loomc_target_environment_create_spirv(
+      loomc_allocator_system(), &target_environment));
+  TargetEnvironmentPtr target_environment_ptr(target_environment);
+  const loomc_context_target_options_t target_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CONTEXT_TARGET_OPTIONS,
+      /*.structure_size=*/sizeof(target_options),
+      /*.next=*/nullptr,
+      /*.target_environment=*/target_environment_ptr.get(),
+  };
+  const loomc_context_options_t options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CONTEXT_OPTIONS,
+      /*.structure_size=*/sizeof(options),
+      /*.next=*/&target_options,
+  };
   loomc_context_t* context = nullptr;
-  LOOMC_EXPECT_OK(loomc_context_create(
-      /*options=*/nullptr, loomc_allocator_system(), &context));
+  LOOMC_EXPECT_OK(
+      loomc_context_create(&options, loomc_allocator_system(), &context));
   return ContextPtr(context);
 }
 
@@ -130,6 +148,23 @@ static PassProgramPtr CreateEmptyPassProgram(loomc_context_t* context) {
   loomc_pass_program_t* pass_program = nullptr;
   LOOMC_EXPECT_OK(loomc_pass_program_create_empty(
       context, /*options=*/nullptr, loomc_allocator_system(), &pass_program));
+  return PassProgramPtr(pass_program);
+}
+
+static PassProgramPtr CreateTargetPassProgram(loomc_context_t* context) {
+  const loomc_target_pipeline_options_t options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_TARGET_PIPELINE_OPTIONS,
+      /*.structure_size=*/sizeof(options),
+      /*.next=*/nullptr,
+      /*.identifier=*/loomc_make_cstring_view("command-dependency-spirv"),
+      /*.kind=*/LOOMC_TARGET_PIPELINE_KIND_PREPARED_LOW,
+  };
+  loomc_pass_program_t* pass_program = nullptr;
+  loomc_result_t* result = nullptr;
+  LOOMC_EXPECT_OK(loomc_pass_program_create_from_target_pipeline(
+      context, &options, loomc_allocator_system(), &pass_program, &result));
+  ResultPtr result_ptr(result);
+  EXPECT_TRUE(loomc_result_succeeded(result_ptr.get()));
   return PassProgramPtr(pass_program);
 }
 
@@ -209,32 +244,40 @@ TEST(CmdProgramPlanTest, CompilesLoadsAndAssemblesMultipleRoots) {
   ContextPtr context = CreateContext();
   WorkspacePtr coordinator_workspace = CreateWorkspace();
   SourcePtr source = CreateSource(R"(
+spirv.target<vulkan1_3> @kernel_target {abi = hal_kernel}
+
 target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
 
-kernel.def @add_seven(%element_count: index) {
+kernel.def target(@kernel_target) @add_seven(%element_count: index) {
   %one = index.constant 1 : index
-  kernel.launch.config workgroups(%element_count, %one, %one) workgroup_size(%one, %one, %one) : index
+  %bounded_count = index.assume %element_count [range(%element_count, 1, 128)] : index
+  kernel.launch.config workgroups(%bounded_count, %one, %one) workgroup_size(%one, %one, %one) : index
 } launch(%source: buffer, %target: buffer) {
   %base = index.constant 0 : offset
   %workgroup = kernel.workgroup.id<x> : index
   %seven = scalar.constant 7 : i32
-  %source_view = buffer.view %source[%base] : buffer -> view<128xi32, #dense>
-  %target_view = buffer.view %target[%base] : buffer -> view<128xi32, #dense>
+  %source_aligned = buffer.assume.alignment %source {minimum_alignment = 4} : buffer
+  %target_aligned = buffer.assume.alignment %target {minimum_alignment = 4} : buffer
+  %source_view = buffer.view %source_aligned[%base] : buffer -> view<128xi32, #dense>
+  %target_view = buffer.view %target_aligned[%base] : buffer -> view<128xi32, #dense>
   %value = view.load %source_view[%workgroup] : view<128xi32, #dense> -> i32
   %result = scalar.addi %value, %seven : i32
   view.store %result, %target_view[%workgroup] : i32, view<128xi32, #dense>
   kernel.return
 }
 
-kernel.def @add_eleven(%element_count: index) {
+kernel.def target(@kernel_target) @add_eleven(%element_count: index) {
   %one = index.constant 1 : index
-  kernel.launch.config workgroups(%element_count, %one, %one) workgroup_size(%one, %one, %one) : index
+  %bounded_count = index.assume %element_count [range(%element_count, 1, 128)] : index
+  kernel.launch.config workgroups(%bounded_count, %one, %one) workgroup_size(%one, %one, %one) : index
 } launch(%source: buffer, %target: buffer) {
   %base = index.constant 0 : offset
   %workgroup = kernel.workgroup.id<x> : index
   %eleven = scalar.constant 11 : i32
-  %source_view = buffer.view %source[%base] : buffer -> view<128xi32, #dense>
-  %target_view = buffer.view %target[%base] : buffer -> view<128xi32, #dense>
+  %source_aligned = buffer.assume.alignment %source {minimum_alignment = 4} : buffer
+  %target_aligned = buffer.assume.alignment %target {minimum_alignment = 4} : buffer
+  %source_view = buffer.view %source_aligned[%base] : buffer -> view<128xi32, #dense>
+  %target_view = buffer.view %target_aligned[%base] : buffer -> view<128xi32, #dense>
   %value = view.load %source_view[%workgroup] : view<128xi32, #dense> -> i32
   %result = scalar.addi %value, %eleven : i32
   view.store %result, %target_view[%workgroup] : i32, view<128xi32, #dense>
@@ -255,7 +298,9 @@ command.program.def public target(@command_target) @add_eleven_once(%element_cou
 )");
   ModulePtr module = DeserializeModule(
       context.get(), coordinator_workspace.get(), source.get());
-  PassProgramPtr pass_program = CreateEmptyPassProgram(context.get());
+  PassProgramPtr preparation_pass_program =
+      CreateEmptyPassProgram(context.get());
+  PassProgramPtr unit_pass_program = CreateTargetPassProgram(context.get());
 
   CompilerPtr compiler_without_program_environment =
       CreateCompilerWithoutProgramEnvironment(context.get());
@@ -264,8 +309,9 @@ command.program.def public target(@command_target) @add_eleven_once(%element_cou
   LOOMC_EXPECT_STATUS_IS(
       LOOMC_STATUS_FAILED_PRECONDITION,
       loomc_prepare_programs(compiler_without_program_environment.get(),
-                             coordinator_workspace.get(), pass_program.get(),
-                             pass_program.get(), module.get(),
+                             coordinator_workspace.get(),
+                             preparation_pass_program.get(),
+                             unit_pass_program.get(), module.get(),
                              /*options=*/nullptr, loomc_allocator_system(),
                              &rejected_plan, &rejected_result));
   EXPECT_EQ(rejected_plan, nullptr);
@@ -273,13 +319,37 @@ command.program.def public target(@command_target) @add_eleven_once(%element_cou
   compiler_without_program_environment.reset();
 
   CompilerPtr compiler = CreateCompiler(context.get());
+  loomc_program_plan_t* missing_format_plan = nullptr;
+  loomc_result_t* raw_missing_format_result = nullptr;
+  LOOMC_ASSERT_OK(loomc_prepare_programs(
+      compiler.get(), coordinator_workspace.get(),
+      preparation_pass_program.get(), unit_pass_program.get(), module.get(),
+      /*options=*/nullptr, loomc_allocator_system(), &missing_format_plan,
+      &raw_missing_format_result));
+  ResultPtr missing_format_result(raw_missing_format_result);
+  EXPECT_EQ(missing_format_plan, nullptr);
+  ASSERT_NE(missing_format_result.get(), nullptr);
+  EXPECT_FALSE(loomc_result_succeeded(missing_format_result.get()));
+
+  const loomc_cmd_program_plan_options_t command_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PLAN_OPTIONS,
+      /*.structure_size=*/sizeof(command_options),
+      /*.next=*/nullptr,
+      /*.dependency_artifact_format=*/
+      loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_SPIRV),
+  };
+  const loomc_program_plan_options_t plan_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_OPTIONS,
+      /*.structure_size=*/sizeof(plan_options),
+      /*.next=*/&command_options,
+  };
 
   loomc_program_plan_t* raw_plan = nullptr;
   loomc_result_t* raw_prepare_result = nullptr;
   LOOMC_ASSERT_OK(loomc_prepare_programs(
-      compiler.get(), coordinator_workspace.get(), pass_program.get(),
-      pass_program.get(), module.get(), /*options=*/nullptr,
-      loomc_allocator_system(), &raw_plan, &raw_prepare_result));
+      compiler.get(), coordinator_workspace.get(),
+      preparation_pass_program.get(), unit_pass_program.get(), module.get(),
+      &plan_options, loomc_allocator_system(), &raw_plan, &raw_prepare_result));
   PlanPtr plan(raw_plan);
   ResultPtr prepare_result(raw_prepare_result);
   ASSERT_TRUE(loomc_result_succeeded(prepare_result.get()));
@@ -325,6 +395,19 @@ command.program.def public target(@command_target) @add_eleven_once(%element_cou
         loomc_allocator_system(), &raw_program, &raw_result));
     unit_programs[i].reset(raw_program);
     ResultPtr result(raw_result);
+    if (!loomc_result_succeeded(result.get())) {
+      for (loomc_host_size_t j = 0;
+           j < loomc_result_diagnostic_count(result.get()); ++j) {
+        const loomc_diagnostic_t* diagnostic =
+            loomc_result_diagnostic_at(result.get(), j);
+        ADD_FAILURE() << "unit " << i << " "
+                      << std::string(diagnostic->code.data,
+                                     diagnostic->code.size)
+                      << ": "
+                      << std::string(diagnostic->message.data,
+                                     diagnostic->message.size);
+      }
+    }
     ASSERT_TRUE(loomc_result_succeeded(result.get()));
   }
 
@@ -355,6 +438,10 @@ command.program.def public target(@command_target) @add_eleven_once(%element_cou
   const loomc_artifact_t* compiled_artifact =
       loomc_program_artifact_at(unit_programs[reloaded_unit_index].get(), 0);
   ASSERT_NE(compiled_artifact, nullptr);
+  EXPECT_EQ(compiled_artifact->kind, LOOMC_ARTIFACT_KIND_EXECUTABLE);
+  EXPECT_TRUE(loomc_string_view_equal(
+      compiled_artifact->format,
+      loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_SPIRV)));
   std::vector<uint8_t> cached_contents(
       compiled_artifact->contents.data,
       compiled_artifact->contents.data +
@@ -366,8 +453,8 @@ command.program.def public target(@command_target) @add_eleven_once(%element_cou
   LOOMC_ASSERT_OK(loomc_program_plan_unit_info(
       plan.get(), seven_dependency.unit, &reloaded_unit_info));
   const loomc_artifact_t cached_artifact = {
-      /*.kind=*/LOOMC_ARTIFACT_KIND_MODULE,
-      /*.format=*/loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_LOOM_BYTECODE),
+      /*.kind=*/LOOMC_ARTIFACT_KIND_EXECUTABLE,
+      /*.format=*/loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_SPIRV),
       /*.identifier=*/reloaded_unit_info.identifier,
       /*.contents=*/
       loomc_make_byte_span(cached_contents.data(), cached_contents.size()),
@@ -413,7 +500,8 @@ command.program.def public target(@command_target) @add_eleven_once(%element_cou
   plan.reset();
   assemble_result.reset();
   for (ProgramPtr& unit_program : unit_programs) unit_program.reset();
-  pass_program.reset();
+  unit_pass_program.reset();
+  preparation_pass_program.reset();
   compiler.reset();
   coordinator_workspace.reset();
   context.reset();
