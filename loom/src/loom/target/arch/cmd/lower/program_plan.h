@@ -42,7 +42,7 @@ typedef struct loom_cmd_program_plan_t {
   // Number of unique dynamic xyz tuples returned by |launch_function_op|.
   uint32_t launch_tuple_count;
 
-  // Independently owned kernel dependency units in executable-slot order.
+  // Unique independently owned dependencies in executable-slot order.
   loom_cmd_kernel_unit_t* dependency_units;
 
   // Number of entries in |dependency_units|.
@@ -56,8 +56,8 @@ typedef struct loom_cmd_program_plan_t {
 //
 // |source_program_op| must be a linked module-boundary command.program.def with
 // a selected target. Preparation selectively links its complete dependency
-// closure into a new root module, derives one private kernel unit for each
-// scheduled launch, materializes the aggregate launch-count program, assigns
+// closure into a new root module, interns equivalent launch sites into private
+// dependency units, materializes the aggregate launch-count program, assigns
 // dense dependency slots, and lowers the command root. The source module is
 // unchanged and need not outlive the returned plan.
 //

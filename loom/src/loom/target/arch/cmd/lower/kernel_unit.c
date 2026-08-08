@@ -32,6 +32,49 @@ static loom_value_facts_t loom_cmd_kernel_unit_boundary_facts(
   return facts;
 }
 
+static bool loom_cmd_kernel_unit_value_groups_equivalent(
+    const loom_module_t* source_module, loom_value_slice_t lhs_values,
+    loom_value_slice_t rhs_values,
+    const loom_value_fact_table_t* source_facts) {
+  IREE_ASSERT_EQ(lhs_values.count, rhs_values.count);
+  for (uint16_t i = 0; i < lhs_values.count; ++i) {
+    const loom_type_t type =
+        loom_module_value_type(source_module, lhs_values.values[i]);
+    if (!loom_type_is_scalar(type)) continue;
+    const loom_value_facts_t lhs_facts = loom_cmd_kernel_unit_boundary_facts(
+        loom_value_fact_table_lookup(source_facts, lhs_values.values[i]));
+    const loom_value_facts_t rhs_facts = loom_cmd_kernel_unit_boundary_facts(
+        loom_value_fact_table_lookup(source_facts, rhs_values.values[i]));
+    if (!loom_value_facts_equal(lhs_facts, rhs_facts)) return false;
+  }
+  return true;
+}
+
+bool loom_cmd_kernel_unit_launches_equivalent(
+    const loom_module_t* source_module, const loom_op_t* lhs_launch_op,
+    const loom_op_t* rhs_launch_op,
+    const loom_value_fact_table_t* source_facts) {
+  IREE_ASSERT_ARGUMENT(source_module);
+  IREE_ASSERT_ARGUMENT(lhs_launch_op);
+  IREE_ASSERT_ARGUMENT(rhs_launch_op);
+  IREE_ASSERT_ARGUMENT(source_facts);
+  IREE_ASSERT(loom_kernel_launch_isa(lhs_launch_op));
+  IREE_ASSERT(loom_kernel_launch_isa(rhs_launch_op));
+
+  const loom_symbol_ref_t lhs_callee = loom_kernel_launch_callee(lhs_launch_op);
+  const loom_symbol_ref_t rhs_callee = loom_kernel_launch_callee(rhs_launch_op);
+  if (lhs_callee.module_id != rhs_callee.module_id ||
+      lhs_callee.symbol_id != rhs_callee.symbol_id) {
+    return false;
+  }
+  return loom_cmd_kernel_unit_value_groups_equivalent(
+             source_module, loom_kernel_launch_workloads(lhs_launch_op),
+             loom_kernel_launch_workloads(rhs_launch_op), source_facts) &&
+         loom_cmd_kernel_unit_value_groups_equivalent(
+             source_module, loom_kernel_launch_arguments(lhs_launch_op),
+             loom_kernel_launch_arguments(rhs_launch_op), source_facts);
+}
+
 static iree_string_view_t loom_cmd_kernel_unit_symbol_name(
     const loom_module_t* module, loom_symbol_ref_t symbol_ref) {
   IREE_ASSERT(loom_symbol_ref_is_valid(symbol_ref));

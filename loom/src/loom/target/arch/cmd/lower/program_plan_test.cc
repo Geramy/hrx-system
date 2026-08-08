@@ -231,5 +231,92 @@ command.program.def public target(@command_target) @pipeline(%element_count: ind
   EXPECT_EQ(plan.root_module, nullptr);
 }
 
+TEST_F(CmdProgramPlanTest, InternsEquivalentDependencySpecializations) {
+  ModulePtr source_module = ParseAndVerify(R"(
+target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
+
+kernel.def @add_bias(%element_count: index) {
+  %one = index.constant 1 : index
+  kernel.launch.config workgroups(%element_count, %one, %one) workgroup_size(%one, %one, %one) : index
+} launch(%source: buffer, %target: buffer, %bias: i32) {
+  %base = index.constant 0 : offset
+  %workgroup = kernel.workgroup.id<x> : index
+  %source_view = buffer.view %source[%base] : buffer -> view<128xi32, #dense>
+  %target_view = buffer.view %target[%base] : buffer -> view<128xi32, #dense>
+  %value = view.load %source_view[%workgroup] : view<128xi32, #dense> -> i32
+  %result = scalar.addi %value, %bias : i32
+  view.store %result, %target_view[%workgroup] : i32, view<128xi32, #dense>
+  kernel.return
+}
+
+command.program.def public target(@command_target) @pipeline(%element_count: index) launch(%source: buffer, %first: buffer, %second: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+  %one_a = scalar.constant 1 : i32
+  %one_b = scalar.constant 1 : i32
+  %two = scalar.constant 2 : i32
+  kernel.launch @add_bias[%element_count](%source, %first, %one_a) : [index](buffer, buffer, i32)
+  kernel.launch @add_bias[%element_count](%first, %second, %one_b) : [index](buffer, buffer, i32)
+  kernel.launch @add_bias[%element_count](%second, %target, %two) : [index](buffer, buffer, i32)
+  command.return
+}
+)");
+  ASSERT_NE(source_module.get(), nullptr);
+  loom_op_t* source_program =
+      FindSymbol(source_module.get(), IREE_SV("pipeline"));
+
+  loom_cmd_program_plan_t plan = {};
+  IREE_ASSERT_OK(loom_cmd_program_plan_prepare(source_module.get(),
+                                               source_program, &block_pool_,
+                                               iree_allocator_system(), &plan));
+  source_module.reset();
+
+  ASSERT_EQ(plan.dependency_count, 2u);
+  ASSERT_NE(plan.dependency_units, nullptr);
+  EXPECT_EQ(plan.dependency_units[0].source_argument_count, 3u);
+  EXPECT_EQ(plan.dependency_units[0].argument_count, 2u);
+  EXPECT_EQ(plan.dependency_units[1].source_argument_count, 3u);
+  EXPECT_EQ(plan.dependency_units[1].argument_count, 2u);
+
+  iree_byte_span_t program_data = iree_byte_span_empty();
+  IREE_ASSERT_OK(
+      loom_cmd_program_serialize_low(plan.root_module, plan.root_function_op,
+                                     &program_data, iree_allocator_system()));
+  loom_cmd_program_t program = {};
+  IREE_ASSERT_OK(loom_cmd_program_parse(
+      iree_make_const_byte_span(program_data.data, program_data.data_length),
+      &program));
+  EXPECT_EQ(program.requirements.executable_count, 2u);
+  EXPECT_EQ(program.requirements.entry_count, 2u);
+  ASSERT_EQ(program.commands.count, 5u);
+
+  const loom_cmd_program_command_t first_dispatch =
+      loom_cmd_program_command_at(&program, 0);
+  ASSERT_EQ(first_dispatch.kind,
+            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
+  EXPECT_EQ(first_dispatch.payload.dispatch_indirect.executable_index, 0u);
+  EXPECT_EQ(first_dispatch.payload.dispatch_indirect.entry_index, 0u);
+  EXPECT_EQ(first_dispatch.argument_count, 2u);
+  EXPECT_EQ(loom_cmd_program_command_at(&program, 1).kind,
+            LOOM_CMD_PROGRAM_COMMAND_KIND_EXECUTION_BARRIER);
+  const loom_cmd_program_command_t second_dispatch =
+      loom_cmd_program_command_at(&program, 2);
+  ASSERT_EQ(second_dispatch.kind,
+            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
+  EXPECT_EQ(second_dispatch.payload.dispatch_indirect.executable_index, 0u);
+  EXPECT_EQ(second_dispatch.payload.dispatch_indirect.entry_index, 0u);
+  EXPECT_EQ(second_dispatch.argument_count, 2u);
+  EXPECT_EQ(loom_cmd_program_command_at(&program, 3).kind,
+            LOOM_CMD_PROGRAM_COMMAND_KIND_EXECUTION_BARRIER);
+  const loom_cmd_program_command_t third_dispatch =
+      loom_cmd_program_command_at(&program, 4);
+  ASSERT_EQ(third_dispatch.kind,
+            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
+  EXPECT_EQ(third_dispatch.payload.dispatch_indirect.executable_index, 1u);
+  EXPECT_EQ(third_dispatch.payload.dispatch_indirect.entry_index, 1u);
+  EXPECT_EQ(third_dispatch.argument_count, 2u);
+
+  iree_allocator_free(iree_allocator_system(), program_data.data);
+  loom_cmd_program_plan_deinitialize(&plan);
+}
+
 }  // namespace
 }  // namespace loom

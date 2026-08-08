@@ -51,6 +51,16 @@ typedef struct loom_cmd_kernel_unit_t {
   const uint16_t* source_argument_ordinals;
 } loom_cmd_kernel_unit_t;
 
+// Returns true when two source launches have the same kernel-unit identity.
+//
+// Launches match when they reference the same linked kernel symbol and carry
+// equal boundary-projected scalar facts for every workload and device-ABI
+// operand. Non-scalar operand identity does not affect the derived unit.
+bool loom_cmd_kernel_unit_launches_equivalent(
+    const loom_module_t* source_module, const loom_op_t* lhs_launch_op,
+    const loom_op_t* rhs_launch_op,
+    const loom_value_fact_table_t* source_facts);
+
 // Materializes one compiler-owned kernel unit from |source_launch_op|.
 //
 // |source_facts| must describe the function containing the launch and remain
