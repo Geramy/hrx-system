@@ -292,6 +292,24 @@ typedef enum loomc_structure_type_e {
 
   /// `loomc_program_dependency_info_t`.
   LOOMC_STRUCTURE_TYPE_PROGRAM_DEPENDENCY_INFO = 42,
+
+  /// `loomc_program_plan_root_info_t`.
+  LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_ROOT_INFO = 43,
+
+  /// `loomc_program_plan_dependency_info_t`.
+  LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_DEPENDENCY_INFO = 44,
+
+  /// `loomc_program_plan_unit_info_t`.
+  LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_UNIT_INFO = 45,
+
+  /// `loomc_program_plan_unit_compile_options_t`.
+  LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_UNIT_COMPILE_OPTIONS = 46,
+
+  /// `loomc_program_plan_unit_table_t`.
+  LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_UNIT_TABLE = 47,
+
+  /// `loomc_program_plan_assembly_options_t`.
+  LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_ASSEMBLY_OPTIONS = 48,
 } loomc_structure_type_t;
 
 /// One loose string option entry.
