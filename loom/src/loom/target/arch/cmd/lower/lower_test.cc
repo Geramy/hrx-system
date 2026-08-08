@@ -19,6 +19,7 @@
 #include "loom/format/text/parser.h"
 #include "loom/ir/context.h"
 #include "loom/ir/module.h"
+#include "loom/ops/kernel/ops.h"
 #include "loom/ops/low/ops.h"
 #include "loom/ops/op_registry.h"
 #include "loom/target/arch/cmd/descriptors/low_registry.h"
@@ -289,7 +290,7 @@ kernel.def @prepare() {
   %sixteen = index.constant 16 : index
   %one = index.constant 1 : index
   kernel.launch.config workgroups(%sixteen, %one, %one) workgroup_size(%one, %one, %one) : index
-} launch(%parameters: buffer, %input: buffer, %scratch: buffer) {
+} launch(%parameters: view<128xi32, #dense>, %input: buffer, %scratch: buffer) {
   kernel.return
 }
 
@@ -318,7 +319,9 @@ kernel.def @value(%token_count: index) {
 }
 
 command.program.def public @attention(%token_count: index) launch(%parameters: buffer, %input: buffer, %scratch: buffer, %query_output: buffer, %key_output: buffer, %value_output: buffer) where [range(%token_count, 1, 512)] {
-  kernel.launch @prepare[](%parameters, %input, %scratch) : [](buffer, buffer, buffer)
+  %parameter_offset = index.constant 256 : offset
+  %parameter_view = buffer.view %parameters[%parameter_offset] : buffer -> view<128xi32, #dense>
+  kernel.launch @prepare[](%parameter_view, %input, %scratch) : [](view<128xi32, #dense>, buffer, buffer)
   command.concurrent {
     kernel.launch @query[%token_count](%parameters, %scratch, %query_output) : [index](buffer, buffer, buffer)
     kernel.launch @key[%token_count](%parameters, %scratch, %key_output) : [index](buffer, buffer, buffer)
@@ -358,6 +361,8 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
   IREE_ASSERT_OK(loom_cmd_launch_program_serialize(
       launch_graph.module, &block_pool_, iree_allocator_system(),
       &launch_config_data));
+  const loom_value_id_t parameter_view =
+      loom_kernel_launch_arguments(schedule.commands[0]).values[0];
   iree_arena_deinitialize(&schedule_arena);
 
   static constexpr uint64_t kBufferLength = 4096;
@@ -370,6 +375,12 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
       {LOOM_CMD_LOWER_BUFFER_ROLE_REBINDABLE, 3, 0, kBufferLength},
       {LOOM_CMD_LOWER_BUFFER_ROLE_REBINDABLE, 4, 0, kBufferLength},
   }};
+  const loom_cmd_lower_buffer_range_t buffer_range = {
+      /*.source_value=*/parameter_view,
+      /*.source_binding_ordinal=*/0,
+      /*.byte_offset=*/256,
+      /*.byte_length=*/512,
+  };
   const std::array<uint16_t, 3> prepare_argument_ordinals = {0, 1, 2};
   const std::array<uint16_t, 2> projection_argument_ordinals = {0, 2};
   const std::array<loom_cmd_lower_launch_t, 4> launch_plan = {{
@@ -387,6 +398,8 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
                                         IREE_SV("command_target")),
       /*.bindings=*/binding_plan.data(),
       /*.binding_count=*/binding_plan.size(),
+      /*.buffer_ranges=*/&buffer_range,
+      /*.buffer_range_count=*/1,
       /*.fixed_buffer_count=*/1,
       /*.rebindable_binding_count=*/6,
       /*.executable_count=*/2,
@@ -490,8 +503,9 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
     }
     ASSERT_EQ(dispatch.bindings.size(), i == 0 ? 3u : 2u);
     EXPECT_EQ(dispatch.bindings[0].buffer, fixed_buffer.buffer);
-    EXPECT_EQ(dispatch.bindings[0].offset, fixed_buffer.offset);
-    EXPECT_EQ(dispatch.bindings[0].length, kBufferLength);
+    EXPECT_EQ(dispatch.bindings[0].offset,
+              fixed_buffer.offset + (i == 0 ? 256u : 0u));
+    EXPECT_EQ(dispatch.bindings[0].length, i == 0 ? 512u : kBufferLength);
     EXPECT_EQ(dispatch.bindings[1].buffer, nullptr);
     EXPECT_EQ(dispatch.bindings[1].buffer_slot, i == 0 ? 0u : 1u + i);
     EXPECT_EQ(dispatch.bindings[1].offset, 0u);
@@ -515,11 +529,11 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
   EXPECT_EQ(program.requirements.rebindable_binding_count, 6u);
   EXPECT_EQ(program.requirements.executable_count, 2u);
   EXPECT_EQ(program.requirements.entry_count, 4u);
-  ASSERT_EQ(program.buffer_refs.count, 7u);
+  ASSERT_EQ(program.buffer_refs.count, 8u);
   EXPECT_EQ(program.arguments.count, 9u);
   ASSERT_EQ(program.commands.count, 5u);
   const loom_cmd_program_buffer_ref_t launch_count_ref =
-      loom_cmd_program_buffer_ref_at(&program, 6);
+      loom_cmd_program_buffer_ref_at(&program, 7);
   EXPECT_EQ(launch_count_ref.role, LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE);
   EXPECT_EQ(launch_count_ref.root_index, 5u);
   EXPECT_EQ(launch_count_ref.byte_offset, kLaunchCountOffset);
@@ -527,12 +541,24 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
             LOOM_CMD_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
   EXPECT_EQ(loom_cmd_program_command_at(&program, 0).kind,
             LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT);
+  const loom_cmd_program_command_t prepare_command =
+      loom_cmd_program_command_at(&program, 0);
+  const loom_cmd_program_argument_t parameter_argument =
+      loom_cmd_program_argument_at(&program, prepare_command.argument_offset);
+  ASSERT_EQ(parameter_argument.kind, LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF);
+  EXPECT_EQ(parameter_argument.payload, 6u);
+  const loom_cmd_program_buffer_ref_t parameter_ref =
+      loom_cmd_program_buffer_ref_at(&program, parameter_argument.payload);
+  EXPECT_EQ(parameter_ref.role, LOOM_CMD_PROGRAM_BUFFER_ROLE_FIXED);
+  EXPECT_EQ(parameter_ref.root_index, 0u);
+  EXPECT_EQ(parameter_ref.byte_offset, 256u);
+  EXPECT_EQ(parameter_ref.byte_length, 512u);
   for (uint32_t i = 2; i < program.commands.count; ++i) {
     const loom_cmd_program_command_t command =
         loom_cmd_program_command_at(&program, i);
     EXPECT_EQ(command.kind,
               LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
-    EXPECT_EQ(command.payload.dispatch_indirect.workgroup_count_buffer_ref, 6u);
+    EXPECT_EQ(command.payload.dispatch_indirect.workgroup_count_buffer_ref, 7u);
   }
 
   module.reset();
@@ -625,6 +651,8 @@ command.program.def @residual(%value: index) launch() {
                                         IREE_SV("command_target")),
       /*.bindings=*/nullptr,
       /*.binding_count=*/0,
+      /*.buffer_ranges=*/nullptr,
+      /*.buffer_range_count=*/0,
       /*.fixed_buffer_count=*/0,
       /*.rebindable_binding_count=*/0,
       /*.executable_count=*/1,
