@@ -27,6 +27,15 @@
 #include "loomc/iree.h"
 #include "loomc/target/cmd.h"
 
+typedef struct loomc_cmd_program_dependency_storage_t {
+  // Immutable unit module cloned for each independent compilation.
+  loomc_module_t* module;
+
+  // Exact target profile reapplied to the derived unit, or NULL when the
+  // source kernel carried an authored target.
+  loomc_target_profile_t* target_profile;
+} loomc_cmd_program_dependency_storage_t;
+
 typedef struct loomc_cmd_program_plan_storage_t {
   // Compiler retained for independent dependency-unit compilation.
   loomc_compiler_t* compiler;
@@ -46,8 +55,8 @@ typedef struct loomc_cmd_program_plan_storage_t {
   // Public owner of |plan.roots[*].launch_function_op| storage.
   loomc_module_t* launch_module;
 
-  // Public immutable dependency modules in plan-unit order after the root.
-  loomc_module_t** dependency_modules;
+  // Dependency-unit compiler inputs in plan-unit order after the root.
+  loomc_cmd_program_dependency_storage_t* dependencies;
 } loomc_cmd_program_plan_storage_t;
 
 typedef struct loomc_cmd_program_plan_option_prefix_t {
@@ -139,7 +148,7 @@ static loomc_string_view_t loomc_cmd_program_plan_dependency_name(
   IREE_ASSERT_LT(dependency_index, storage->plan.dependency_count);
   return loomc_string_view_from_iree(loomc_cmd_program_plan_symbol_name(
       loomc_module_const_loom_module(
-          storage->dependency_modules[dependency_index]),
+          storage->dependencies[dependency_index].module),
       storage->plan.dependency_units[dependency_index].kernel_op));
 }
 
@@ -314,15 +323,27 @@ static loomc_status_t loomc_cmd_program_compile_dependency_unit(
     loomc_allocator_t allocator, loomc_program_t** out_program,
     loomc_result_t** out_result) {
   loomc_module_t* module = NULL;
+  const loomc_cmd_program_dependency_storage_t* dependency =
+      &storage->dependencies[dependency_index];
   LOOMC_RETURN_IF_ERROR(
-      loomc_module_clone(storage->dependency_modules[dependency_index],
-                         workspace, allocator, &module));
+      loomc_module_clone(dependency->module, workspace, allocator, &module));
 
   const loomc_string_view_t identifier =
       loomc_cmd_program_plan_dependency_name(storage, dependency_index);
+  const loomc_target_specialization_t specialization = {
+      .function_symbol = identifier,
+      .target_profile = dependency->target_profile,
+  };
+  const loomc_target_specialization_options_t target_options = {
+      .type = LOOMC_STRUCTURE_TYPE_TARGET_SPECIALIZATION_OPTIONS,
+      .structure_size = sizeof(target_options),
+      .specializations = &specialization,
+      .specialization_count = dependency->target_profile != NULL ? 1 : 0,
+  };
   const loomc_compile_options_t compile_options = {
       .type = LOOMC_STRUCTURE_TYPE_COMPILE_OPTIONS,
       .structure_size = sizeof(compile_options),
+      .next = dependency->target_profile != NULL ? &target_options : NULL,
       .module_name = identifier,
   };
   loomc_result_t* result = NULL;
@@ -709,12 +730,13 @@ static void loomc_cmd_program_plan_destroy(void* storage_ptr,
   if (storage_ptr == NULL) return;
   loomc_cmd_program_plan_storage_t* storage =
       (loomc_cmd_program_plan_storage_t*)storage_ptr;
-  if (storage->dependency_modules != NULL) {
+  if (storage->dependencies != NULL) {
     for (uint32_t i = 0; i < storage->plan.dependency_count; ++i) {
-      loomc_module_release(storage->dependency_modules[i]);
+      loomc_target_profile_release(storage->dependencies[i].target_profile);
+      loomc_module_release(storage->dependencies[i].module);
     }
   }
-  loomc_allocator_free(allocator, storage->dependency_modules);
+  loomc_allocator_free(allocator, storage->dependencies);
   loomc_allocator_free(allocator,
                        (void*)storage->dependency_artifact_format.data);
   loomc_module_release(storage->launch_module);
@@ -752,11 +774,38 @@ static loomc_status_t loomc_cmd_program_plan_take_module(
   return status;
 }
 
+static loomc_target_profile_t* loomc_cmd_program_plan_dependency_profile(
+    const loomc_module_t* source_module,
+    const loomc_target_specialization_options_t* target_options,
+    loomc_string_view_t dependency_name) {
+  if (target_options == NULL || target_options->specialization_count == 0) {
+    return NULL;
+  }
+  const loom_function_version_list_t* function_versions =
+      loomc_module_function_versions(source_module);
+  IREE_ASSERT(function_versions != NULL);
+  IREE_ASSERT_EQ(function_versions->count,
+                 target_options->specialization_count);
+  const loom_module_t* internal_module =
+      loomc_module_const_loom_module(source_module);
+  for (iree_host_size_t i = 0; i < function_versions->count; ++i) {
+    const loom_func_like_t function = function_versions->values[i]->function;
+    const loomc_string_view_t function_name = loomc_string_view_from_iree(
+        loomc_cmd_program_plan_symbol_name(internal_module, function.op));
+    if (loomc_string_view_equal(function_name, dependency_name)) {
+      return target_options->specializations[i].target_profile;
+    }
+  }
+  return NULL;
+}
+
 static loomc_status_t loomc_cmd_program_plan_create_storage(
     loomc_compiler_t* compiler, loomc_workspace_t* workspace,
     const loomc_pass_program_t* unit_pass_program,
     loomc_module_t* source_module, loom_cmd_program_plan_t* internal_plan,
-    loomc_string_view_t dependency_artifact_format, loomc_allocator_t allocator,
+    loomc_string_view_t dependency_artifact_format,
+    const loomc_target_specialization_options_t* target_options,
+    loomc_allocator_t allocator,
     loomc_cmd_program_plan_storage_t** out_storage) {
   *out_storage = NULL;
   loomc_cmd_program_plan_storage_t* storage = NULL;
@@ -783,19 +832,26 @@ static loomc_status_t loomc_cmd_program_plan_create_storage(
   if (loomc_status_is_ok(status) && storage->plan.dependency_count != 0) {
     status = loomc_allocator_malloc(
         allocator,
-        storage->plan.dependency_count * sizeof(*storage->dependency_modules),
-        (void**)&storage->dependency_modules);
+        storage->plan.dependency_count * sizeof(*storage->dependencies),
+        (void**)&storage->dependencies);
     if (loomc_status_is_ok(status)) {
-      memset(storage->dependency_modules, 0,
-             storage->plan.dependency_count *
-                 sizeof(*storage->dependency_modules));
+      memset(storage->dependencies, 0,
+             storage->plan.dependency_count * sizeof(*storage->dependencies));
     }
   }
   for (uint32_t i = 0;
        i < storage->plan.dependency_count && loomc_status_is_ok(status); ++i) {
+    loomc_cmd_program_dependency_storage_t* dependency =
+        &storage->dependencies[i];
     status = loomc_cmd_program_plan_take_module(
         context, workspace, &storage->plan.dependency_units[i].module,
-        allocator, &storage->dependency_modules[i]);
+        allocator, &dependency->module);
+    if (loomc_status_is_ok(status)) {
+      dependency->target_profile = loomc_cmd_program_plan_dependency_profile(
+          source_module, target_options,
+          loomc_cmd_program_plan_dependency_name(storage, i));
+      loomc_target_profile_retain(dependency->target_profile);
+    }
   }
   if (loomc_status_is_ok(status)) {
     storage->compiler = compiler;
@@ -931,7 +987,8 @@ static loomc_status_t loomc_cmd_program_plan_prepare_module(
   if (loomc_status_is_ok(status)) {
     status = loomc_cmd_program_plan_create_storage(
         compiler, workspace, unit_pass_program, module, &internal_plan,
-        dependency_artifact_format, allocator, &storage);
+        dependency_artifact_format,
+        options ? options->target_specialization : NULL, allocator, &storage);
   }
   if (loomc_status_is_ok(status)) {
     status = loomc_cmd_program_plan_create_public_plan(
