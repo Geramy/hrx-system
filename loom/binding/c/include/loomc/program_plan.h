@@ -10,6 +10,7 @@
 #include "loomc/compile.h"
 #include "loomc/program.h"
 #include "loomc/result.h"
+#include "loomc/target.h"
 #include "loomc/workspace.h"
 
 /// @file
@@ -52,6 +53,11 @@ typedef struct loomc_program_plan_options_t {
 
   /// Program- and code-shaping configuration applied before partitioning.
   loomc_config_options_t config;
+
+  /// Optional exact function-target specializations applied before
+  /// partitioning. All referenced storage is borrowed for the duration of
+  /// `loomc_prepare_programs`.
+  const loomc_target_specialization_options_t* target_specialization;
 } loomc_program_plan_options_t;
 
 /// Plan-local selected-root token.

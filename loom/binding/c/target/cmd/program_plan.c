@@ -10,6 +10,7 @@
 
 #include "iree/base/api.h"
 #include "iree/base/internal/arena.h"
+#include "loom/binding/c/src/context.h"
 #include "loom/binding/c/src/diagnostic.h"
 #include "loom/binding/c/src/module.h"
 #include "loom/binding/c/src/pass_program.h"
@@ -22,8 +23,8 @@
 #include "loom/target/arch/cmd/lower/program_plan.h"
 #include "loom/target/arch/cmd/lower/serialize.h"
 #include "loom/target/arch/cmd/program.h"
+#include "loomc/emit.h"
 #include "loomc/iree.h"
-#include "loomc/launch_config_module.h"
 #include "loomc/target/cmd.h"
 
 typedef struct loomc_cmd_program_plan_storage_t {
@@ -32,6 +33,9 @@ typedef struct loomc_cmd_program_plan_storage_t {
 
   // Per-unit pass program retained for independent compilation.
   loomc_pass_program_t* unit_pass_program;
+
+  // Exact owned artifact format emitted for every dependency unit.
+  loomc_string_view_t dependency_artifact_format;
 
   // Compiler-owned root metadata and dependency maps.
   loom_cmd_program_plan_t plan;
@@ -45,6 +49,69 @@ typedef struct loomc_cmd_program_plan_storage_t {
   // Public immutable dependency modules in plan-unit order after the root.
   loomc_module_t** dependency_modules;
 } loomc_cmd_program_plan_storage_t;
+
+typedef struct loomc_cmd_program_plan_option_prefix_t {
+  // Structure type identifying the option descriptor.
+  loomc_structure_type_t type;
+
+  // Size of the option descriptor in bytes.
+  loomc_host_size_t structure_size;
+
+  // Next descriptor in the unordered option chain.
+  const void* next;
+} loomc_cmd_program_plan_option_prefix_t;
+
+static loomc_status_t loomc_cmd_program_plan_resolve_options(
+    const loomc_program_plan_options_t* options,
+    loomc_string_view_t* out_dependency_artifact_format) {
+  *out_dependency_artifact_format = loomc_string_view_empty();
+  const void* next = options ? options->next : NULL;
+  while (next != NULL) {
+    const loomc_cmd_program_plan_option_prefix_t* prefix =
+        (const loomc_cmd_program_plan_option_prefix_t*)next;
+    switch (prefix->type) {
+      case LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PLAN_OPTIONS: {
+        if (out_dependency_artifact_format->data != NULL) {
+          return loomc_make_status(
+              LOOMC_STATUS_INVALID_ARGUMENT,
+              "command program plan option chain contains duplicates");
+        }
+        const loomc_cmd_program_plan_options_t* command_options =
+            (const loomc_cmd_program_plan_options_t*)next;
+        if (command_options->structure_size != 0 &&
+            command_options->structure_size < sizeof(*command_options)) {
+          return loomc_make_status(
+              LOOMC_STATUS_INVALID_ARGUMENT,
+              "command program plan options structure_size is too small");
+        }
+        if (command_options->dependency_artifact_format.data == NULL ||
+            command_options->dependency_artifact_format.size == 0) {
+          return loomc_make_status(
+              LOOMC_STATUS_INVALID_ARGUMENT,
+              "command program dependency artifact format must not be empty");
+        }
+        *out_dependency_artifact_format =
+            command_options->dependency_artifact_format;
+        next = command_options->next;
+        break;
+      }
+      case LOOMC_STRUCTURE_TYPE_NONE:
+        return loomc_make_status(
+            LOOMC_STATUS_INVALID_ARGUMENT,
+            "command program plan option is missing a structure type");
+      default:
+        return loomc_make_status(
+            LOOMC_STATUS_UNIMPLEMENTED,
+            "command program plan option extension is not supported");
+    }
+  }
+  if (out_dependency_artifact_format->data == NULL) {
+    return loomc_make_status(
+        LOOMC_STATUS_FAILED_PRECONDITION,
+        "command program plans require a dependency artifact format");
+  }
+  return loomc_ok_status();
+}
 
 static iree_string_view_t loomc_cmd_program_plan_symbol_name(
     const loom_module_t* module, const loom_op_t* op) {
@@ -150,6 +217,27 @@ static loomc_status_t loomc_cmd_program_finish_failure(
   return add_status;
 }
 
+static loomc_status_t loomc_cmd_program_append_result(
+    loomc_result_t* target, const loomc_result_t* source) {
+  loomc_status_t status = loomc_ok_status();
+  for (loomc_host_size_t i = 0;
+       i < loomc_result_diagnostic_count(source) && loomc_status_is_ok(status);
+       ++i) {
+    status = loomc_result_add_diagnostic(target,
+                                         loomc_result_diagnostic_at(source, i));
+  }
+  for (loomc_host_size_t i = 0;
+       i < loomc_result_artifact_count(source) && loomc_status_is_ok(status);
+       ++i) {
+    status =
+        loomc_result_add_artifact(target, loomc_result_artifact_at(source, i));
+  }
+  if (loomc_status_is_ok(status) && !loomc_result_succeeded(source)) {
+    status = loomc_result_set_state(target, loomc_result_state(source));
+  }
+  return status;
+}
+
 static loomc_status_t loomc_cmd_program_compile_root_unit(
     const loomc_cmd_program_plan_storage_t* storage,
     loomc_workspace_t* workspace, loomc_allocator_t allocator,
@@ -236,15 +324,55 @@ static loomc_status_t loomc_cmd_program_compile_dependency_unit(
       .type = LOOMC_STRUCTURE_TYPE_COMPILE_OPTIONS,
       .structure_size = sizeof(compile_options),
       .module_name = identifier,
-      .artifact_flags = LOOMC_COMPILE_ARTIFACT_FLAG_MODULE_BYTECODE,
   };
   loomc_result_t* result = NULL;
   loomc_status_t status = loomc_compile_module(
       storage->compiler, workspace, storage->unit_pass_program, module,
       &compile_options, allocator, &result);
-  loomc_module_release(module);
-  if (!loomc_status_is_ok(status)) return status;
+  if (!loomc_status_is_ok(status)) {
+    loomc_module_release(module);
+    return status;
+  }
   if (!loomc_result_succeeded(result)) {
+    loomc_module_release(module);
+    *out_result = result;
+    return loomc_ok_status();
+  }
+
+  loomc_target_environment_t* target_environment =
+      loomc_context_target_environment(loomc_module_context(module));
+  if (target_environment == NULL) {
+    loomc_module_release(module);
+    return loomc_cmd_program_finish_failure(
+        result,
+        loomc_make_status(
+            LOOMC_STATUS_FAILED_PRECONDITION,
+            "command dependency compilation requires a target environment"),
+        loomc_make_cstring_view("PROGRAM_PLAN/DEPENDENCY_EMIT"), out_result);
+  }
+  const loomc_emit_options_t emit_options = {
+      .type = LOOMC_STRUCTURE_TYPE_EMIT_OPTIONS,
+      .structure_size = sizeof(emit_options),
+      .artifact_format = storage->dependency_artifact_format,
+      .identifier = identifier,
+      .artifact_flags = LOOMC_EMIT_ARTIFACT_FLAG_PRIMARY,
+  };
+  loomc_result_t* emit_result = NULL;
+  status = loomc_emit_module(target_environment, workspace, module,
+                             &emit_options, allocator, &emit_result);
+  loomc_module_release(module);
+  if (!loomc_status_is_ok(status)) {
+    loomc_result_release(result);
+    return status;
+  }
+  const bool emit_succeeded = loomc_result_succeeded(emit_result);
+  status = loomc_cmd_program_append_result(result, emit_result);
+  loomc_result_release(emit_result);
+  if (!loomc_status_is_ok(status)) {
+    loomc_result_release(result);
+    return status;
+  }
+  if (!emit_succeeded) {
     *out_result = result;
     return loomc_ok_status();
   }
@@ -283,8 +411,7 @@ static loomc_status_t loomc_cmd_program_compile_unit(
 
 static loomc_status_t loomc_cmd_program_validate_root_artifacts(
     const loomc_cmd_program_plan_storage_t* storage,
-    const loomc_artifact_t* artifacts, loomc_host_size_t artifact_count,
-    loomc_allocator_t allocator) {
+    const loomc_artifact_t* artifacts, loomc_host_size_t artifact_count) {
   if (artifact_count != storage->plan.root_count + 1) {
     return loomc_make_status(
         LOOMC_STATUS_INVALID_ARGUMENT,
@@ -312,18 +439,6 @@ static loomc_status_t loomc_cmd_program_validate_root_artifacts(
       return loomc_make_status(LOOMC_STATUS_INVALID_ARGUMENT,
                                "command root unit is missing a root artifact");
     }
-    loom_cmd_program_t program = {0};
-    loomc_status_t status = loomc_status_from_iree(loom_cmd_program_parse(
-        iree_const_byte_span_from_loomc(artifact->contents), &program));
-    if (!loomc_status_is_ok(status)) return status;
-    if (program.requirements.executable_count !=
-            storage->plan.roots[i].dependency_count ||
-        program.requirements.entry_count !=
-            storage->plan.roots[i].dependency_count) {
-      return loomc_make_status(
-          LOOMC_STATUS_INVALID_ARGUMENT,
-          "command root dependency requirements do not match the plan");
-    }
   }
 
   const loomc_artifact_t* launch_artifact = NULL;
@@ -348,71 +463,7 @@ static loomc_status_t loomc_cmd_program_validate_root_artifacts(
         LOOMC_STATUS_INVALID_ARGUMENT,
         "command root unit is missing its launch configuration artifact");
   }
-  loomc_launch_config_module_t* launch_module = NULL;
-  loomc_status_t status = loomc_launch_config_module_load(
-      launch_artifact, /*options=*/NULL, allocator, &launch_module);
-  if (loomc_status_is_ok(status) &&
-      loomc_launch_config_module_function_count(launch_module) !=
-          storage->plan.root_count) {
-    status = loomc_make_status(
-        LOOMC_STATUS_INVALID_ARGUMENT,
-        "command launch artifact export table does not match the plan roots");
-  }
-  for (uint32_t i = 0;
-       i < storage->plan.root_count && loomc_status_is_ok(status); ++i) {
-    loomc_launch_config_function_t function =
-        loomc_launch_config_function_invalid();
-    status = loomc_launch_config_module_lookup_function_by_name(
-        launch_module, loomc_cmd_program_plan_root_name(storage, i), &function);
-  }
-  loomc_launch_config_module_release(launch_module);
-  return status;
-}
-
-static loomc_status_t loomc_cmd_program_validate_dependency_artifact(
-    const loomc_cmd_program_plan_storage_t* storage, uint32_t dependency_index,
-    const loomc_artifact_t* artifact, loomc_allocator_t allocator) {
-  loomc_workspace_t* workspace = NULL;
-  LOOMC_RETURN_IF_ERROR(
-      loomc_workspace_create(/*options=*/NULL, allocator, &workspace));
-  loomc_source_t* source = NULL;
-  loomc_status_t status = loomc_artifact_create_source(
-      artifact, LOOMC_SOURCE_FORMAT_BYTECODE, allocator, &source);
-  loomc_module_t* module = NULL;
-  loomc_result_t* result = NULL;
-  if (loomc_status_is_ok(status)) {
-    status = loomc_module_deserialize_from_source(
-        loomc_module_context(storage->root_module), workspace, source,
-        /*options=*/NULL, allocator, &module, &result);
-  }
-  if (loomc_status_is_ok(status) && !loomc_result_succeeded(result)) {
-    status = loomc_make_status(
-        LOOMC_STATUS_INVALID_ARGUMENT,
-        "command dependency unit contains invalid Loom bytecode");
-  }
-  if (loomc_status_is_ok(status)) {
-    const loom_module_t* internal_module =
-        loomc_module_const_loom_module(module);
-    const iree_string_view_t expected_name = iree_string_view_from_loomc(
-        loomc_cmd_program_plan_dependency_name(storage, dependency_index));
-    const loom_string_id_t name_id =
-        loom_module_lookup_string(internal_module, expected_name);
-    const loom_symbol_id_t symbol_id =
-        name_id == LOOM_STRING_ID_INVALID
-            ? LOOM_SYMBOL_ID_INVALID
-            : loom_module_find_symbol(internal_module, name_id);
-    if (symbol_id == LOOM_SYMBOL_ID_INVALID ||
-        internal_module->symbols.entries[symbol_id].defining_op == NULL) {
-      status = loomc_make_status(
-          LOOMC_STATUS_INVALID_ARGUMENT,
-          "command dependency unit does not define its planned export");
-    }
-  }
-  loomc_result_release(result);
-  loomc_module_release(module);
-  loomc_source_release(source);
-  loomc_workspace_release(workspace);
-  return status;
+  return loomc_ok_status();
 }
 
 static loomc_status_t loomc_cmd_program_load_unit_program(
@@ -426,20 +477,18 @@ static loomc_status_t loomc_cmd_program_load_unit_program(
 
   loomc_status_t status = loomc_ok_status();
   if (unit_index == 0) {
-    status = loomc_cmd_program_validate_root_artifacts(
-        storage, artifacts, artifact_count, allocator);
+    status = loomc_cmd_program_validate_root_artifacts(storage, artifacts,
+                                                       artifact_count);
   } else if (artifact_count != 1 ||
-             artifacts[0].kind != LOOMC_ARTIFACT_KIND_MODULE ||
-             !loomc_string_view_equal(
-                 artifacts[0].format,
-                 loomc_make_cstring_view(
-                     LOOMC_ARTIFACT_FORMAT_LOOM_BYTECODE))) {
+             artifacts[0].kind != LOOMC_ARTIFACT_KIND_EXECUTABLE ||
+             !loomc_string_view_equal(artifacts[0].format,
+                                      storage->dependency_artifact_format) ||
+             !loomc_string_view_equal(artifacts[0].identifier,
+                                      loomc_cmd_program_plan_dependency_name(
+                                          storage, unit_index - 1))) {
     status = loomc_make_status(
         LOOMC_STATUS_INVALID_ARGUMENT,
-        "command dependency unit requires one Loom bytecode module artifact");
-  } else {
-    status = loomc_cmd_program_validate_dependency_artifact(
-        storage, unit_index - 1, &artifacts[0], allocator);
+        "command dependency unit artifact does not match the plan");
   }
   if (!loomc_status_is_ok(status)) return status;
 
@@ -666,6 +715,8 @@ static void loomc_cmd_program_plan_destroy(void* storage_ptr,
     }
   }
   loomc_allocator_free(allocator, storage->dependency_modules);
+  loomc_allocator_free(allocator,
+                       (void*)storage->dependency_artifact_format.data);
   loomc_module_release(storage->launch_module);
   loomc_module_release(storage->root_module);
   loom_cmd_program_plan_deinitialize(&storage->plan);
@@ -705,7 +756,7 @@ static loomc_status_t loomc_cmd_program_plan_create_storage(
     loomc_compiler_t* compiler, loomc_workspace_t* workspace,
     const loomc_pass_program_t* unit_pass_program,
     loomc_module_t* source_module, loom_cmd_program_plan_t* internal_plan,
-    loomc_allocator_t allocator,
+    loomc_string_view_t dependency_artifact_format, loomc_allocator_t allocator,
     loomc_cmd_program_plan_storage_t** out_storage) {
   *out_storage = NULL;
   loomc_cmd_program_plan_storage_t* storage = NULL;
@@ -716,9 +767,14 @@ static loomc_status_t loomc_cmd_program_plan_create_storage(
   memset(internal_plan, 0, sizeof(*internal_plan));
 
   loomc_context_t* context = loomc_module_context(source_module);
-  loomc_status_t status = loomc_cmd_program_plan_take_module(
-      context, workspace, &storage->plan.root_module, allocator,
-      &storage->root_module);
+  loomc_status_t status =
+      loomc_string_view_clone(dependency_artifact_format, allocator,
+                              &storage->dependency_artifact_format);
+  if (loomc_status_is_ok(status)) {
+    status = loomc_cmd_program_plan_take_module(
+        context, workspace, &storage->plan.root_module, allocator,
+        &storage->root_module);
+  }
   if (loomc_status_is_ok(status)) {
     status = loomc_cmd_program_plan_take_module(
         context, workspace, &storage->plan.launch_module, allocator,
@@ -830,11 +886,9 @@ static loomc_status_t loomc_cmd_program_plan_prepare_module(
     const loomc_program_plan_options_t* options, loomc_result_t* result,
     loomc_allocator_t allocator, loomc_program_plan_t** out_program_plan) {
   (void)result;
-  if (options != NULL && options->next != NULL) {
-    return loomc_make_status(
-        LOOMC_STATUS_UNIMPLEMENTED,
-        "command program preparation extensions are not supported");
-  }
+  loomc_string_view_t dependency_artifact_format = loomc_string_view_empty();
+  LOOMC_RETURN_IF_ERROR(loomc_cmd_program_plan_resolve_options(
+      options, &dependency_artifact_format));
 
   const loom_module_t* internal_module = loomc_module_const_loom_module(module);
   iree_arena_allocator_t scratch_arena;
@@ -877,7 +931,7 @@ static loomc_status_t loomc_cmd_program_plan_prepare_module(
   if (loomc_status_is_ok(status)) {
     status = loomc_cmd_program_plan_create_storage(
         compiler, workspace, unit_pass_program, module, &internal_plan,
-        allocator, &storage);
+        dependency_artifact_format, allocator, &storage);
   }
   if (loomc_status_is_ok(status)) {
     status = loomc_cmd_program_plan_create_public_plan(

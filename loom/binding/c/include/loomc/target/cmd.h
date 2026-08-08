@@ -7,7 +7,7 @@
 #ifndef LOOMC_TARGET_CMD_H_
 #define LOOMC_TARGET_CMD_H_
 
-#include "loomc/compile.h"
+#include "loomc/program_plan.h"
 
 /// @file
 /// Command-program compiler capability package.
@@ -15,6 +15,26 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/// Command-program plan preparation options.
+///
+/// Attach this descriptor to `loomc_program_plan_options_t::next`. The exact
+/// dependency artifact format becomes part of the immutable plan and is used
+/// for every independently compiled dependency unit.
+typedef struct loomc_cmd_program_plan_options_t {
+  /// Structure type. Must be
+  /// `LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PLAN_OPTIONS`.
+  loomc_structure_type_t type;
+
+  /// Size of this structure in bytes.
+  loomc_host_size_t structure_size;
+
+  /// Additional provider-owned options in the same unordered chain.
+  const void* next;
+
+  /// Exact loadable artifact format emitted for dependency units.
+  loomc_string_view_t dependency_artifact_format;
+} loomc_cmd_program_plan_options_t;
 
 /// Creates a program environment containing command-program compilation.
 ///

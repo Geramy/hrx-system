@@ -29,6 +29,7 @@ loom_cc_library(
   PUBLIC
 )
 
+if(LOOM_TARGET_ARCH_SPIRV AND LOOM_EMIT_SPIRV)
 loom_cc_test(
   NAME
     program_plan_test
@@ -40,8 +41,10 @@ loom_cc_test(
     iree::testing::gtest
     iree::testing::gtest_main
     loom::binding::c::loomc
+    loom::binding::c::target::spirv
     loom::binding::c::test::test_util
     loom::target::arch::cmd::program
 )
+endif()
 
 ### BAZEL_TO_CMAKE_PRESERVES_ALL_CONTENT_BELOW_THIS_LINE ###
