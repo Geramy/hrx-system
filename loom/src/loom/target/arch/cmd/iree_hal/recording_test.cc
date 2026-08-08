@@ -533,7 +533,8 @@ low.func.def target<cmd.core>(@command_target) abi(command_program) @packing() {
   iree_byte_span_t program_data = iree_byte_span_empty();
   IREE_ASSERT_OK(loom_cmd_program_serialize_low(
       module.get(), FindFunction(module.get(), IREE_SV("packing")),
-      &program_data, iree_allocator_system()));
+      /*parameter_requirements=*/nullptr, &program_data,
+      iree_allocator_system()));
   loom_cmd_program_t program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
       iree_make_const_byte_span(program_data.data, program_data.data_length),
@@ -592,7 +593,8 @@ low.func.def target<cmd.core>(@command_target) abi(command_program) @add_u32() {
   iree_byte_span_t program_data = iree_byte_span_empty();
   IREE_ASSERT_OK(loom_cmd_program_serialize_low(
       module.get(), FindFunction(module.get(), IREE_SV("add_u32")),
-      &program_data, iree_allocator_system()));
+      /*parameter_requirements=*/nullptr, &program_data,
+      iree_allocator_system()));
   loom_cmd_program_t program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
       iree_make_const_byte_span(program_data.data, program_data.data_length),
@@ -699,7 +701,8 @@ low.func.def target<cmd.core>(@command_target) abi(command_program) @indirect_mo
   iree_byte_span_t program_data = iree_byte_span_empty();
   IREE_ASSERT_OK(loom_cmd_program_serialize_low(
       module.get(), FindFunction(module.get(), IREE_SV("indirect_modes")),
-      &program_data, iree_allocator_system()));
+      /*parameter_requirements=*/nullptr, &program_data,
+      iree_allocator_system()));
   loom_cmd_program_t program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
       iree_make_const_byte_span(program_data.data, program_data.data_length),
@@ -759,7 +762,8 @@ low.func.def target<cmd.core>(@command_target) abi(command_program) @rebindable_
   iree_byte_span_t program_data = iree_byte_span_empty();
   IREE_ASSERT_OK(loom_cmd_program_serialize_low(
       module.get(), FindFunction(module.get(), IREE_SV("rebindable_copy")),
-      &program_data, iree_allocator_system()));
+      /*parameter_requirements=*/nullptr, &program_data,
+      iree_allocator_system()));
   loom_cmd_program_t program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
       iree_make_const_byte_span(program_data.data, program_data.data_length),

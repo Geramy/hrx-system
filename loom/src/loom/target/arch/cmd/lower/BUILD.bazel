@@ -155,6 +155,7 @@ loom_cc_library(
         "//loom/src:__subpackages__",
     ],
     deps = [
+        ":parameters",
         "//loom/src/loom/codegen/low:function",
         "//loom/src/loom/codegen/low:target_binding",
         "//loom/src/loom/ir",

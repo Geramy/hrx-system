@@ -72,13 +72,63 @@ static void StoreCommand(std::vector<uint8_t>& data, uint32_t table_offset,
       record + LOOM_CMD_PROGRAM_COMMAND_OPERAND_4_OFFSET, operand_4);
 }
 
+static void StoreParameterRoot(std::vector<uint8_t>& data,
+                               uint32_t table_offset, uint32_t index,
+                               uint32_t fixed_buffer_index,
+                               uint64_t required_byte_length,
+                               uint64_t minimum_alignment) {
+  uint8_t* record =
+      data.data() + table_offset + index * LOOM_CMD_PROGRAM_PARAMETER_ROOT_SIZE;
+  iree_unaligned_store_le_u32(
+      record + LOOM_CMD_PROGRAM_PARAMETER_ROOT_FIXED_BUFFER_INDEX_OFFSET,
+      fixed_buffer_index);
+  iree_unaligned_store_le_u64(
+      record + LOOM_CMD_PROGRAM_PARAMETER_ROOT_REQUIRED_BYTE_LENGTH_OFFSET,
+      required_byte_length);
+  iree_unaligned_store_le_u64(
+      record + LOOM_CMD_PROGRAM_PARAMETER_ROOT_MINIMUM_ALIGNMENT_OFFSET,
+      minimum_alignment);
+}
+
+static void StoreParameter(std::vector<uint8_t>& data, uint32_t table_offset,
+                           uint32_t index, uint32_t key_offset,
+                           uint32_t key_length, uint32_t fixed_buffer_index,
+                           uint64_t byte_offset, uint64_t byte_length,
+                           uint64_t minimum_alignment) {
+  uint8_t* record =
+      data.data() + table_offset + index * LOOM_CMD_PROGRAM_PARAMETER_SIZE;
+  iree_unaligned_store_le_u32(
+      record + LOOM_CMD_PROGRAM_PARAMETER_KEY_OFFSET_OFFSET, key_offset);
+  iree_unaligned_store_le_u32(
+      record + LOOM_CMD_PROGRAM_PARAMETER_KEY_LENGTH_OFFSET, key_length);
+  iree_unaligned_store_le_u32(
+      record + LOOM_CMD_PROGRAM_PARAMETER_FIXED_BUFFER_INDEX_OFFSET,
+      fixed_buffer_index);
+  iree_unaligned_store_le_u64(
+      record + LOOM_CMD_PROGRAM_PARAMETER_BYTE_OFFSET_OFFSET, byte_offset);
+  iree_unaligned_store_le_u64(
+      record + LOOM_CMD_PROGRAM_PARAMETER_BYTE_LENGTH_OFFSET, byte_length);
+  iree_unaligned_store_le_u64(
+      record + LOOM_CMD_PROGRAM_PARAMETER_MINIMUM_ALIGNMENT_OFFSET,
+      minimum_alignment);
+}
+
 static std::vector<uint8_t> BuildValidProgram() {
   static constexpr uint32_t kBufferRefCount = 2;
   static constexpr uint32_t kArgumentCount = 3;
   static constexpr uint32_t kCommandCount = 6;
+  static constexpr uint32_t kParameterRootCount = 1;
+  static constexpr uint32_t kParameterCount = 2;
+  static constexpr char kFirstKey[] = "alpha";
+  static constexpr char kSecondKey[] = "blk.3.weight";
+  static constexpr uint32_t kFirstKeyLength = sizeof(kFirstKey) - 1;
+  static constexpr uint32_t kSecondKeyLength = sizeof(kSecondKey) - 1;
+  static constexpr uint32_t kParameterKeyLength =
+      kFirstKeyLength + kSecondKeyLength;
   loom_cmd_program_format_layout_t layout = {};
   IREE_CHECK_OK(loom_cmd_program_format_calculate_layout(
-      kBufferRefCount, kArgumentCount, kCommandCount, &layout));
+      kBufferRefCount, kArgumentCount, kCommandCount, kParameterRootCount,
+      kParameterCount, kParameterKeyLength, &layout));
   std::vector<uint8_t> data(layout.total_length, 0);
 
   memcpy(data.data() + LOOM_CMD_PROGRAM_HEADER_MAGIC_OFFSET,
@@ -109,6 +159,15 @@ static std::vector<uint8_t> BuildValidProgram() {
       data.data() + LOOM_CMD_PROGRAM_HEADER_COMMAND_COUNT_OFFSET,
       kCommandCount);
   iree_unaligned_store_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_PARAMETER_ROOT_COUNT_OFFSET,
+      kParameterRootCount);
+  iree_unaligned_store_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_PARAMETER_COUNT_OFFSET,
+      kParameterCount);
+  iree_unaligned_store_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_PARAMETER_KEY_LENGTH_OFFSET,
+      kParameterKeyLength);
+  iree_unaligned_store_le_u32(
       data.data() + LOOM_CMD_PROGRAM_HEADER_BUFFER_REF_TABLE_OFFSET,
       layout.buffer_ref_offset);
   iree_unaligned_store_le_u32(
@@ -117,6 +176,15 @@ static std::vector<uint8_t> BuildValidProgram() {
   iree_unaligned_store_le_u32(
       data.data() + LOOM_CMD_PROGRAM_HEADER_COMMAND_TABLE_OFFSET,
       layout.command_offset);
+  iree_unaligned_store_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_PARAMETER_ROOT_TABLE_OFFSET,
+      layout.parameter_root_offset);
+  iree_unaligned_store_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_PARAMETER_TABLE_OFFSET,
+      layout.parameter_offset);
+  iree_unaligned_store_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_PARAMETER_KEY_TABLE_OFFSET,
+      layout.parameter_key_offset);
 
   StoreBufferRef(data, layout.buffer_ref_offset, 0,
                  LOOM_CMD_PROGRAM_BUFFER_ROLE_FIXED, 0, 0, 256);
@@ -143,6 +211,19 @@ static std::vector<uint8_t> BuildValidProgram() {
                0, 1);
   StoreCommand(data, layout.command_offset, 5,
                LOOM_CMD_PROGRAM_COMMAND_KIND_EXECUTION_BARRIER, 0, 0);
+  StoreParameterRoot(data, layout.parameter_root_offset, 0,
+                     /*fixed_buffer_index=*/0, /*required_byte_length=*/512,
+                     /*minimum_alignment=*/256);
+  StoreParameter(data, layout.parameter_offset, 0, /*key_offset=*/0,
+                 kFirstKeyLength, /*fixed_buffer_index=*/0, /*byte_offset=*/0,
+                 /*byte_length=*/64, /*minimum_alignment=*/256);
+  StoreParameter(data, layout.parameter_offset, 1,
+                 /*key_offset=*/kFirstKeyLength, kSecondKeyLength,
+                 /*fixed_buffer_index=*/0, /*byte_offset=*/256,
+                 /*byte_length=*/128, /*minimum_alignment=*/256);
+  memcpy(data.data() + layout.parameter_key_offset, kFirstKey, kFirstKeyLength);
+  memcpy(data.data() + layout.parameter_key_offset + kFirstKeyLength,
+         kSecondKey, kSecondKeyLength);
   return data;
 }
 
@@ -162,6 +243,8 @@ TEST(CmdProgramTest, ParsesCanonicalProgram) {
   EXPECT_EQ(program.buffer_refs.count, 2u);
   EXPECT_EQ(program.arguments.count, 3u);
   EXPECT_EQ(program.commands.count, 6u);
+  ASSERT_EQ(program.parameter_roots.count, 1u);
+  ASSERT_EQ(program.parameters.count, 2u);
   const loom_cmd_program_buffer_ref_t binding =
       loom_cmd_program_buffer_ref_at(&program, 1);
   EXPECT_EQ(binding.role, LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE);
@@ -179,6 +262,18 @@ TEST(CmdProgramTest, ParsesCanonicalProgram) {
   EXPECT_EQ(command.payload.dispatch_direct.workgroup_count_x, 1u);
   EXPECT_EQ(command.payload.dispatch_direct.workgroup_count_y, 2u);
   EXPECT_EQ(command.payload.dispatch_direct.workgroup_count_z, 3u);
+  const loom_cmd_program_parameter_root_t parameter_root =
+      loom_cmd_program_parameter_root_at(&program, 0);
+  EXPECT_EQ(parameter_root.fixed_buffer_index, 0u);
+  EXPECT_EQ(parameter_root.required_byte_length, 512u);
+  EXPECT_EQ(parameter_root.minimum_alignment, 256u);
+  const loom_cmd_program_parameter_t parameter =
+      loom_cmd_program_parameter_at(&program, 1);
+  EXPECT_TRUE(iree_string_view_equal(parameter.key, IREE_SV("blk.3.weight")));
+  EXPECT_EQ(parameter.fixed_buffer_index, 0u);
+  EXPECT_EQ(parameter.byte_offset, 256u);
+  EXPECT_EQ(parameter.byte_length, 128u);
+  EXPECT_EQ(parameter.minimum_alignment, 256u);
 }
 
 TEST(CmdProgramTest, RelocatesDependencyIndices) {
@@ -221,6 +316,9 @@ TEST(CmdProgramTest, RelocatesDependencyIndices) {
             LOOM_CMD_PROGRAM_COMMAND_KIND_FILL);
   EXPECT_EQ(loom_cmd_program_command_at(&relocated_program, 5).kind,
             LOOM_CMD_PROGRAM_COMMAND_KIND_EXECUTION_BARRIER);
+  EXPECT_TRUE(iree_string_view_equal(
+      loom_cmd_program_parameter_at(&relocated_program, 1).key,
+      IREE_SV("blk.3.weight")));
 
   iree_allocator_free(iree_allocator_system(), relocated_data.data);
 }
@@ -268,6 +366,31 @@ TEST(CmdProgramTest, RejectsMalformedCommand) {
       4);
   loom_cmd_program_t program = {};
   IREE_EXPECT_STATUS_IS(IREE_STATUS_OUT_OF_RANGE,
+                        loom_cmd_program_parse(AsByteSpan(data), &program));
+}
+
+TEST(CmdProgramTest, RejectsMalformedParameterRoot) {
+  std::vector<uint8_t> data = BuildValidProgram();
+  const uint32_t table_offset = iree_unaligned_load_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_PARAMETER_ROOT_TABLE_OFFSET);
+  iree_unaligned_store_le_u32(
+      data.data() + table_offset +
+          LOOM_CMD_PROGRAM_PARAMETER_ROOT_FIXED_BUFFER_INDEX_OFFSET,
+      1);
+  loom_cmd_program_t program = {};
+  IREE_EXPECT_STATUS_IS(IREE_STATUS_OUT_OF_RANGE,
+                        loom_cmd_program_parse(AsByteSpan(data), &program));
+}
+
+TEST(CmdProgramTest, RejectsMalformedParameter) {
+  std::vector<uint8_t> data = BuildValidProgram();
+  const uint32_t table_offset = iree_unaligned_load_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_PARAMETER_TABLE_OFFSET);
+  iree_unaligned_store_le_u32(
+      data.data() + table_offset + LOOM_CMD_PROGRAM_PARAMETER_KEY_OFFSET_OFFSET,
+      1);
+  loom_cmd_program_t program = {};
+  IREE_EXPECT_STATUS_IS(IREE_STATUS_INVALID_ARGUMENT,
                         loom_cmd_program_parse(AsByteSpan(data), &program));
 }
 

@@ -120,6 +120,10 @@ typedef struct loom_cmd_serialize_build_t {
   loom_cmd_serialize_argument_table_t arguments;
   // Ordered command rows.
   loom_cmd_serialize_command_table_t commands;
+  // Compiler-owned named parameter requirements to persist.
+  const loom_cmd_parameter_requirement_table_t* parameter_requirements;
+  // Total concatenated byte length of all parameter keys.
+  uint32_t parameter_key_length;
 } loom_cmd_serialize_build_t;
 
 static bool loom_cmd_serialize_packet_is(
@@ -659,6 +663,19 @@ static void loom_cmd_serialize_write_header(
       data.data + LOOM_CMD_PROGRAM_HEADER_COMMAND_COUNT_OFFSET,
       (uint32_t)build->commands.count);
   iree_unaligned_store_le_u32(
+      data.data + LOOM_CMD_PROGRAM_HEADER_PARAMETER_ROOT_COUNT_OFFSET,
+      build->parameter_requirements
+          ? (uint32_t)build->parameter_requirements->root_count
+          : 0);
+  iree_unaligned_store_le_u32(
+      data.data + LOOM_CMD_PROGRAM_HEADER_PARAMETER_COUNT_OFFSET,
+      build->parameter_requirements
+          ? (uint32_t)build->parameter_requirements->count
+          : 0);
+  iree_unaligned_store_le_u32(
+      data.data + LOOM_CMD_PROGRAM_HEADER_PARAMETER_KEY_LENGTH_OFFSET,
+      build->parameter_key_length);
+  iree_unaligned_store_le_u32(
       data.data + LOOM_CMD_PROGRAM_HEADER_BUFFER_REF_TABLE_OFFSET,
       layout->buffer_ref_offset);
   iree_unaligned_store_le_u32(
@@ -667,6 +684,15 @@ static void loom_cmd_serialize_write_header(
   iree_unaligned_store_le_u32(
       data.data + LOOM_CMD_PROGRAM_HEADER_COMMAND_TABLE_OFFSET,
       layout->command_offset);
+  iree_unaligned_store_le_u32(
+      data.data + LOOM_CMD_PROGRAM_HEADER_PARAMETER_ROOT_TABLE_OFFSET,
+      layout->parameter_root_offset);
+  iree_unaligned_store_le_u32(
+      data.data + LOOM_CMD_PROGRAM_HEADER_PARAMETER_TABLE_OFFSET,
+      layout->parameter_offset);
+  iree_unaligned_store_le_u32(
+      data.data + LOOM_CMD_PROGRAM_HEADER_PARAMETER_KEY_TABLE_OFFSET,
+      layout->parameter_key_offset);
 }
 
 static void loom_cmd_serialize_write_buffer_refs(
@@ -758,6 +784,56 @@ static void loom_cmd_serialize_write_commands(
   }
 }
 
+static void loom_cmd_serialize_write_parameters(
+    const loom_cmd_serialize_build_t* build,
+    const loom_cmd_program_format_layout_t* layout, iree_byte_span_t data) {
+  if (!build->parameter_requirements) return;
+  for (uint32_t i = 0; i < build->parameter_requirements->root_count; ++i) {
+    uint8_t* record = data.data + layout->parameter_root_offset +
+                      i * LOOM_CMD_PROGRAM_PARAMETER_ROOT_SIZE;
+    const loom_cmd_parameter_root_requirement_t* root =
+        &build->parameter_requirements->roots[i];
+    iree_unaligned_store_le_u32(
+        record + LOOM_CMD_PROGRAM_PARAMETER_ROOT_FIXED_BUFFER_INDEX_OFFSET,
+        root->fixed_buffer_index);
+    iree_unaligned_store_le_u64(
+        record + LOOM_CMD_PROGRAM_PARAMETER_ROOT_REQUIRED_BYTE_LENGTH_OFFSET,
+        root->required_byte_length);
+    iree_unaligned_store_le_u64(
+        record + LOOM_CMD_PROGRAM_PARAMETER_ROOT_MINIMUM_ALIGNMENT_OFFSET,
+        root->minimum_alignment);
+  }
+
+  uint32_t key_offset = 0;
+  for (uint32_t i = 0; i < build->parameter_requirements->count; ++i) {
+    uint8_t* record = data.data + layout->parameter_offset +
+                      i * LOOM_CMD_PROGRAM_PARAMETER_SIZE;
+    const loom_cmd_parameter_requirement_t* parameter =
+        &build->parameter_requirements->entries[i];
+    iree_unaligned_store_le_u32(
+        record + LOOM_CMD_PROGRAM_PARAMETER_KEY_OFFSET_OFFSET, key_offset);
+    iree_unaligned_store_le_u32(
+        record + LOOM_CMD_PROGRAM_PARAMETER_KEY_LENGTH_OFFSET,
+        (uint32_t)parameter->key.size);
+    iree_unaligned_store_le_u32(
+        record + LOOM_CMD_PROGRAM_PARAMETER_FIXED_BUFFER_INDEX_OFFSET,
+        parameter->fixed_buffer_index);
+    iree_unaligned_store_le_u64(
+        record + LOOM_CMD_PROGRAM_PARAMETER_BYTE_OFFSET_OFFSET,
+        parameter->byte_offset);
+    iree_unaligned_store_le_u64(
+        record + LOOM_CMD_PROGRAM_PARAMETER_BYTE_LENGTH_OFFSET,
+        parameter->byte_length);
+    iree_unaligned_store_le_u64(
+        record + LOOM_CMD_PROGRAM_PARAMETER_MINIMUM_ALIGNMENT_OFFSET,
+        parameter->minimum_alignment);
+    memcpy(data.data + layout->parameter_key_offset + key_offset,
+           parameter->key.data, parameter->key.size);
+    key_offset += (uint32_t)parameter->key.size;
+  }
+  IREE_ASSERT_EQ(key_offset, build->parameter_key_length);
+}
+
 static void loom_cmd_serialize_write_program(
     const loom_cmd_serialize_build_t* build,
     const loom_cmd_program_format_layout_t* layout, iree_byte_span_t data) {
@@ -767,12 +843,13 @@ static void loom_cmd_serialize_write_program(
   loom_cmd_serialize_write_buffer_refs(build, layout, data);
   loom_cmd_serialize_write_arguments(build, layout, data);
   loom_cmd_serialize_write_commands(build, layout, data);
+  loom_cmd_serialize_write_parameters(build, layout, data);
 }
 
-iree_status_t loom_cmd_program_serialize_low(loom_module_t* module,
-                                             const loom_op_t* function_op,
-                                             iree_byte_span_t* out_data,
-                                             iree_allocator_t host_allocator) {
+iree_status_t loom_cmd_program_serialize_low(
+    loom_module_t* module, const loom_op_t* function_op,
+    const loom_cmd_parameter_requirement_table_t* parameter_requirements,
+    iree_byte_span_t* out_data, iree_allocator_t host_allocator) {
   IREE_ASSERT_ARGUMENT(module);
   IREE_ASSERT_ARGUMENT(function_op);
   IREE_ASSERT_ARGUMENT(out_data);
@@ -817,6 +894,7 @@ iree_status_t loom_cmd_program_serialize_low(loom_module_t* module,
       .arena = &arena,
       .value_domain = &value_domain,
       .value_count = value_domain.value_count,
+      .parameter_requirements = parameter_requirements,
   };
   if (iree_status_is_ok(status) && build.value_count != 0) {
     status =
@@ -829,12 +907,37 @@ iree_status_t loom_cmd_program_serialize_low(loom_module_t* module,
   if (iree_status_is_ok(status)) {
     status = loom_cmd_serialize_function_body(&build, body);
   }
+  if (iree_status_is_ok(status) && parameter_requirements) {
+    if (parameter_requirements->root_count > UINT32_MAX ||
+        parameter_requirements->count > UINT32_MAX) {
+      status = iree_make_status(
+          IREE_STATUS_OUT_OF_RANGE,
+          "command parameter requirement table exceeds the format limit");
+    }
+    uint64_t parameter_key_length = 0;
+    for (iree_host_size_t i = 0;
+         i < parameter_requirements->count && iree_status_is_ok(status); ++i) {
+      if (!iree_checked_add_u64(parameter_key_length,
+                                parameter_requirements->entries[i].key.size,
+                                &parameter_key_length) ||
+          parameter_key_length > UINT32_MAX) {
+        status =
+            iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                             "command parameter keys exceed the format limit");
+      }
+    }
+    build.parameter_key_length = (uint32_t)parameter_key_length;
+  }
 
   loom_cmd_program_format_layout_t layout = {0};
   if (iree_status_is_ok(status)) {
     status = loom_cmd_program_format_calculate_layout(
         (uint32_t)build.buffer_refs.count, (uint32_t)build.arguments.count,
-        (uint32_t)build.commands.count, &layout);
+        (uint32_t)build.commands.count,
+        parameter_requirements ? (uint32_t)parameter_requirements->root_count
+                               : 0,
+        parameter_requirements ? (uint32_t)parameter_requirements->count : 0,
+        build.parameter_key_length, &layout);
   }
   uint8_t* data = NULL;
   if (iree_status_is_ok(status)) {

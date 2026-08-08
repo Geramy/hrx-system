@@ -519,6 +519,21 @@ TEST(CommandAmdgpuLifecycleTest,
   ASSERT_EQ(once_command_program.requirements.rebindable_binding_count, 2u);
   ASSERT_EQ(once_command_program.requirements.executable_count, 1u);
   ASSERT_EQ(once_command_program.requirements.entry_count, 1u);
+  ASSERT_EQ(once_command_program.parameter_roots.count, 1u);
+  const loom_cmd_program_parameter_root_t once_parameter_root =
+      loom_cmd_program_parameter_root_at(&once_command_program, 0);
+  EXPECT_EQ(once_parameter_root.fixed_buffer_index, 0u);
+  EXPECT_EQ(once_parameter_root.required_byte_length, 512u);
+  EXPECT_EQ(once_parameter_root.minimum_alignment, 256u);
+  ASSERT_EQ(once_command_program.parameters.count, 1u);
+  const loom_cmd_program_parameter_t once_parameter =
+      loom_cmd_program_parameter_at(&once_command_program, 0);
+  EXPECT_TRUE(
+      iree_string_view_equal(once_parameter.key, IREE_SV("source_values")));
+  EXPECT_EQ(once_parameter.fixed_buffer_index, 0u);
+  EXPECT_EQ(once_parameter.byte_offset, 0u);
+  EXPECT_EQ(once_parameter.byte_length, 512u);
+  EXPECT_EQ(once_parameter.minimum_alignment, 256u);
   ASSERT_EQ(once_command_program.commands.count, 1u);
   EXPECT_EQ(loom_cmd_program_command_at(&once_command_program, 0).kind,
             LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
@@ -536,6 +551,11 @@ TEST(CommandAmdgpuLifecycleTest,
   ASSERT_EQ(twice_command_program.requirements.rebindable_binding_count, 3u);
   ASSERT_EQ(twice_command_program.requirements.executable_count, 1u);
   ASSERT_EQ(twice_command_program.requirements.entry_count, 1u);
+  ASSERT_EQ(twice_command_program.parameter_roots.count, 1u);
+  ASSERT_EQ(twice_command_program.parameters.count, 1u);
+  EXPECT_TRUE(iree_string_view_equal(
+      loom_cmd_program_parameter_at(&twice_command_program, 0).key,
+      IREE_SV("source_values")));
   ASSERT_EQ(twice_command_program.commands.count, 3u);
   EXPECT_EQ(loom_cmd_program_command_at(&twice_command_program, 0).kind,
             LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
@@ -603,8 +623,8 @@ TEST(CommandAmdgpuLifecycleTest,
 
   static constexpr iree_host_size_t kElementCount = 128;
   static constexpr iree_host_size_t kWorkload = 73;
-  static constexpr iree_device_size_t kBufferByteLength =
-      kElementCount * sizeof(uint32_t);
+  const iree_device_size_t kBufferByteLength =
+      once_parameter_root.required_byte_length;
   const iree_device_size_t launch_count_byte_length =
       once_launch_function_info.output_byte_length;
   iree_hal_buffer_t* raw_source_buffer = nullptr;
