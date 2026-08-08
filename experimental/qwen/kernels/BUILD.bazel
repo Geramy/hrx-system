@@ -590,6 +590,28 @@ loom_link_module(
     strip_check = True,
 )
 
+loom_link_module(
+    name = "decode_program_linked",
+    srcs = ["decode_program.loom"],
+    libraries = [
+        ":attention_metadata_runtime_module",
+        ":attention_prepare_quantized_runtime_module",
+        ":attention_qkv_postprocess_fused_runtime_module",
+        ":dense_linear_quantized_f16_runtime_module",
+        ":flash_attention_decode_split_f32_f16_runtime_module",
+        ":greedy_argmax_partials_runtime_module",
+        ":routed_down_q4_q8_runtime_module",
+        ":routed_down_q6_f32_runtime_module",
+        ":routed_gate_up_q8_runtime_module",
+        ":router_projection_top8_fused_f32_runtime_module",
+        ":token_embedding_q4k_runtime_module",
+        ":vocabulary_projection_q6_runtime_module",
+    ],
+    mode = "selective",
+    roots = ["@qwen3_30b_decode_576"],
+    strip_check = True,
+)
+
 iree_c_embed_data(
     name = "runtime_modules",
     srcs = [
