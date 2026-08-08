@@ -182,6 +182,8 @@ loom_cc_library(
     "include/loomc/status.h"
     "include/loomc/target.h"
     "include/loomc/target/cmd.h"
+    "include/loomc/target/cmd/base.h"
+    "include/loomc/target/cmd/program.h"
     "include/loomc/target/iree_hal.h"
     "include/loomc/target/spirv.h"
     "include/loomc/target/spirv/base.h"

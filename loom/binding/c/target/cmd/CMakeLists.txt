@@ -14,10 +14,15 @@ loom_cc_library(
     cmd
   HDRS
     "${PROJECT_SOURCE_DIR}/loom/binding/c/include/loomc/target/cmd.h"
+    "${PROJECT_SOURCE_DIR}/loom/binding/c/include/loomc/target/cmd/base.h"
+    "${PROJECT_SOURCE_DIR}/loom/binding/c/include/loomc/target/cmd/program.h"
+    "program.h"
   SRCS
+    "program.c"
     "program_plan.c"
   DEPS
     iree::base
+    iree::base::internal
     iree::base::internal::arena
     loom::binding::c::loomc
     loom::ir

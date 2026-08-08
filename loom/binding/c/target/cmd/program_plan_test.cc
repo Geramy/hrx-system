@@ -30,6 +30,7 @@ using loomc::testing::HandlePtr;
 
 using CompilerPtr = HandlePtr<loomc_compiler_t, loomc_compiler_release>;
 using ContextPtr = HandlePtr<loomc_context_t, loomc_context_release>;
+using CmdProgramPtr = HandlePtr<loomc_cmd_program_t, loomc_cmd_program_release>;
 using LaunchModulePtr =
     HandlePtr<loomc_launch_config_module_t, loomc_launch_config_module_release>;
 using ModulePtr = HandlePtr<loomc_module_t, loomc_module_release>;
@@ -564,6 +565,168 @@ command.program.def public target(@command_target) @add_eleven_once(%element_cou
   LOOMC_ASSERT_OK(loomc_launch_config_module_lookup_function_by_name(
       launch_module.get(), loomc_make_cstring_view("add_seven_once"),
       &launch_function));
+
+  loomc_program_export_t eleven_export = loomc_program_export_invalid();
+  LOOMC_ASSERT_OK(loomc_program_lookup_export(
+      assembled_program.get(), loomc_make_cstring_view("add_eleven_once"),
+      &eleven_export));
+  loomc_cmd_program_t* raw_eleven_command_program = nullptr;
+  LOOMC_ASSERT_OK(loomc_cmd_program_create_from_export(
+      assembled_program.get(), eleven_export, loomc_allocator_system(),
+      &raw_eleven_command_program));
+  CmdProgramPtr eleven_command_program(raw_eleven_command_program);
+
+  loomc_cmd_program_info_t command_info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_INFO,
+      /*.structure_size=*/sizeof(command_info),
+  };
+  LOOMC_ASSERT_OK(
+      loomc_cmd_program_info(eleven_command_program.get(), &command_info));
+  EXPECT_TRUE(loomc_string_view_equal(
+      command_info.name, loomc_make_cstring_view("add_eleven_once")));
+  EXPECT_EQ(command_info.fixed_buffer_count, 0u);
+  EXPECT_EQ(command_info.rebindable_binding_count, 3u);
+  EXPECT_EQ(command_info.parameter_root_count, 0u);
+  EXPECT_EQ(command_info.parameter_count, 0u);
+  EXPECT_EQ(command_info.transient.binding_index,
+            LOOMC_CMD_PROGRAM_BINDING_INVALID);
+  EXPECT_EQ(command_info.launch_counts.binding_index, 2u);
+  EXPECT_EQ(command_info.launch_counts.required_byte_length,
+            sizeof(loomc_dimension3_t));
+
+  loomc_cmd_program_parameter_root_info_t parameter_root_info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PARAMETER_ROOT_INFO,
+      /*.structure_size=*/sizeof(parameter_root_info),
+  };
+  LOOMC_EXPECT_STATUS_IS(
+      LOOMC_STATUS_INVALID_ARGUMENT,
+      loomc_cmd_program_parameter_root_info(eleven_command_program.get(), 0,
+                                            &parameter_root_info));
+
+  loomc_cmd_program_parameter_info_t parameter_info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PARAMETER_INFO,
+      /*.structure_size=*/sizeof(parameter_info),
+  };
+  LOOMC_EXPECT_STATUS_IS(LOOMC_STATUS_INVALID_ARGUMENT,
+                         loomc_cmd_program_parameter_info(
+                             eleven_command_program.get(), 0, &parameter_info));
+
+  assembled_program.reset();
+  std::memset(&command_info, 0, sizeof(command_info));
+  LOOMC_ASSERT_OK(
+      loomc_cmd_program_info(eleven_command_program.get(), &command_info));
+  EXPECT_TRUE(loomc_string_view_equal(
+      command_info.name, loomc_make_cstring_view("add_eleven_once")));
+}
+
+TEST(CmdProgramPlanTest, SelectsParameterAbiFromCompiledRoot) {
+  ContextPtr context = CreateContext();
+  WorkspacePtr coordinator_workspace = CreateWorkspace();
+  SourcePtr source = CreateSource(R"(
+spirv.target<vulkan1_3> @kernel_target {abi = hal_kernel}
+
+target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
+
+kernel.def target(@kernel_target) @consume_parameter() {
+  %one = index.constant 1 : index
+  kernel.launch.config workgroups(%one, %one, %one) workgroup_size(%one, %one, %one) : index
+} launch(%source: view<128xi32, #dense>) {
+  kernel.return
+}
+
+command.program.def public target(@command_target) @parameter_root() launch(%parameters: buffer) {
+  %source = command.parameter %parameters, "source_values"[] : view<128xi32, #dense>
+  kernel.launch @consume_parameter[](%source) : [](view<128xi32, #dense>)
+  command.return
+}
+)");
+  ModulePtr module = DeserializeModule(
+      context.get(), coordinator_workspace.get(), source.get());
+  PassProgramPtr preparation_pass_program =
+      CreateEmptyPassProgram(context.get());
+  PassProgramPtr unit_pass_program = CreateTargetPassProgram(context.get());
+  CompilerPtr compiler = CreateCompiler(context.get());
+  const loomc_cmd_program_plan_options_t command_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PLAN_OPTIONS,
+      /*.structure_size=*/sizeof(command_options),
+      /*.next=*/nullptr,
+      /*.dependency_artifact_format=*/
+      loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_SPIRV),
+  };
+  const loomc_program_plan_options_t plan_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_OPTIONS,
+      /*.structure_size=*/sizeof(plan_options),
+      /*.next=*/&command_options,
+  };
+
+  loomc_program_plan_t* raw_plan = nullptr;
+  loomc_result_t* raw_result = nullptr;
+  LOOMC_ASSERT_OK(loomc_prepare_programs(
+      compiler.get(), coordinator_workspace.get(),
+      preparation_pass_program.get(), unit_pass_program.get(), module.get(),
+      &plan_options, loomc_allocator_system(), &raw_plan, &raw_result));
+  PlanPtr plan(raw_plan);
+  ResultPtr result(raw_result);
+  ASSERT_TRUE(loomc_result_succeeded(result.get()));
+  result.reset();
+  ASSERT_EQ(loomc_program_plan_root_count(plan.get()), 1u);
+  ASSERT_EQ(loomc_program_plan_unit_count(plan.get()), 2u);
+
+  WorkspacePtr worker_workspace = CreateWorkspace();
+  loomc_program_t* raw_root_program = nullptr;
+  LOOMC_ASSERT_OK(loomc_program_plan_compile_unit(
+      plan.get(), worker_workspace.get(), loomc_program_plan_unit_from_index(0),
+      /*options=*/nullptr, loomc_allocator_system(), &raw_root_program,
+      &raw_result));
+  ProgramPtr root_program(raw_root_program);
+  result.reset(raw_result);
+  ASSERT_TRUE(loomc_result_succeeded(result.get()));
+
+  loomc_program_export_t root_export = loomc_program_export_invalid();
+  LOOMC_ASSERT_OK(loomc_program_lookup_export(
+      root_program.get(), loomc_make_cstring_view("parameter_root"),
+      &root_export));
+  loomc_cmd_program_t* raw_command_program = nullptr;
+  LOOMC_ASSERT_OK(loomc_cmd_program_create_from_export(
+      root_program.get(), root_export, loomc_allocator_system(),
+      &raw_command_program));
+  CmdProgramPtr command_program(raw_command_program);
+  root_program.reset();
+
+  loomc_cmd_program_info_t command_info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_INFO,
+      /*.structure_size=*/sizeof(command_info),
+  };
+  LOOMC_ASSERT_OK(loomc_cmd_program_info(command_program.get(), &command_info));
+  EXPECT_EQ(command_info.fixed_buffer_count, 1u);
+  EXPECT_EQ(command_info.rebindable_binding_count, 0u);
+  EXPECT_EQ(command_info.parameter_root_count, 1u);
+  EXPECT_EQ(command_info.parameter_count, 1u);
+  EXPECT_EQ(command_info.launch_counts.binding_index,
+            LOOMC_CMD_PROGRAM_BINDING_INVALID);
+
+  loomc_cmd_program_parameter_root_info_t root_info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PARAMETER_ROOT_INFO,
+      /*.structure_size=*/sizeof(root_info),
+  };
+  LOOMC_ASSERT_OK(loomc_cmd_program_parameter_root_info(command_program.get(),
+                                                        0, &root_info));
+  EXPECT_EQ(root_info.fixed_buffer_index, 0u);
+  EXPECT_EQ(root_info.required_byte_length, 512u);
+  EXPECT_EQ(root_info.minimum_alignment, 256u);
+
+  loomc_cmd_program_parameter_info_t parameter_info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PARAMETER_INFO,
+      /*.structure_size=*/sizeof(parameter_info),
+  };
+  LOOMC_ASSERT_OK(loomc_cmd_program_parameter_info(command_program.get(), 0,
+                                                   &parameter_info));
+  EXPECT_TRUE(loomc_string_view_equal(
+      parameter_info.key, loomc_make_cstring_view("source_values")));
+  EXPECT_EQ(parameter_info.fixed_buffer_index, 0u);
+  EXPECT_EQ(parameter_info.byte_offset, 0u);
+  EXPECT_EQ(parameter_info.byte_length, 512u);
+  EXPECT_EQ(parameter_info.minimum_alignment, 256u);
 }
 
 }  // namespace
