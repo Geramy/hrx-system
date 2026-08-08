@@ -531,6 +531,13 @@ iree_status_t loom_cmd_parameter_layout_build(
     IREE_ASSERT_LT(source->source_binding_ordinal, binding_count);
     const loom_cmd_lower_binding_t binding =
         bindings[source->source_binding_ordinal];
+    if (binding.role == LOOM_CMD_LOWER_BUFFER_ROLE_FIXED) {
+      loom_cmd_parameter_root_requirement_t* root =
+          &out_requirements->roots[binding.resource_index];
+      root->required_byte_length =
+          iree_max(root->required_byte_length,
+                   source->byte_offset + source->byte_length);
+    }
     IREE_ASSERT_LE(binding.byte_offset, UINT64_MAX - source->byte_offset);
     if (binding.byte_length != UINT64_MAX) {
       IREE_ASSERT_LE(source->byte_offset, binding.byte_length);
