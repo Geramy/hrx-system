@@ -152,11 +152,12 @@ command.program.def public target(@command_target) @pipeline(%element_count: ind
   ASSERT_NE(source_module.get(), nullptr);
   loom_op_t* source_program =
       FindSymbol(source_module.get(), IREE_SV("pipeline"));
+  const loom_op_t* source_programs[] = {source_program};
 
   loom_cmd_program_plan_t plan = {};
-  IREE_ASSERT_OK(loom_cmd_program_plan_prepare(source_module.get(),
-                                               source_program, &block_pool_,
-                                               iree_allocator_system(), &plan));
+  IREE_ASSERT_OK(loom_cmd_program_plan_prepare(
+      source_module.get(), source_programs, IREE_ARRAYSIZE(source_programs),
+      &block_pool_, iree_allocator_system(), &plan));
 
   EXPECT_TRUE(loom_command_program_def_isa(source_program));
   EXPECT_EQ(FindSymbol(source_module.get(), IREE_SV("pipeline")),
@@ -164,10 +165,13 @@ command.program.def public target(@command_target) @pipeline(%element_count: ind
   source_module.reset();
 
   ASSERT_NE(plan.root_module, nullptr);
-  ASSERT_NE(plan.root_function_op, nullptr);
-  EXPECT_TRUE(loom_low_func_def_isa(plan.root_function_op));
+  ASSERT_EQ(plan.root_count, 1u);
+  ASSERT_NE(plan.roots, nullptr);
+  const loom_cmd_program_root_t& root = plan.roots[0];
+  ASSERT_NE(root.function_op, nullptr);
+  EXPECT_TRUE(loom_low_func_def_isa(root.function_op));
   EXPECT_EQ(FindSymbol(plan.root_module, IREE_SV("pipeline")),
-            plan.root_function_op);
+            root.function_op);
   EXPECT_FALSE(HasSymbol(plan.root_module, IREE_SV("add_one")));
   EXPECT_FALSE(HasSymbol(plan.root_module, IREE_SV("add_two")));
   VerifyLowModule(plan.root_module);
@@ -186,19 +190,19 @@ command.program.def public target(@command_target) @pipeline(%element_count: ind
   EXPECT_EQ(add_two.source_argument_count, 2u);
   EXPECT_EQ(add_two.argument_count, 2u);
 
-  ASSERT_NE(plan.launch_module, nullptr);
-  ASSERT_NE(plan.launch_function_op, nullptr);
-  EXPECT_EQ(plan.launch_tuple_count, 1u);
+  ASSERT_NE(root.launch_module, nullptr);
+  ASSERT_NE(root.launch_function_op, nullptr);
+  EXPECT_EQ(root.launch_tuple_count, 1u);
 
   iree_byte_span_t launch_data = iree_byte_span_empty();
   IREE_ASSERT_OK(loom_cmd_launch_program_serialize(
-      plan.launch_module, &block_pool_, iree_allocator_system(), &launch_data));
+      root.launch_module, &block_pool_, iree_allocator_system(), &launch_data));
   EXPECT_GT(launch_data.data_length, 0u);
 
   iree_byte_span_t program_data = iree_byte_span_empty();
-  IREE_ASSERT_OK(
-      loom_cmd_program_serialize_low(plan.root_module, plan.root_function_op,
-                                     &program_data, iree_allocator_system()));
+  IREE_ASSERT_OK(loom_cmd_program_serialize_low(plan.root_module,
+                                                root.function_op, &program_data,
+                                                iree_allocator_system()));
   loom_cmd_program_t program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
       iree_make_const_byte_span(program_data.data, program_data.data_length),
@@ -262,11 +266,12 @@ command.program.def public target(@command_target) @pipeline(%element_count: ind
   ASSERT_NE(source_module.get(), nullptr);
   loom_op_t* source_program =
       FindSymbol(source_module.get(), IREE_SV("pipeline"));
+  const loom_op_t* source_programs[] = {source_program};
 
   loom_cmd_program_plan_t plan = {};
-  IREE_ASSERT_OK(loom_cmd_program_plan_prepare(source_module.get(),
-                                               source_program, &block_pool_,
-                                               iree_allocator_system(), &plan));
+  IREE_ASSERT_OK(loom_cmd_program_plan_prepare(
+      source_module.get(), source_programs, IREE_ARRAYSIZE(source_programs),
+      &block_pool_, iree_allocator_system(), &plan));
   source_module.reset();
 
   ASSERT_EQ(plan.dependency_count, 2u);
@@ -277,9 +282,9 @@ command.program.def public target(@command_target) @pipeline(%element_count: ind
   EXPECT_EQ(plan.dependency_units[1].argument_count, 2u);
 
   iree_byte_span_t program_data = iree_byte_span_empty();
-  IREE_ASSERT_OK(
-      loom_cmd_program_serialize_low(plan.root_module, plan.root_function_op,
-                                     &program_data, iree_allocator_system()));
+  IREE_ASSERT_OK(loom_cmd_program_serialize_low(
+      plan.root_module, plan.roots[0].function_op, &program_data,
+      iree_allocator_system()));
   loom_cmd_program_t program = {};
   IREE_ASSERT_OK(loom_cmd_program_parse(
       iree_make_const_byte_span(program_data.data, program_data.data_length),
@@ -315,6 +320,129 @@ command.program.def public target(@command_target) @pipeline(%element_count: ind
   EXPECT_EQ(third_dispatch.argument_count, 2u);
 
   iree_allocator_free(iree_allocator_system(), program_data.data);
+  loom_cmd_program_plan_deinitialize(&plan);
+}
+
+TEST_F(CmdProgramPlanTest, PreparesMultipleRootsWithSharedDependencies) {
+  ModulePtr source_module = ParseAndVerify(R"(
+target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
+
+kernel.def @increment(%element_count: index) {
+  %one = index.constant 1 : index
+  kernel.launch.config workgroups(%element_count, %one, %one) workgroup_size(%one, %one, %one) : index
+} launch(%source: buffer, %target: buffer) {
+  %base = index.constant 0 : offset
+  %workgroup = kernel.workgroup.id<x> : index
+  %one = scalar.constant 1 : i32
+  %source_view = buffer.view %source[%base] : buffer -> view<128xi32, #dense>
+  %target_view = buffer.view %target[%base] : buffer -> view<128xi32, #dense>
+  %value = view.load %source_view[%workgroup] : view<128xi32, #dense> -> i32
+  %result = scalar.addi %value, %one : i32
+  view.store %result, %target_view[%workgroup] : i32, view<128xi32, #dense>
+  kernel.return
+}
+
+command.program.def public target(@command_target) @increment_once(%element_count: index) launch(%source: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+  kernel.launch @increment[%element_count](%source, %target) : [index](buffer, buffer)
+  command.return
+}
+
+command.program.def public target(@command_target) @increment_twice(%element_count: index) launch(%source: buffer, %scratch: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+  kernel.launch @increment[%element_count](%source, %scratch) : [index](buffer, buffer)
+  kernel.launch @increment[%element_count](%scratch, %target) : [index](buffer, buffer)
+  command.return
+}
+)");
+  ASSERT_NE(source_module.get(), nullptr);
+  const loom_op_t* source_programs[] = {
+      FindSymbol(source_module.get(), IREE_SV("increment_twice")),
+      FindSymbol(source_module.get(), IREE_SV("increment_once")),
+  };
+
+  loom_cmd_program_plan_t plan = {};
+  IREE_ASSERT_OK(loom_cmd_program_plan_prepare(
+      source_module.get(), source_programs, IREE_ARRAYSIZE(source_programs),
+      &block_pool_, iree_allocator_system(), &plan));
+  source_module.reset();
+
+  ASSERT_EQ(plan.root_count, 2u);
+  ASSERT_NE(plan.roots, nullptr);
+  ASSERT_NE(plan.root_module, nullptr);
+  VerifyLowModule(plan.root_module);
+  EXPECT_FALSE(HasSymbol(plan.root_module, IREE_SV("increment")));
+
+  const loom_cmd_program_root_t& twice = plan.roots[0];
+  const loom_cmd_program_root_t& once = plan.roots[1];
+  EXPECT_EQ(FindSymbol(plan.root_module, IREE_SV("increment_twice")),
+            twice.function_op);
+  EXPECT_EQ(FindSymbol(plan.root_module, IREE_SV("increment_once")),
+            once.function_op);
+  EXPECT_TRUE(loom_low_func_def_isa(twice.function_op));
+  EXPECT_TRUE(loom_low_func_def_isa(once.function_op));
+  ASSERT_NE(twice.launch_module, nullptr);
+  ASSERT_NE(twice.launch_function_op, nullptr);
+  ASSERT_NE(once.launch_module, nullptr);
+  ASSERT_NE(once.launch_function_op, nullptr);
+  EXPECT_EQ(twice.launch_tuple_count, 1u);
+  EXPECT_EQ(once.launch_tuple_count, 1u);
+
+  ASSERT_EQ(plan.dependency_count, 1u);
+  ASSERT_NE(plan.dependency_units, nullptr);
+  EXPECT_EQ(plan.dependency_units[0].source_argument_count, 2u);
+  EXPECT_EQ(plan.dependency_units[0].argument_count, 2u);
+
+  iree_byte_span_t twice_launch_data = iree_byte_span_empty();
+  IREE_ASSERT_OK(loom_cmd_launch_program_serialize(
+      twice.launch_module, &block_pool_, iree_allocator_system(),
+      &twice_launch_data));
+  EXPECT_GT(twice_launch_data.data_length, 0u);
+  iree_byte_span_t once_launch_data = iree_byte_span_empty();
+  IREE_ASSERT_OK(loom_cmd_launch_program_serialize(
+      once.launch_module, &block_pool_, iree_allocator_system(),
+      &once_launch_data));
+  EXPECT_GT(once_launch_data.data_length, 0u);
+
+  iree_byte_span_t twice_program_data = iree_byte_span_empty();
+  IREE_ASSERT_OK(loom_cmd_program_serialize_low(
+      plan.root_module, twice.function_op, &twice_program_data,
+      iree_allocator_system()));
+  loom_cmd_program_t twice_program = {};
+  IREE_ASSERT_OK(loom_cmd_program_parse(
+      iree_make_const_byte_span(twice_program_data.data,
+                                twice_program_data.data_length),
+      &twice_program));
+  EXPECT_EQ(twice_program.requirements.rebindable_binding_count, 4u);
+  EXPECT_EQ(twice_program.requirements.executable_count, 1u);
+  EXPECT_EQ(twice_program.requirements.entry_count, 1u);
+  ASSERT_EQ(twice_program.commands.count, 3u);
+  EXPECT_EQ(loom_cmd_program_command_at(&twice_program, 0)
+                .payload.dispatch_indirect.executable_index,
+            0u);
+  EXPECT_EQ(loom_cmd_program_command_at(&twice_program, 2)
+                .payload.dispatch_indirect.executable_index,
+            0u);
+
+  iree_byte_span_t once_program_data = iree_byte_span_empty();
+  IREE_ASSERT_OK(loom_cmd_program_serialize_low(
+      plan.root_module, once.function_op, &once_program_data,
+      iree_allocator_system()));
+  loom_cmd_program_t once_program = {};
+  IREE_ASSERT_OK(loom_cmd_program_parse(
+      iree_make_const_byte_span(once_program_data.data,
+                                once_program_data.data_length),
+      &once_program));
+  EXPECT_EQ(once_program.requirements.rebindable_binding_count, 3u);
+  EXPECT_EQ(once_program.requirements.executable_count, 1u);
+  EXPECT_EQ(once_program.requirements.entry_count, 1u);
+  ASSERT_EQ(once_program.commands.count, 1u);
+  EXPECT_EQ(loom_cmd_program_command_at(&once_program, 0)
+                .payload.dispatch_indirect.executable_index,
+            0u);
+
+  iree_allocator_free(iree_allocator_system(), once_program_data.data);
+  iree_allocator_free(iree_allocator_system(), twice_program_data.data);
+  iree_allocator_free(iree_allocator_system(), once_launch_data.data);
+  iree_allocator_free(iree_allocator_system(), twice_launch_data.data);
   loom_cmd_program_plan_deinitialize(&plan);
 }
 

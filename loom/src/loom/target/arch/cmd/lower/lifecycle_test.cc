@@ -373,23 +373,26 @@ command.program.def public target(@command_target) @increment_elements(%element_
 
     loom_op_t* source_program =
         FindSymbol(module.get(), IREE_SV("increment_elements"));
+    const loom_op_t* source_programs[] = {source_program};
     loom_cmd_program_plan_t plan = {};
-    IREE_CHECK_OK(
-        loom_cmd_program_plan_prepare(module.get(), source_program, block_pool_,
-                                      iree_allocator_system(), &plan));
+    IREE_CHECK_OK(loom_cmd_program_plan_prepare(
+        module.get(), source_programs, IREE_ARRAYSIZE(source_programs),
+        block_pool_, iree_allocator_system(), &plan));
     module.reset();
+    IREE_ASSERT_EQ(plan.root_count, 1u);
     IREE_ASSERT_EQ(plan.dependency_count, 2u);
-    IREE_ASSERT_EQ(plan.launch_tuple_count, 1u);
+    const loom_cmd_program_root_t& root = plan.roots[0];
+    IREE_ASSERT_EQ(root.launch_tuple_count, 1u);
     VerifyLowModule(plan.root_module);
 
     iree_byte_span_t launch_config_data = iree_byte_span_empty();
     IREE_CHECK_OK(loom_cmd_launch_program_serialize(
-        plan.launch_module, block_pool_, iree_allocator_system(),
+        root.launch_module, block_pool_, iree_allocator_system(),
         &launch_config_data));
 
     iree_byte_span_t command_program_data = iree_byte_span_empty();
     IREE_CHECK_OK(loom_cmd_program_serialize_low(
-        plan.root_module, plan.root_function_op, &command_program_data,
+        plan.root_module, root.function_op, &command_program_data,
         iree_allocator_system()));
 
     CommandArtifacts artifacts;
