@@ -607,5 +607,150 @@ command.program.def public target(@command_target) @increment_twice(%element_cou
   loom_cmd_program_plan_deinitialize(&plan);
 }
 
+TEST_F(CmdProgramPlanTest, FlattensNestedProgramsAcrossSelectedRoots) {
+  ModulePtr source_module = ParseAndVerify(R"(
+target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
+
+kernel.def @copy_one() {
+  %one = index.constant 1 : index
+  kernel.launch.config workgroups(%one, %one, %one) workgroup_size(%one, %one, %one) : index
+} launch(%source: buffer, %target: buffer) {
+  %base = index.constant 0 : offset
+  %zero = index.constant 0 : index
+  %source_view = buffer.view %source[%base] : buffer -> view<1xi32, #dense>
+  %target_view = buffer.view %target[%base] : buffer -> view<1xi32, #dense>
+  %value = view.load %source_view[%zero] : view<1xi32, #dense> -> i32
+  view.store %value, %target_view[%zero] : i32, view<1xi32, #dense>
+  kernel.return
+}
+
+command.program.def target(@command_target) @copy_stage() launch(%source: buffer, %target: buffer) {
+  kernel.launch @copy_one[](%source, %target) : [](buffer, buffer)
+  command.return
+}
+
+command.program.def public target(@command_target) @copy_twice() launch(%source: buffer, %scratch: buffer, %target: buffer) {
+  command.program.launch @copy_stage[](%source, %scratch) : [](buffer, buffer)
+  command.program.launch @copy_stage[](%scratch, %target) : [](buffer, buffer)
+  command.return
+}
+
+command.program.def public target(@command_target) @copy_once() launch(%source: buffer, %target: buffer) {
+  command.program.launch @copy_stage[](%source, %target) : [](buffer, buffer)
+  command.return
+}
+)");
+  ASSERT_NE(source_module.get(), nullptr);
+  const loom_op_t* source_programs[] = {
+      FindSymbol(source_module.get(), IREE_SV("copy_twice")),
+      FindSymbol(source_module.get(), IREE_SV("copy_once")),
+  };
+
+  loom_cmd_program_plan_t plan = {};
+  IREE_ASSERT_OK(loom_cmd_program_plan_prepare(
+      source_module.get(), source_programs, IREE_ARRAYSIZE(source_programs),
+      &block_pool_, iree_allocator_system(), &plan));
+  source_module.reset();
+
+  ASSERT_EQ(plan.root_count, 2u);
+  ASSERT_EQ(plan.dependency_count, 1u);
+  EXPECT_EQ(plan.dependency_units[0].argument_count, 2u);
+  ASSERT_EQ(plan.roots[0].dependency_count, 1u);
+  ASSERT_EQ(plan.roots[1].dependency_count, 1u);
+  VerifyLowModule(plan.root_module);
+  EXPECT_FALSE(HasSymbol(plan.root_module, IREE_SV("copy_stage")));
+  EXPECT_FALSE(HasSymbol(plan.root_module, IREE_SV("copy_one")));
+
+  iree_byte_span_t twice_data = iree_byte_span_empty();
+  IREE_ASSERT_OK(loom_cmd_program_serialize_low(
+      plan.root_module, plan.roots[0].function_op, &plan.roots[0].parameters,
+      &plan.roots[0].transient, &twice_data, iree_allocator_system()));
+  loom_cmd_program_t twice = {};
+  IREE_ASSERT_OK(loom_cmd_program_parse(
+      iree_make_const_byte_span(twice_data.data, twice_data.data_length),
+      &twice));
+  EXPECT_EQ(twice.requirements.rebindable_binding_count, 3u);
+  ASSERT_EQ(twice.commands.count, 3u);
+  EXPECT_EQ(loom_cmd_program_command_at(&twice, 0).kind,
+            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT);
+  EXPECT_EQ(loom_cmd_program_command_at(&twice, 1).kind,
+            LOOM_CMD_PROGRAM_COMMAND_KIND_EXECUTION_BARRIER);
+  EXPECT_EQ(loom_cmd_program_command_at(&twice, 2).kind,
+            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT);
+  const loom_cmd_program_command_t first_dispatch =
+      loom_cmd_program_command_at(&twice, 0);
+  const loom_cmd_program_command_t second_dispatch =
+      loom_cmd_program_command_at(&twice, 2);
+  ASSERT_EQ(first_dispatch.argument_count, 2u);
+  ASSERT_EQ(second_dispatch.argument_count, 2u);
+  const loom_cmd_program_argument_t first_source =
+      loom_cmd_program_argument_at(&twice, first_dispatch.argument_offset);
+  const loom_cmd_program_argument_t first_target =
+      loom_cmd_program_argument_at(&twice, first_dispatch.argument_offset + 1);
+  const loom_cmd_program_argument_t second_source =
+      loom_cmd_program_argument_at(&twice, second_dispatch.argument_offset);
+  const loom_cmd_program_argument_t second_target =
+      loom_cmd_program_argument_at(&twice, second_dispatch.argument_offset + 1);
+  ASSERT_EQ(first_source.kind, LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF);
+  ASSERT_EQ(first_target.kind, LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF);
+  ASSERT_EQ(second_source.kind, LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF);
+  ASSERT_EQ(second_target.kind, LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF);
+  EXPECT_EQ(
+      loom_cmd_program_buffer_ref_at(&twice, (uint32_t)first_source.payload)
+          .root_index,
+      0u);
+  EXPECT_EQ(
+      loom_cmd_program_buffer_ref_at(&twice, (uint32_t)first_target.payload)
+          .root_index,
+      1u);
+  EXPECT_EQ(
+      loom_cmd_program_buffer_ref_at(&twice, (uint32_t)second_source.payload)
+          .root_index,
+      1u);
+  EXPECT_EQ(
+      loom_cmd_program_buffer_ref_at(&twice, (uint32_t)second_target.payload)
+          .root_index,
+      2u);
+
+  iree_byte_span_t once_data = iree_byte_span_empty();
+  IREE_ASSERT_OK(loom_cmd_program_serialize_low(
+      plan.root_module, plan.roots[1].function_op, &plan.roots[1].parameters,
+      &plan.roots[1].transient, &once_data, iree_allocator_system()));
+  loom_cmd_program_t once = {};
+  IREE_ASSERT_OK(loom_cmd_program_parse(
+      iree_make_const_byte_span(once_data.data, once_data.data_length), &once));
+  EXPECT_EQ(once.requirements.rebindable_binding_count, 2u);
+  ASSERT_EQ(once.commands.count, 1u);
+  EXPECT_EQ(loom_cmd_program_command_at(&once, 0).kind,
+            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT);
+
+  iree_allocator_free(iree_allocator_system(), once_data.data);
+  iree_allocator_free(iree_allocator_system(), twice_data.data);
+  loom_cmd_program_plan_deinitialize(&plan);
+}
+
+TEST_F(CmdProgramPlanTest, RejectsRecursiveProgramComposition) {
+  ModulePtr source_module = ParseAndVerify(R"(
+target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
+
+command.program.def public target(@command_target) @recursive() launch() {
+  command.program.launch @recursive[]() : []()
+  command.return
+}
+)");
+  ASSERT_NE(source_module.get(), nullptr);
+  const loom_op_t* source_programs[] = {
+      FindSymbol(source_module.get(), IREE_SV("recursive")),
+  };
+
+  loom_cmd_program_plan_t plan = {};
+  IREE_EXPECT_STATUS_IS(
+      IREE_STATUS_FAILED_PRECONDITION,
+      loom_cmd_program_plan_prepare(
+          source_module.get(), source_programs, IREE_ARRAYSIZE(source_programs),
+          &block_pool_, iree_allocator_system(), &plan));
+  EXPECT_EQ(plan.root_module, nullptr);
+}
+
 }  // namespace
 }  // namespace loom

@@ -14,6 +14,7 @@
 #include "loom/ops/type_registry.h"
 #include "loom/target/arch/cmd/lower/lower.h"
 #include "loom/target/arch/cmd/lower/parameters.h"
+#include "loom/target/arch/cmd/lower/program_composition.h"
 #include "loom/target/arch/cmd/lower/schedule.h"
 #include "loom/target/arch/cmd/lower/transients.h"
 #include "loom/util/fact_table.h"
@@ -297,7 +298,12 @@ iree_status_t loom_cmd_program_plan_prepare(
         block_pool, host_allocator, &preparation_module);
   }
 
-  iree_host_size_t dependency_capacity = 0;
+  loom_func_like_t* root_programs = NULL;
+  if (iree_status_is_ok(status)) {
+    status = iree_arena_allocate_array(&scratch_arena, source_program_count,
+                                       sizeof(*root_programs),
+                                       (void**)&root_programs);
+  }
   for (iree_host_size_t i = 0;
        i < source_program_count && iree_status_is_ok(status); ++i) {
     loom_cmd_program_root_build_t* root = &root_builds[i];
@@ -312,6 +318,18 @@ iree_status_t loom_cmd_program_plan_prepare(
           (int)root->name.size, root->name.data);
       break;
     }
+    root_programs[i] = root->program;
+  }
+  if (iree_status_is_ok(status)) {
+    status = loom_cmd_program_composition_flatten(
+        preparation_module, root_programs, source_program_count,
+        &scratch_arena);
+  }
+
+  iree_host_size_t dependency_capacity = 0;
+  for (iree_host_size_t i = 0;
+       i < source_program_count && iree_status_is_ok(status); ++i) {
+    loom_cmd_program_root_build_t* root = &root_builds[i];
     status = loom_cmd_schedule_plan_build(preparation_module,
                                           loom_func_like_body(root->program),
                                           &scratch_arena, &root->schedule);

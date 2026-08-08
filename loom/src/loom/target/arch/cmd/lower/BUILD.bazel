@@ -146,6 +146,22 @@ loom_cc_library(
 )
 
 loom_cc_library(
+    name = "program_composition",
+    srcs = ["program_composition.c"],
+    hdrs = ["program_composition.h"],
+    deps = [
+        "//loom/src/loom/analysis:scc",
+        "//loom/src/loom/analysis:symbol_dependencies",
+        "//loom/src/loom/ir",
+        "//loom/src/loom/ops:op_defs",
+        "//loom/src/loom/rewrite:callable",
+        "//loom/src/loom/rewrite:rewriter",
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/base/internal:arena",
+    ],
+)
+
+loom_cc_library(
     name = "program_plan",
     srcs = ["program_plan.c"],
     hdrs = ["program_plan.h"],
@@ -155,6 +171,7 @@ loom_cc_library(
         ":launch_graph",
         ":lower",
         ":parameters",
+        ":program_composition",
         ":schedule",
         ":transients",
         "//loom/src/loom/ir",

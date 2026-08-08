@@ -160,6 +160,25 @@ loom_cc_library(
 
 loom_cc_library(
   NAME
+    program_composition
+  HDRS
+    "program_composition.h"
+  SRCS
+    "program_composition.c"
+  DEPS
+    iree::base
+    iree::base::internal::arena
+    loom::analysis::scc
+    loom::analysis::symbol_dependencies
+    loom::ir
+    loom::ops::op_defs
+    loom::rewrite::callable
+    loom::rewrite::rewriter
+  PUBLIC
+)
+
+loom_cc_library(
+  NAME
     program_plan
   HDRS
     "program_plan.h"
@@ -170,6 +189,7 @@ loom_cc_library(
     ::launch_graph
     ::lower
     ::parameters
+    ::program_composition
     ::schedule
     ::transients
     iree::base
