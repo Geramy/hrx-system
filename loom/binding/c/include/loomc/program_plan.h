@@ -156,7 +156,9 @@ typedef struct loomc_program_plan_unit_info_t {
   /// Opaque exact compiled-program cache key borrowed from the plan.
   ///
   /// The key identifies compiler inputs. It does not provide storage,
-  /// transport, checksumming, or cache-integrity policy.
+  /// transport, checksumming, or cache-integrity policy. An empty key means
+  /// the target cannot provide a complete identity and the unit must not be
+  /// loaded or stored through an identity-based cache.
   loomc_byte_span_t cache_key;
 } loomc_program_plan_unit_info_t;
 

@@ -27,7 +27,10 @@ loom_cc_library(
         "format.h",
         "program.h",
     ],
-    visibility = ["//loom/src:__subpackages__"],
+    visibility = [
+        "//loom/binding/c/target/cmd:__pkg__",
+        "//loom/src:__subpackages__",
+    ],
     deps = [
         "//runtime/src/iree/base",
         "//runtime/src/iree/base:core_headers",
