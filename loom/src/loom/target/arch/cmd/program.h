@@ -157,6 +157,22 @@ typedef struct loom_cmd_program_t {
   loom_cmd_program_table_t commands;
 } loom_cmd_program_t;
 
+// Dependency relocation applied while assembling command program roots.
+//
+// Each map has one entry for every corresponding requirement in the source
+// program. Map values are dense indices in the assembled requirement table
+// whose total size is given by the matching count field.
+typedef struct loom_cmd_program_dependency_relocation_t {
+  // Source executable index to assembled executable index map.
+  const uint32_t* executable_indices;
+  // Total number of executables in the assembled requirement table.
+  uint32_t executable_count;
+  // Source entry index to assembled entry index map.
+  const uint32_t* entry_indices;
+  // Total number of entries in the assembled requirement table.
+  uint32_t entry_count;
+} loom_cmd_program_dependency_relocation_t;
+
 // Parses and validates one complete command-program artifact.
 //
 // This is the untrusted byte boundary. Successful parsing guarantees that all
@@ -176,6 +192,17 @@ loom_cmd_program_argument_t loom_cmd_program_argument_at(
 // Returns one validated command table entry.
 loom_cmd_program_command_t loom_cmd_program_command_at(
     const loom_cmd_program_t* program, uint32_t index);
+
+// Clones |program| and relocates dependency indices into assembled tables.
+//
+// |program| must have passed loom_cmd_program_parse. The relocation maps are
+// compiler-owned assembly state and must cover every source requirement with
+// an index inside the corresponding assembled table. The caller owns the
+// returned storage and must release it with |host_allocator|.
+iree_status_t loom_cmd_program_relocate_dependencies(
+    const loom_cmd_program_t* program,
+    const loom_cmd_program_dependency_relocation_t* relocation,
+    iree_byte_span_t* out_data, iree_allocator_t host_allocator);
 
 #ifdef __cplusplus
 }  // extern "C"

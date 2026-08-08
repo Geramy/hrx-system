@@ -135,6 +135,68 @@ loom_cmd_program_command_t loom_cmd_program_command_at(
   return command;
 }
 
+iree_status_t loom_cmd_program_relocate_dependencies(
+    const loom_cmd_program_t* program,
+    const loom_cmd_program_dependency_relocation_t* relocation,
+    iree_byte_span_t* out_data, iree_allocator_t host_allocator) {
+  IREE_ASSERT_ARGUMENT(program);
+  IREE_ASSERT_ARGUMENT(relocation);
+  IREE_ASSERT_ARGUMENT(out_data);
+  IREE_ASSERT(relocation->executable_indices ||
+              program->requirements.executable_count == 0);
+  IREE_ASSERT(relocation->entry_indices ||
+              program->requirements.entry_count == 0);
+  *out_data = iree_make_byte_span(NULL, 0);
+
+  uint8_t* data = NULL;
+  IREE_RETURN_IF_ERROR(
+      iree_allocator_clone(host_allocator, program->storage, (void**)&data));
+  iree_unaligned_store_le_u32(
+      data + LOOM_CMD_PROGRAM_HEADER_EXECUTABLE_COUNT_OFFSET,
+      relocation->executable_count);
+  iree_unaligned_store_le_u32(data + LOOM_CMD_PROGRAM_HEADER_ENTRY_COUNT_OFFSET,
+                              relocation->entry_count);
+
+  const iree_host_size_t command_table_offset =
+      (iree_host_size_t)(program->commands.data - program->storage.data);
+  for (uint32_t i = 0; i < program->commands.count; ++i) {
+    const loom_cmd_program_command_t command =
+        loom_cmd_program_command_at(program, i);
+    if (command.kind != LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT &&
+        command.kind !=
+            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC &&
+        command.kind !=
+            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_DYNAMIC) {
+      continue;
+    }
+    const bool is_direct =
+        command.kind == LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT;
+    const uint32_t executable_index =
+        is_direct ? command.payload.dispatch_direct.executable_index
+                  : command.payload.dispatch_indirect.executable_index;
+    const uint32_t entry_index =
+        is_direct ? command.payload.dispatch_direct.entry_index
+                  : command.payload.dispatch_indirect.entry_index;
+    const uint32_t relocated_executable_index =
+        relocation->executable_indices[executable_index];
+    const uint32_t relocated_entry_index =
+        relocation->entry_indices[entry_index];
+    IREE_ASSERT_LT(relocated_executable_index, relocation->executable_count);
+    IREE_ASSERT_LT(relocated_entry_index, relocation->entry_count);
+    uint8_t* record =
+        data + command_table_offset + i * LOOM_CMD_PROGRAM_COMMAND_SIZE;
+    iree_unaligned_store_le_u32(
+        record + LOOM_CMD_PROGRAM_COMMAND_OPERAND_0_OFFSET,
+        relocated_executable_index);
+    iree_unaligned_store_le_u32(
+        record + LOOM_CMD_PROGRAM_COMMAND_OPERAND_1_OFFSET,
+        relocated_entry_index);
+  }
+
+  *out_data = iree_make_byte_span(data, program->storage.data_length);
+  return iree_ok_status();
+}
+
 static bool loom_cmd_program_slice_is_valid(uint32_t offset, uint32_t count,
                                             uint32_t total_count) {
   if (count == 0) return offset == 0;
