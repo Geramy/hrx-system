@@ -96,12 +96,30 @@ loom_cc_library(
         "//loom/src/loom/ops:op_defs",
         "//loom/src/loom/ops:special_values",
         "//loom/src/loom/ops:type_registry",
+        "//loom/src/loom/ops/buffer",
         "//loom/src/loom/ops/index",
         "//loom/src/loom/ops/kernel",
         "//loom/src/loom/pass:value_facts",
         "//loom/src/loom/transforms/cleanup:canonicalize",
         "//loom/src/loom/util:fact_table",
         "//runtime/src/iree/base",
+        "//runtime/src/iree/base/internal:arena",
+    ],
+)
+
+loom_cc_library(
+    name = "parameters",
+    srcs = ["parameters.c"],
+    hdrs = ["parameters.h"],
+    deps = [
+        ":lower",
+        "//loom/src/loom/ir",
+        "//loom/src/loom/ir:facts",
+        "//loom/src/loom/ops/command",
+        "//loom/src/loom/util:fact_table",
+        "//loom/src/loom/util:walk",
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/base/internal",
         "//runtime/src/iree/base/internal:arena",
     ],
 )
@@ -115,6 +133,7 @@ loom_cc_library(
         ":kernel_unit",
         ":launch_graph",
         ":lower",
+        ":parameters",
         ":schedule",
         "//loom/src/loom/ir",
         "//loom/src/loom/link:linker",

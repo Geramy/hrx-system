@@ -235,6 +235,121 @@ command.program.def public target(@command_target) @pipeline(%element_count: ind
   EXPECT_EQ(plan.root_module, nullptr);
 }
 
+TEST_F(CmdProgramPlanTest, PlacesParametersInFixedSourceRoots) {
+  ModulePtr source_module = ParseAndVerify(R"(
+target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
+
+kernel.def @combine() {
+  %one = index.constant 1 : index
+  kernel.launch.config workgroups(%one, %one, %one) workgroup_size(%one, %one, %one) : index
+} launch(%lhs: view<3xi32, #dense>, %rhs: view<4xi32, #dense>, %target: buffer) {
+  %zero = index.constant 0 : index
+  %base = index.constant 0 : offset
+  %lhs_value = view.load %lhs[%zero] : view<3xi32, #dense> -> i32
+  %rhs_value = view.load %rhs[%zero] : view<4xi32, #dense> -> i32
+  %sum = scalar.addi %lhs_value, %rhs_value : i32
+  %target_view = buffer.view %target[%base] : buffer -> view<1xi32, #dense>
+  view.store %sum, %target_view[%zero] : i32, view<1xi32, #dense>
+  kernel.return
+}
+
+command.program.def public target(@command_target) @parameterized() launch(%parameters: buffer, %target: buffer) {
+  %layer = index.constant 3 : index
+  %lhs = command.parameter %parameters, "blk.{}.lhs"[%layer] : view<3xi32, #dense>
+  %rhs = command.parameter %parameters, "shared.rhs"[] : view<4xi32, #dense>
+  kernel.launch @combine[](%lhs, %rhs, %target) : [](view<3xi32, #dense>, view<4xi32, #dense>, buffer)
+  command.return
+}
+)");
+  ASSERT_NE(source_module.get(), nullptr);
+  loom_op_t* source_program =
+      FindSymbol(source_module.get(), IREE_SV("parameterized"));
+  const loom_op_t* source_programs[] = {source_program};
+
+  loom_cmd_program_plan_t plan = {};
+  IREE_ASSERT_OK(loom_cmd_program_plan_prepare(
+      source_module.get(), source_programs, IREE_ARRAYSIZE(source_programs),
+      &block_pool_, iree_allocator_system(), &plan));
+  source_module.reset();
+
+  ASSERT_EQ(plan.root_count, 1u);
+  const loom_cmd_program_root_t& root = plan.roots[0];
+  ASSERT_EQ(root.parameters.root_count, 1u);
+  ASSERT_NE(root.parameters.roots, nullptr);
+  EXPECT_EQ(root.parameters.roots[0].source_binding_ordinal, 0u);
+  EXPECT_EQ(root.parameters.roots[0].fixed_buffer_index, 0u);
+  EXPECT_EQ(root.parameters.roots[0].required_byte_length, 272u);
+  EXPECT_EQ(root.parameters.roots[0].minimum_alignment, 256u);
+
+  ASSERT_EQ(root.parameters.count, 2u);
+  ASSERT_NE(root.parameters.entries, nullptr);
+  const loom_cmd_parameter_requirement_t& lhs = root.parameters.entries[0];
+  EXPECT_TRUE(iree_string_view_equal(lhs.key, IREE_SV("blk.3.lhs")));
+  EXPECT_EQ(lhs.source_binding_ordinal, 0u);
+  EXPECT_EQ(lhs.fixed_buffer_index, 0u);
+  EXPECT_EQ(lhs.byte_offset, 0u);
+  EXPECT_EQ(lhs.byte_length, 12u);
+  EXPECT_EQ(lhs.minimum_alignment, 256u);
+  const loom_cmd_parameter_requirement_t& rhs = root.parameters.entries[1];
+  EXPECT_TRUE(iree_string_view_equal(rhs.key, IREE_SV("shared.rhs")));
+  EXPECT_EQ(rhs.source_binding_ordinal, 0u);
+  EXPECT_EQ(rhs.fixed_buffer_index, 0u);
+  EXPECT_EQ(rhs.byte_offset, 256u);
+  EXPECT_EQ(rhs.byte_length, 16u);
+  EXPECT_EQ(rhs.minimum_alignment, 256u);
+
+  iree_byte_span_t program_data = iree_byte_span_empty();
+  IREE_ASSERT_OK(loom_cmd_program_serialize_low(plan.root_module,
+                                                root.function_op, &program_data,
+                                                iree_allocator_system()));
+  loom_cmd_program_t program = {};
+  IREE_ASSERT_OK(loom_cmd_program_parse(
+      iree_make_const_byte_span(program_data.data, program_data.data_length),
+      &program));
+  EXPECT_EQ(program.requirements.fixed_buffer_count, 1u);
+  EXPECT_EQ(program.requirements.rebindable_binding_count, 1u);
+  EXPECT_EQ(program.requirements.executable_count, 1u);
+  EXPECT_EQ(program.requirements.entry_count, 1u);
+  ASSERT_EQ(program.commands.count, 1u);
+  const loom_cmd_program_command_t dispatch =
+      loom_cmd_program_command_at(&program, 0);
+  ASSERT_EQ(dispatch.kind, LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT);
+  ASSERT_EQ(dispatch.argument_count, 3u);
+
+  const loom_cmd_program_argument_t lhs_argument =
+      loom_cmd_program_argument_at(&program, dispatch.argument_offset + 0);
+  const loom_cmd_program_argument_t rhs_argument =
+      loom_cmd_program_argument_at(&program, dispatch.argument_offset + 1);
+  const loom_cmd_program_argument_t target_argument =
+      loom_cmd_program_argument_at(&program, dispatch.argument_offset + 2);
+  ASSERT_EQ(lhs_argument.kind, LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF);
+  ASSERT_EQ(rhs_argument.kind, LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF);
+  ASSERT_EQ(target_argument.kind, LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF);
+
+  const loom_cmd_program_buffer_ref_t lhs_ref =
+      loom_cmd_program_buffer_ref_at(&program, (uint32_t)lhs_argument.payload);
+  EXPECT_EQ(lhs_ref.role, LOOM_CMD_PROGRAM_BUFFER_ROLE_FIXED);
+  EXPECT_EQ(lhs_ref.root_index, 0u);
+  EXPECT_EQ(lhs_ref.byte_offset, 0u);
+  EXPECT_EQ(lhs_ref.byte_length, 12u);
+  const loom_cmd_program_buffer_ref_t rhs_ref =
+      loom_cmd_program_buffer_ref_at(&program, (uint32_t)rhs_argument.payload);
+  EXPECT_EQ(rhs_ref.role, LOOM_CMD_PROGRAM_BUFFER_ROLE_FIXED);
+  EXPECT_EQ(rhs_ref.root_index, 0u);
+  EXPECT_EQ(rhs_ref.byte_offset, 256u);
+  EXPECT_EQ(rhs_ref.byte_length, 16u);
+  const loom_cmd_program_buffer_ref_t target_ref =
+      loom_cmd_program_buffer_ref_at(&program,
+                                     (uint32_t)target_argument.payload);
+  EXPECT_EQ(target_ref.role, LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE);
+  EXPECT_EQ(target_ref.root_index, 0u);
+  EXPECT_EQ(target_ref.byte_offset, 0u);
+  EXPECT_EQ(target_ref.byte_length, UINT64_MAX);
+
+  iree_allocator_free(iree_allocator_system(), program_data.data);
+  loom_cmd_program_plan_deinitialize(&plan);
+}
+
 TEST_F(CmdProgramPlanTest, InternsEquivalentDependencySpecializations) {
   ModulePtr source_module = ParseAndVerify(R"(
 target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}

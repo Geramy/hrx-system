@@ -102,6 +102,7 @@ loom_cc_library(
     iree::base::internal::arena
     loom::ir
     loom::link::linker
+    loom::ops::buffer
     loom::ops::index
     loom::ops::kernel
     loom::ops::op_defs
@@ -110,6 +111,26 @@ loom_cc_library(
     loom::pass::value_facts
     loom::transforms::cleanup::canonicalize
     loom::util::fact_table
+  PUBLIC
+)
+
+loom_cc_library(
+  NAME
+    parameters
+  HDRS
+    "parameters.h"
+  SRCS
+    "parameters.c"
+  DEPS
+    ::lower
+    iree::base
+    iree::base::internal
+    iree::base::internal::arena
+    loom::ir
+    loom::ir::facts
+    loom::ops::command
+    loom::util::fact_table
+    loom::util::walk
   PUBLIC
 )
 
@@ -124,6 +145,7 @@ loom_cc_library(
     ::kernel_unit
     ::launch_graph
     ::lower
+    ::parameters
     ::schedule
     iree::base
     iree::base::internal::arena
