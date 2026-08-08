@@ -16,24 +16,29 @@
 #include "iree/hal/local/loaders/static_library_loader.h"
 #include "iree/testing/gtest.h"
 #include "iree/testing/status_matchers.h"
+#include "loom/binding/c/src/context.h"
+#include "loom/binding/c/src/module.h"
+#include "loom/binding/c/src/workspace.h"
 #include "loom/codegen/low/verify.h"
 #include "loom/format/text/parser.h"
 #include "loom/ir/context.h"
 #include "loom/ir/module.h"
 #include "loom/ops/op_registry.h"
-#include "loom/ops/type_registry.h"
 #include "loom/target/arch/cmd/descriptors/low_registry.h"
 #include "loom/target/arch/cmd/iree_hal/recording.h"
 #include "loom/target/arch/cmd/iree_hal/recording_test_executable.h"
-#include "loom/target/arch/cmd/lower/kernel_unit.h"
 #include "loom/target/arch/cmd/lower/launch_artifact.h"
-#include "loom/target/arch/cmd/lower/lower.h"
-#include "loom/target/arch/cmd/lower/schedule.h"
+#include "loom/target/arch/cmd/lower/program_plan.h"
 #include "loom/target/arch/cmd/lower/serialize.h"
 #include "loom/testing/diagnostic_matchers.h"
 #include "loom/testing/module_ptr.h"
 #include "loom/verify/verify.h"
+#include "loomc/compile.h"
 #include "loomc/launch_config_module.h"
+#include "loomc/module.h"
+#include "loomc/pass.h"
+#include "loomc/result.h"
+#include "loomc/workspace.h"
 #include "test/util.h"
 
 namespace loom {
@@ -47,12 +52,26 @@ using LaunchModulePtr =
 using LaunchContextPtr =
     loomc::testing::HandlePtr<loomc_launch_config_context_t,
                               loomc_launch_config_context_release>;
+using LoomContextPtr =
+    loomc::testing::HandlePtr<loomc_context_t, loomc_context_release>;
+using WorkspacePtr =
+    loomc::testing::HandlePtr<loomc_workspace_t, loomc_workspace_release>;
+using ModulePtr =
+    loomc::testing::HandlePtr<loomc_module_t, loomc_module_release>;
+using ResultPtr =
+    loomc::testing::HandlePtr<loomc_result_t, loomc_result_release>;
+using CompilerPtr =
+    loomc::testing::HandlePtr<loomc_compiler_t, loomc_compiler_release>;
+using PassProgramPtr =
+    loomc::testing::HandlePtr<loomc_pass_program_t, loomc_pass_program_release>;
 
 struct CommandArtifacts {
   // Evaluation-ready launch-configuration Loombc.
   std::vector<uint8_t> launch_config;
   // Closed portable command-program bytes.
   std::vector<uint8_t> command_program;
+  // Independently compiled dependency-unit Loombc artifacts.
+  std::vector<std::vector<uint8_t>> dependency_modules;
 };
 
 static iree_hal_device_t* CreateSyncDevice() {
@@ -194,17 +213,24 @@ static iree_status_t SubmitAndWait(
 class CommandLifecycleTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    iree_arena_block_pool_initialize(4096, iree_allocator_system(),
-                                     &block_pool_);
-    loom_context_initialize(iree_allocator_system(), &context_);
-    IREE_ASSERT_OK(loom_op_registry_register_all_dialects(&context_));
-    IREE_ASSERT_OK(loom_context_finalize(&context_));
+    loomc_context_t* context = nullptr;
+    LOOMC_ASSERT_OK(loomc_context_create(
+        /*options=*/nullptr, loomc_allocator_system(), &context));
+    context_handle_.reset(context);
+    loomc_workspace_t* workspace = nullptr;
+    LOOMC_ASSERT_OK(loomc_workspace_create(
+        /*options=*/nullptr, loomc_allocator_system(), &workspace));
+    coordinator_workspace_.reset(workspace);
+    context_ = loomc_context_loom_context(context_handle_.get());
+    block_pool_ = loomc_workspace_block_pool(coordinator_workspace_.get());
     loom_cmd_low_descriptor_registry_initialize(&registry_);
   }
 
   void TearDown() override {
-    loom_context_deinitialize(&context_);
-    iree_arena_block_pool_deinitialize(&block_pool_);
+    block_pool_ = nullptr;
+    context_ = nullptr;
+    coordinator_workspace_.reset();
+    context_handle_.reset();
   }
 
   InternalModulePtr ParseAndVerifySource(const char* source) {
@@ -213,7 +239,7 @@ class CommandLifecycleTest : public ::testing::Test {
     loom_module_t* module = nullptr;
     IREE_CHECK_OK(loom_text_parse(
         iree_make_cstring_view(source), IREE_SV("command_lifecycle_test.loom"),
-        &context_, &block_pool_, &parse_options, &module));
+        context_, block_pool_, &parse_options, &module));
     InternalModulePtr module_ptr(module);
 
     loom_verify_options_t verify_options = {};
@@ -247,115 +273,127 @@ class CommandLifecycleTest : public ::testing::Test {
     return module->symbols.entries[symbol_id].defining_op;
   }
 
-  loom_symbol_ref_t FindSymbolRef(loom_module_t* module,
-                                  iree_string_view_t name) {
-    const loom_string_id_t name_id = loom_module_lookup_string(module, name);
-    IREE_ASSERT_NE(name_id, LOOM_STRING_ID_INVALID);
-    const loom_symbol_id_t symbol_id = loom_module_find_symbol(module, name_id);
-    IREE_ASSERT_NE(symbol_id, LOOM_SYMBOL_ID_INVALID);
-    return loom_symbol_ref_t{
-        /*.module_id=*/0,
-        /*.symbol_id=*/symbol_id,
-    };
+  void CompileDependencyModules(loom_cmd_program_plan_t* plan,
+                                CommandArtifacts* artifacts) {
+    loomc_compiler_t* compiler = nullptr;
+    LOOMC_ASSERT_OK(loomc_compiler_create(context_handle_.get(),
+                                          /*options=*/nullptr,
+                                          loomc_allocator_system(), &compiler));
+    CompilerPtr compiler_ptr(compiler);
+
+    loomc_pass_program_t* pass_program = nullptr;
+    LOOMC_ASSERT_OK(loomc_pass_program_create_empty(
+        context_handle_.get(), /*options=*/nullptr, loomc_allocator_system(),
+        &pass_program));
+    PassProgramPtr pass_program_ptr(pass_program);
+
+    artifacts->dependency_modules.resize(plan->dependency_count);
+    for (iree_host_size_t i = 0; i < plan->dependency_count; ++i) {
+      loomc_module_t* module = nullptr;
+      LOOMC_ASSERT_OK(loomc_module_create_empty(
+          context_handle_.get(), coordinator_workspace_.get(),
+          loomc_allocator_system(), &module));
+      ModulePtr module_ptr(module);
+      LOOMC_ASSERT_OK(loomc_module_set_loom_module(
+          module_ptr.get(), plan->dependency_units[i].module));
+      plan->dependency_units[i].module = nullptr;
+
+      loomc_workspace_t* worker_workspace = nullptr;
+      LOOMC_ASSERT_OK(loomc_workspace_create(
+          /*options=*/nullptr, loomc_allocator_system(), &worker_workspace));
+      WorkspacePtr worker_workspace_ptr(worker_workspace);
+      const loomc_compile_options_t compile_options = {
+          /*.type=*/LOOMC_STRUCTURE_TYPE_COMPILE_OPTIONS,
+          /*.structure_size=*/sizeof(compile_options),
+          /*.next=*/nullptr,
+          /*.module_name=*/loomc_make_cstring_view("dependency"),
+          /*.artifact_flags=*/LOOMC_COMPILE_ARTIFACT_FLAG_MODULE_BYTECODE,
+      };
+      loomc_result_t* result = nullptr;
+      LOOMC_ASSERT_OK(loomc_compile_module(
+          compiler_ptr.get(), worker_workspace_ptr.get(),
+          pass_program_ptr.get(), module_ptr.get(), &compile_options,
+          loomc_allocator_system(), &result));
+      ResultPtr result_ptr(result);
+      ASSERT_TRUE(loomc_result_succeeded(result_ptr.get()));
+      ASSERT_EQ(loomc_result_artifact_count(result_ptr.get()), 1u);
+      const loomc_artifact_t* artifact =
+          loomc_result_artifact_at(result_ptr.get(), 0);
+      ASSERT_NE(artifact, nullptr);
+      EXPECT_EQ(artifact->kind, LOOMC_ARTIFACT_KIND_MODULE);
+      EXPECT_TRUE(loomc_string_view_equal(
+          artifact->format,
+          loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_LOOM_BYTECODE)));
+      artifacts->dependency_modules[i].assign(
+          artifact->contents.data,
+          artifact->contents.data + artifact->contents.data_length);
+    }
   }
 
   CommandArtifacts CompileArtifacts() {
     InternalModulePtr module = ParseAndVerifySource(R"(
 target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
 
-kernel.def @increment(%element_count: index) {
+kernel.def @increment_first(%element_count: index) {
   %one = index.constant 1 : index
   kernel.launch.config workgroups(%element_count, %one, %one) workgroup_size(%one, %one, %one) : index
 } launch(%source: buffer, %target: buffer) {
   %base = index.constant 0 : offset
   %workgroup = kernel.workgroup.id<x> : index
-  %one = scalar.constant 1 : i32
+  %seven = scalar.constant 7 : i32
   %source_view = buffer.view %source[%base] : buffer -> view<128xi32, #dense>
   %target_view = buffer.view %target[%base] : buffer -> view<128xi32, #dense>
   %value = view.load %source_view[%workgroup] : view<128xi32, #dense> -> i32
-  %incremented = scalar.addi %value, %one : i32
+  %incremented = scalar.addi %value, %seven : i32
   view.store %incremented, %target_view[%workgroup] : i32, view<128xi32, #dense>
   kernel.return
 }
 
-command.program.def public @increment_elements(%element_count: index) launch(%source: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
-  kernel.launch @increment[%element_count](%source, %target) : [index](buffer, buffer)
+kernel.def @increment_second(%element_count: index) {
+  %one = index.constant 1 : index
+  kernel.launch.config workgroups(%element_count, %one, %one) workgroup_size(%one, %one, %one) : index
+} launch(%source: buffer, %target: buffer) {
+  %base = index.constant 0 : offset
+  %workgroup = kernel.workgroup.id<x> : index
+  %seven = scalar.constant 7 : i32
+  %source_view = buffer.view %source[%base] : buffer -> view<128xi32, #dense>
+  %target_view = buffer.view %target[%base] : buffer -> view<128xi32, #dense>
+  %value = view.load %source_view[%workgroup] : view<128xi32, #dense> -> i32
+  %incremented = scalar.addi %value, %seven : i32
+  view.store %incremented, %target_view[%workgroup] : i32, view<128xi32, #dense>
+  kernel.return
+}
+
+command.program.def public target(@command_target) @increment_elements(%element_count: index) launch(%source: buffer, %intermediate: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+  kernel.launch @increment_first[%element_count](%source, %intermediate) : [index](buffer, buffer)
+  kernel.launch @increment_second[%element_count](%intermediate, %target) : [index](buffer, buffer)
   command.return
 }
 )");
 
     loom_op_t* source_program =
         FindSymbol(module.get(), IREE_SV("increment_elements"));
-    const loom_func_like_t source_program_like =
-        loom_func_like_cast(module.get(), source_program);
-    iree_arena_allocator_t schedule_arena;
-    iree_arena_initialize(&block_pool_, &schedule_arena);
-    loom_cmd_schedule_plan_t schedule = {};
-    IREE_CHECK_OK(loom_cmd_schedule_plan_build(
-        module.get(), loom_func_like_body(source_program_like), &schedule_arena,
-        &schedule));
-
-    loom_value_fact_table_t source_facts = {};
-    IREE_CHECK_OK(loom_value_fact_table_initialize(
-        &source_facts, &schedule_arena, module->values.count));
-    loom_type_registry_configure_fact_context(&source_facts.context);
-    IREE_CHECK_OK(loom_value_fact_table_compute(&source_facts, module.get(),
-                                                source_program_like));
-    loom_cmd_kernel_unit_t kernel_unit = {};
-    IREE_CHECK_OK(loom_cmd_kernel_unit_materialize(
-        module.get(), schedule.commands[0], &source_facts, &block_pool_,
-        iree_allocator_system(), &kernel_unit));
-    IREE_ASSERT_EQ(kernel_unit.argument_count, 2u);
-
-    loom_cmd_launch_graph_t launch_graph = {};
-    IREE_CHECK_OK(loom_cmd_launch_graph_materialize(
-        module.get(), source_program, &schedule, &block_pool_,
-        iree_allocator_system(), &launch_graph));
-    iree_arena_deinitialize(&schedule_arena);
-    IREE_ASSERT_EQ(launch_graph.host_tuple_count, 1u);
+    loom_cmd_program_plan_t plan = {};
+    IREE_CHECK_OK(
+        loom_cmd_program_plan_prepare(module.get(), source_program, block_pool_,
+                                      iree_allocator_system(), &plan));
+    module.reset();
+    IREE_ASSERT_EQ(plan.dependency_count, 2u);
+    IREE_ASSERT_EQ(plan.launch_tuple_count, 1u);
+    VerifyLowModule(plan.root_module);
 
     iree_byte_span_t launch_config_data = iree_byte_span_empty();
     IREE_CHECK_OK(loom_cmd_launch_program_serialize(
-        launch_graph.module, &block_pool_, iree_allocator_system(),
+        plan.launch_module, block_pool_, iree_allocator_system(),
         &launch_config_data));
 
-    static constexpr uint64_t kBufferByteLength = 128 * sizeof(uint32_t);
-    const std::array<loom_cmd_lower_binding_t, 2> binding_plan = {{
-        {LOOM_CMD_LOWER_BUFFER_ROLE_REBINDABLE, 0, 0, kBufferByteLength},
-        {LOOM_CMD_LOWER_BUFFER_ROLE_REBINDABLE, 1, 0, kBufferByteLength},
-    }};
-    const loom_cmd_lower_launch_t launch_plan = {
-        /*.executable_index=*/0,
-        /*.entry_index=*/0,
-        /*.argument_count=*/kernel_unit.argument_count,
-        /*.source_argument_ordinals=*/kernel_unit.source_argument_ordinals,
-    };
-    const loom_cmd_lower_plan_t plan = {
-        /*.command_target=*/FindSymbolRef(module.get(),
-                                          IREE_SV("command_target")),
-        /*.bindings=*/binding_plan.data(),
-        /*.binding_count=*/binding_plan.size(),
-        /*.fixed_buffer_count=*/0,
-        /*.rebindable_binding_count=*/3,
-        /*.executable_count=*/1,
-        /*.entry_count=*/1,
-        /*.launch_graph=*/&launch_graph,
-        /*.launch_count_binding=*/{2, 0},
-        /*.launches=*/&launch_plan,
-    };
-    loom_op_t* low_function = nullptr;
-    IREE_CHECK_OK(loom_cmd_lower_program_to_low(module.get(), source_program,
-                                                &plan, &low_function));
-    loom_cmd_kernel_unit_deinitialize(&kernel_unit);
-    loom_cmd_launch_graph_deinitialize(&launch_graph);
-    VerifyLowModule(module.get());
-
     iree_byte_span_t command_program_data = iree_byte_span_empty();
-    IREE_CHECK_OK(loom_cmd_program_serialize_low(module.get(), low_function,
-                                                 &command_program_data,
-                                                 iree_allocator_system()));
+    IREE_CHECK_OK(loom_cmd_program_serialize_low(
+        plan.root_module, plan.root_function_op, &command_program_data,
+        iree_allocator_system()));
 
     CommandArtifacts artifacts;
+    CompileDependencyModules(&plan, &artifacts);
     artifacts.launch_config.assign(
         launch_config_data.data,
         launch_config_data.data + launch_config_data.data_length);
@@ -364,22 +402,29 @@ command.program.def public @increment_elements(%element_count: index) launch(%so
         command_program_data.data + command_program_data.data_length);
     iree_allocator_free(iree_allocator_system(), launch_config_data.data);
     iree_allocator_free(iree_allocator_system(), command_program_data.data);
-    module.reset();
+    loom_cmd_program_plan_deinitialize(&plan);
     return artifacts;
   }
 
-  // Shared arena block pool backing compiler-owned modules.
-  iree_arena_block_pool_t block_pool_;
-  // Source dialect context used by parsing, verification, and lowering.
-  loom_context_t context_;
+  // Public context retaining the internal source dialect context.
+  LoomContextPtr context_handle_;
+  // Workspace retaining the arena block pool backing prepared modules.
+  WorkspacePtr coordinator_workspace_;
+  // Internal dialect context borrowed from |context_handle_|.
+  loom_context_t* context_ = nullptr;
+  // Arena block pool borrowed from |coordinator_workspace_|.
+  iree_arena_block_pool_t* block_pool_ = nullptr;
   // Portable command descriptor registry used by low verification.
   loom_target_low_descriptor_registry_t registry_ = {};
 };
 
-TEST_F(CommandLifecycleTest, ReplaysOneCommandBufferWithEvaluatedWorkloads) {
+TEST_F(CommandLifecycleTest, CompilesDependenciesAndReplaysAssembledRoot) {
   CommandArtifacts artifacts = CompileArtifacts();
   ASSERT_FALSE(artifacts.launch_config.empty());
   ASSERT_FALSE(artifacts.command_program.empty());
+  ASSERT_EQ(artifacts.dependency_modules.size(), 2u);
+  EXPECT_FALSE(artifacts.dependency_modules[0].empty());
+  EXPECT_FALSE(artifacts.dependency_modules[1].empty());
 
   const loomc_artifact_t launch_artifact = {
       /*.kind=*/LOOMC_ARTIFACT_KIND_LAUNCH_CONFIG,
@@ -422,11 +467,15 @@ TEST_F(CommandLifecycleTest, ReplaysOneCommandBufferWithEvaluatedWorkloads) {
                                 artifacts.command_program.size()),
       &command_program));
   ASSERT_EQ(command_program.requirements.fixed_buffer_count, 0u);
-  ASSERT_EQ(command_program.requirements.rebindable_binding_count, 3u);
-  ASSERT_EQ(command_program.requirements.executable_count, 1u);
-  ASSERT_EQ(command_program.requirements.entry_count, 1u);
-  ASSERT_EQ(command_program.commands.count, 1u);
+  ASSERT_EQ(command_program.requirements.rebindable_binding_count, 4u);
+  ASSERT_EQ(command_program.requirements.executable_count, 2u);
+  ASSERT_EQ(command_program.requirements.entry_count, 2u);
+  ASSERT_EQ(command_program.commands.count, 3u);
   EXPECT_EQ(loom_cmd_program_command_at(&command_program, 0).kind,
+            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
+  EXPECT_EQ(loom_cmd_program_command_at(&command_program, 1).kind,
+            LOOM_CMD_PROGRAM_COMMAND_KIND_EXECUTION_BARRIER);
+  EXPECT_EQ(loom_cmd_program_command_at(&command_program, 2).kind,
             LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
 
   iree_hal_device_group_t* device_group = CreateSyncDeviceGroup();
@@ -435,30 +484,46 @@ TEST_F(CommandLifecycleTest, ReplaysOneCommandBufferWithEvaluatedWorkloads) {
   IREE_ASSERT_OK(LoadTestExecutable(device, &executable));
   const iree_hal_executable_function_t function =
       iree_hal_executable_function_from_index(1);
-  loom_cmd_iree_hal_entry_t entry = {};
-  entry.executable_index = 0;
-  entry.function = function;
+  iree_hal_executable_function_info_t function_info = {};
   IREE_ASSERT_OK(
-      iree_hal_executable_function_info(executable, function, &entry.info));
+      iree_hal_executable_function_info(executable, function, &function_info));
   std::vector<iree_hal_executable_function_parameter_t> parameters(
-      entry.info.parameter_count);
+      function_info.parameter_count);
   IREE_ASSERT_OK(iree_hal_executable_function_parameters(
       executable, function, parameters.size(), parameters.data()));
-  entry.parameters = parameters.data();
+  const std::array<iree_hal_executable_t*, 2> executables = {
+      executable,
+      executable,
+  };
+  const std::array<loom_cmd_iree_hal_entry_t, 2> entries = {{
+      {
+          /*.executable_index=*/0,
+          /*.function=*/function,
+          /*.info=*/function_info,
+          /*.parameters=*/parameters.data(),
+      },
+      {
+          /*.executable_index=*/1,
+          /*.function=*/function,
+          /*.info=*/function_info,
+          /*.parameters=*/parameters.data(),
+      },
+  }};
   const loom_cmd_iree_hal_inputs_t inputs = {
-      /*.binding_count=*/3,
+      /*.binding_count=*/4,
       /*.fixed_buffer_count=*/0,
       /*.fixed_buffers=*/nullptr,
-      /*.executable_count=*/1,
-      /*.executables=*/&executable,
-      /*.entry_count=*/1,
-      /*.entries=*/&entry,
+      /*.executable_count=*/executables.size(),
+      /*.executables=*/executables.data(),
+      /*.entry_count=*/entries.size(),
+      /*.entries=*/entries.data(),
   };
   iree_hal_command_buffer_t* command_buffer = nullptr;
   IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program(
       &command_program, &inputs, device, IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT,
       IREE_HAL_QUEUE_AFFINITY_ANY, &command_buffer, iree_allocator_system()));
   artifacts.command_program.clear();
+  artifacts.dependency_modules.clear();
   iree_hal_executable_release(executable);
 
   static constexpr iree_host_size_t kElementCount = 128;
@@ -467,6 +532,8 @@ TEST_F(CommandLifecycleTest, ReplaysOneCommandBufferWithEvaluatedWorkloads) {
   static constexpr iree_device_size_t kLaunchCountByteLength =
       LOOM_CMD_LAUNCH_COUNT_TUPLE_BYTE_LENGTH;
   iree_hal_buffer_t* source_buffer =
+      CreateTransferBuffer(device, kBufferByteLength);
+  iree_hal_buffer_t* intermediate_buffer =
       CreateTransferBuffer(device, kBufferByteLength);
   iree_hal_buffer_t* target_buffer =
       CreateTransferBuffer(device, kBufferByteLength);
@@ -489,6 +556,9 @@ TEST_F(CommandLifecycleTest, ReplaysOneCommandBufferWithEvaluatedWorkloads) {
   const std::array<int64_t, 2> workloads = {1, 127};
   for (int64_t workload : workloads) {
     const std::array<uint32_t, kElementCount> zero_values = {};
+    IREE_ASSERT_OK(iree_hal_device_transfer_h2d(
+        device, zero_values.data(), intermediate_buffer, 0, kBufferByteLength,
+        IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT, iree_infinite_timeout()));
     IREE_ASSERT_OK(iree_hal_device_transfer_h2d(
         device, zero_values.data(), target_buffer, 0, kBufferByteLength,
         IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT, iree_infinite_timeout()));
@@ -513,8 +583,9 @@ TEST_F(CommandLifecycleTest, ReplaysOneCommandBufferWithEvaluatedWorkloads) {
         &launch_count_mapping, /*byte_offset=*/0, kLaunchCountByteLength));
 
     const iree_hal_buffer_binding_t bindings[] = {
-        /*source=*/{source_buffer, 0, kBufferByteLength},
-        /*target=*/{target_buffer, 0, kBufferByteLength},
+        /*source=*/{source_buffer, 0, IREE_HAL_WHOLE_BUFFER},
+        /*intermediate=*/{intermediate_buffer, 0, IREE_HAL_WHOLE_BUFFER},
+        /*target=*/{target_buffer, 0, IREE_HAL_WHOLE_BUFFER},
         /*launch_count=*/{launch_count_buffer, 0, kLaunchCountByteLength},
     };
     IREE_ASSERT_OK(SubmitAndWait(
@@ -527,7 +598,7 @@ TEST_F(CommandLifecycleTest, ReplaysOneCommandBufferWithEvaluatedWorkloads) {
         IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT, iree_infinite_timeout()));
     for (iree_host_size_t i = 0; i < actual.size(); ++i) {
       const uint32_t expected = i < static_cast<iree_host_size_t>(workload)
-                                    ? source_values[i] + 7
+                                    ? source_values[i] + 14
                                     : 0;
       EXPECT_EQ(actual[i], expected)
           << "element " << i << " at workload " << workload;
@@ -537,6 +608,7 @@ TEST_F(CommandLifecycleTest, ReplaysOneCommandBufferWithEvaluatedWorkloads) {
   IREE_ASSERT_OK(iree_hal_buffer_unmap_range(&launch_count_mapping));
   iree_hal_buffer_release(launch_count_buffer);
   iree_hal_buffer_release(target_buffer);
+  iree_hal_buffer_release(intermediate_buffer);
   iree_hal_buffer_release(source_buffer);
   iree_hal_command_buffer_release(command_buffer);
   iree_hal_device_group_release(device_group);
