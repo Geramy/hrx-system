@@ -154,7 +154,7 @@ loom_cmd_program_command_t loom_cmd_program_command_at(
       command.payload.dispatch_indirect.entry_index = operand_1;
       command.payload.dispatch_indirect.workgroup_count_buffer_ref = operand_2;
       break;
-    case LOOM_CMD_PROGRAM_COMMAND_KIND_EXECUTION_BARRIER:
+    case LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_EXECUTION:
       break;
   }
   return command;
@@ -443,7 +443,7 @@ static iree_status_t loom_cmd_program_validate_commands(
         IREE_RETURN_IF_ERROR(
             loom_cmd_program_validate_dispatch(program, i, &command));
         break;
-      case LOOM_CMD_PROGRAM_COMMAND_KIND_EXECUTION_BARRIER:
+      case LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_EXECUTION:
         if (!loom_cmd_program_slice_is_valid(command.argument_offset,
                                              command.argument_count, 0)) {
           return iree_make_status(

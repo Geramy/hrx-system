@@ -551,9 +551,9 @@ static iree_status_t loom_cmd_serialize_packet(
         build, op, LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_DYNAMIC);
   }
   if (loom_cmd_serialize_packet_is(build, packet,
-                                   CMD_CORE_DESCRIPTOR_REF_EXECUTION_BARRIER)) {
+                                   CMD_CORE_DESCRIPTOR_REF_BARRIER_EXECUTION)) {
     const loom_cmd_program_command_t command = {
-        .kind = LOOM_CMD_PROGRAM_COMMAND_KIND_EXECUTION_BARRIER,
+        .kind = LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_EXECUTION,
     };
     return loom_cmd_serialize_append_command(build, command);
   }
@@ -757,7 +757,7 @@ static void loom_cmd_serialize_write_commands(
         operands[2] =
             command.payload.dispatch_indirect.workgroup_count_buffer_ref;
         break;
-      case LOOM_CMD_PROGRAM_COMMAND_KIND_EXECUTION_BARRIER:
+      case LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_EXECUTION:
         break;
     }
     for (uint32_t operand_index = 0; operand_index < IREE_ARRAYSIZE(operands);

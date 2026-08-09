@@ -486,7 +486,7 @@ static iree_status_t loom_cmd_iree_hal_record_packet(
                                       /*argument_start=*/3);
   }
   if (loom_cmd_iree_hal_packet_is(workspace, packet,
-                                  CMD_CORE_DESCRIPTOR_REF_EXECUTION_BARRIER)) {
+                                  CMD_CORE_DESCRIPTOR_REF_BARRIER_EXECUTION)) {
     return loom_cmd_iree_hal_record_execution_barrier(
         workspace->command_buffer);
   }
@@ -695,7 +695,7 @@ static iree_status_t loom_cmd_iree_hal_record_program_command(
     case LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC:
     case LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_DYNAMIC:
       return loom_cmd_iree_hal_record_program_dispatch(workspace, command);
-    case LOOM_CMD_PROGRAM_COMMAND_KIND_EXECUTION_BARRIER:
+    case LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_EXECUTION:
       return loom_cmd_iree_hal_record_execution_barrier(
           workspace->command_buffer);
   }

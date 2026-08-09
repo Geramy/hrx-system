@@ -524,7 +524,7 @@ static iree_status_t loom_cmd_lower_build_barrier(loom_cmd_lower_state_t* state,
                                                   loom_location_id_t location) {
   loom_op_t* barrier_op = NULL;
   return loom_cmd_lower_build_descriptor_op(
-      state, CMD_CORE_DESCRIPTOR_REF_EXECUTION_BARRIER,
+      state, CMD_CORE_DESCRIPTOR_REF_BARRIER_EXECUTION,
       /*operands=*/NULL, /*operand_count=*/0, /*result_types=*/NULL,
       /*result_count=*/0, location, &barrier_op);
 }

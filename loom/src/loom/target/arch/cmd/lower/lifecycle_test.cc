@@ -537,7 +537,7 @@ TEST_F(CommandLifecycleTest,
   EXPECT_EQ(loom_cmd_program_command_at(&twice_program, 0).kind,
             LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
   EXPECT_EQ(loom_cmd_program_command_at(&twice_program, 1).kind,
-            LOOM_CMD_PROGRAM_COMMAND_KIND_EXECUTION_BARRIER);
+            LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_EXECUTION);
   EXPECT_EQ(loom_cmd_program_command_at(&twice_program, 2).kind,
             LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
 

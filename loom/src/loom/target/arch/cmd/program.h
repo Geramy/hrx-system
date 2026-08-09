@@ -80,7 +80,7 @@ typedef enum loom_cmd_program_command_kind_e {
   // Dispatch with indirect counts produced within the command program.
   LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_DYNAMIC = 5,
   // Order all earlier commands before all later commands.
-  LOOM_CMD_PROGRAM_COMMAND_KIND_EXECUTION_BARRIER = 6,
+  LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_EXECUTION = 6,
 } loom_cmd_program_command_kind_t;
 
 // One decoded portable command.

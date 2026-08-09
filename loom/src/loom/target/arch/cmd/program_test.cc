@@ -223,7 +223,7 @@ static std::vector<uint8_t> BuildValidProgram() {
                LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_DYNAMIC, 0, 3, 0,
                0, 1);
   StoreCommand(data, layout.command_offset, 5,
-               LOOM_CMD_PROGRAM_COMMAND_KIND_EXECUTION_BARRIER, 0, 0);
+               LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_EXECUTION, 0, 0);
   StoreParameterRoot(data, layout.parameter_root_offset, 0,
                      /*fixed_buffer_index=*/0, /*required_byte_length=*/512,
                      /*minimum_alignment=*/256);
@@ -378,7 +378,7 @@ TEST(CmdProgramTest, RelocatesDependencyIndices) {
   EXPECT_EQ(loom_cmd_program_command_at(&relocated_program, 0).kind,
             LOOM_CMD_PROGRAM_COMMAND_KIND_FILL);
   EXPECT_EQ(loom_cmd_program_command_at(&relocated_program, 5).kind,
-            LOOM_CMD_PROGRAM_COMMAND_KIND_EXECUTION_BARRIER);
+            LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_EXECUTION);
   EXPECT_TRUE(iree_string_view_equal(
       loom_cmd_program_parameter_at(&relocated_program, 1).key,
       IREE_SV("blk.3.weight")));

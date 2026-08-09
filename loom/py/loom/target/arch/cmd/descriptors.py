@@ -272,9 +272,9 @@ _COMMAND_DESCRIPTORS = (
     _dispatch_descriptor(indirect_mode="static"),
     _dispatch_descriptor(indirect_mode="dynamic"),
     Descriptor(
-        key="cmd.execution.barrier",
-        mnemonic="cmd.execution.barrier",
-        semantic_tag="command.execution_barrier",
+        key="cmd.barrier.execution",
+        mnemonic="cmd.barrier.execution",
+        semantic_tag="command.barrier.execution",
         operands=(),
         asm_forms=_asm(),
         effects=(_BARRIER_EFFECT,),
