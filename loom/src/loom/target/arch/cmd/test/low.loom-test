@@ -1,11 +1,9 @@
 // RUN: verify
 
-target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
-
 // A Q/K/V preparation wave follows one scratch initialization wave. The
 // executable and entry values are symbol-free ABI inputs, and the argument
 // lists preserve variable kernel arity without making low packets variadic.
-low.func.def target<cmd.core>(@command_target) abi(command_program) @qkv_two_wave() {
+low.func.def target<cmd.core> abi(command_program) @qkv_two_wave() {
   %parameters = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.buffer>
   %input = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
   %scratch = low.resource<command_input> {index = 1, source_type = buffer} : reg<cmd.binding>
@@ -58,9 +56,7 @@ low.func.def target<cmd.core>(@command_target) abi(command_program) @qkv_two_wav
 
 // ====
 
-target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
-
-low.func.def target<cmd.core>(@command_target) abi(command_program) @indirect_modes() {
+low.func.def target<cmd.core> abi(command_program) @indirect_modes() {
   %launch_counts = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
   %executable = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.executable>
   %entry = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.entry>

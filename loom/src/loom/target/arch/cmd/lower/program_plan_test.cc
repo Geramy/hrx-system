@@ -111,8 +111,6 @@ class CmdProgramPlanTest : public ::testing::Test {
 
 TEST_F(CmdProgramPlanTest, PreparesOwnedRootAndIndependentDependencies) {
   ModulePtr source_module = ParseAndVerify(R"(
-target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
-
 kernel.def @add_one(%element_count: index) {
   %one = index.constant 1 : index
   kernel.launch.config workgroups(%element_count, %one, %one) workgroup_size(%one, %one, %one) : index
@@ -143,7 +141,7 @@ kernel.def @add_two(%element_count: index) {
   kernel.return
 }
 
-command.program.def public target(@command_target) @pipeline(%element_count: index) launch(%source: buffer, %scratch: buffer, %intermediate: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+command.program.def public @pipeline(%element_count: index) launch(%source: buffer, %scratch: buffer, %intermediate: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
   kernel.launch @add_one[%element_count](%source, %intermediate, %scratch) : [index](buffer, buffer, buffer)
   kernel.launch @add_two[%element_count](%scratch, %target) : [index](buffer, buffer)
   command.return
@@ -237,8 +235,6 @@ command.program.def public target(@command_target) @pipeline(%element_count: ind
 
 TEST_F(CmdProgramPlanTest, PlacesParametersInFixedSourceRoots) {
   ModulePtr source_module = ParseAndVerify(R"(
-target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
-
 kernel.def @combine() {
   %one = index.constant 1 : index
   kernel.launch.config workgroups(%one, %one, %one) workgroup_size(%one, %one, %one) : index
@@ -253,7 +249,7 @@ kernel.def @combine() {
   kernel.return
 }
 
-command.program.def public target(@command_target) @parameterized() launch(%parameters: buffer, %target: buffer) {
+command.program.def public @parameterized() launch(%parameters: buffer, %target: buffer) {
   %layer = index.constant 3 : index
   %lhs = command.parameter %parameters, "blk.{}.lhs"[%layer] : view<3xi32, #dense>
   %rhs = command.parameter %parameters, "shared.rhs"[] : view<4xi32, #dense>
@@ -374,8 +370,6 @@ command.program.def public target(@command_target) @parameterized() launch(%para
 
 TEST_F(CmdProgramPlanTest, InternsEquivalentDependencySpecializations) {
   ModulePtr source_module = ParseAndVerify(R"(
-target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
-
 kernel.def @add_bias(%element_count: index) {
   %one = index.constant 1 : index
   kernel.launch.config workgroups(%element_count, %one, %one) workgroup_size(%one, %one, %one) : index
@@ -390,7 +384,7 @@ kernel.def @add_bias(%element_count: index) {
   kernel.return
 }
 
-command.program.def public target(@command_target) @pipeline(%element_count: index) launch(%source: buffer, %first: buffer, %second: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+command.program.def public @pipeline(%element_count: index) launch(%source: buffer, %first: buffer, %second: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
   %one_a = scalar.constant 1 : i32
   %one_b = scalar.constant 1 : i32
   %two = scalar.constant 2 : i32
@@ -462,8 +456,6 @@ command.program.def public target(@command_target) @pipeline(%element_count: ind
 
 TEST_F(CmdProgramPlanTest, PreparesMultipleRootsWithSharedDependencies) {
   ModulePtr source_module = ParseAndVerify(R"(
-target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
-
 kernel.def @increment(%element_count: index) {
   %one = index.constant 1 : index
   kernel.launch.config workgroups(%element_count, %one, %one) workgroup_size(%one, %one, %one) : index
@@ -494,13 +486,13 @@ kernel.def @double(%element_count: index) {
   kernel.return
 }
 
-command.program.def public target(@command_target) @increment_then_double(%element_count: index) launch(%source: buffer, %scratch: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+command.program.def public @increment_then_double(%element_count: index) launch(%source: buffer, %scratch: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
   kernel.launch @increment[%element_count](%source, %scratch) : [index](buffer, buffer)
   kernel.launch @double[%element_count](%scratch, %target) : [index](buffer, buffer)
   command.return
 }
 
-command.program.def public target(@command_target) @increment_twice(%element_count: index) launch(%source: buffer, %scratch: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+command.program.def public @increment_twice(%element_count: index) launch(%source: buffer, %scratch: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
   kernel.launch @increment[%element_count](%source, %scratch) : [index](buffer, buffer)
   kernel.launch @increment[%element_count](%scratch, %target) : [index](buffer, buffer)
   command.return
@@ -609,8 +601,6 @@ command.program.def public target(@command_target) @increment_twice(%element_cou
 
 TEST_F(CmdProgramPlanTest, FlattensNestedProgramsAcrossSelectedRoots) {
   ModulePtr source_module = ParseAndVerify(R"(
-target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
-
 kernel.def @copy_one() {
   %one = index.constant 1 : index
   kernel.launch.config workgroups(%one, %one, %one) workgroup_size(%one, %one, %one) : index
@@ -624,18 +614,18 @@ kernel.def @copy_one() {
   kernel.return
 }
 
-command.program.def target(@command_target) @copy_stage() launch(%source: buffer, %target: buffer) {
+command.program.def @copy_stage() launch(%source: buffer, %target: buffer) {
   kernel.launch @copy_one[](%source, %target) : [](buffer, buffer)
   command.return
 }
 
-command.program.def public target(@command_target) @copy_twice() launch(%source: buffer, %scratch: buffer, %target: buffer) {
+command.program.def public @copy_twice() launch(%source: buffer, %scratch: buffer, %target: buffer) {
   command.program.launch @copy_stage[](%source, %scratch) : [](buffer, buffer)
   command.program.launch @copy_stage[](%scratch, %target) : [](buffer, buffer)
   command.return
 }
 
-command.program.def public target(@command_target) @copy_once() launch(%source: buffer, %target: buffer) {
+command.program.def public @copy_once() launch(%source: buffer, %target: buffer) {
   command.program.launch @copy_stage[](%source, %target) : [](buffer, buffer)
   command.return
 }
@@ -731,9 +721,7 @@ command.program.def public target(@command_target) @copy_once() launch(%source: 
 
 TEST_F(CmdProgramPlanTest, RejectsRecursiveProgramComposition) {
   ModulePtr source_module = ParseAndVerify(R"(
-target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
-
-command.program.def public target(@command_target) @recursive() launch() {
+command.program.def public @recursive() launch() {
   command.program.launch @recursive[]() : []()
   command.return
 }

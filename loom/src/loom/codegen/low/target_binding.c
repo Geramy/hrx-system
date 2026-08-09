@@ -309,6 +309,32 @@ iree_status_t loom_low_resolve_function_target(
                             "low.func.decl");
   }
 
+  // Command programs are portable command-machine artifacts. Their explicit
+  // representation contract selects the descriptor set, while their ABI
+  // defines the materialization interface; no hardware target participates in
+  // either decision.
+  const loom_func_like_t low_func =
+      loom_func_like_cast(module, (loom_op_t*)low_func_op);
+  if (effective_target_facts == NULL && !loom_symbol_ref_is_valid(target_ref) &&
+      loom_func_like_abi(low_func) == LOOM_TARGET_ABI_COMMAND_PROGRAM) {
+    if (registry == NULL) {
+      return iree_make_status(
+          IREE_STATUS_FAILED_PRECONDITION,
+          "low function target resolution requires a descriptor registry");
+    }
+    out_target->descriptor_set_key = loom_low_string_or_empty(
+        module, loom_func_like_repr_contract(low_func));
+    out_target->descriptor_set = loom_low_descriptor_registry_lookup(
+        registry, out_target->descriptor_set_key);
+    if (!out_target->descriptor_set) {
+      return loom_low_emit_missing_descriptor_set(
+          emitter, module, low_func_op,
+          low_func.vtable->repr_contract_attr_index,
+          out_target->descriptor_set_key);
+    }
+    return iree_ok_status();
+  }
+
   if (effective_target_facts != NULL) {
     out_target->target_name =
         loom_target_facts_identity_name(effective_target_facts);

@@ -90,8 +90,6 @@ class CmdTransientsTest : public ::testing::Test {
 
 TEST_F(CmdTransientsTest, AliasesDisjointWavesAndSeparatesConcurrentWaves) {
   ModulePtr source_module = ParseAndVerify(R"(
-target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
-
 kernel.def @copy_one() {
   %one = index.constant 1 : index
   kernel.launch.config workgroups(%one, %one, %one) workgroup_size(%one, %one, %one) : index
@@ -124,7 +122,7 @@ kernel.def @sum_three() {
   kernel.return
 }
 
-command.program.def public target(@command_target) @attention_wave() launch(%source: buffer, %target: buffer) {
+command.program.def public @attention_wave() launch(%source: buffer, %target: buffer) {
   %branch_bytes = index.constant 64 : offset
   %post_bytes = index.constant 256 : offset
   %unused_bytes = index.constant 4096 : offset

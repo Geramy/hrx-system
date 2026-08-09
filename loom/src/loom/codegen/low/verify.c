@@ -1275,6 +1275,7 @@ static iree_status_t loom_low_verify_workgroup_storage_limit(
     loom_low_function_verify_state_t* function_state) {
   const loom_target_bundle_t* bundle =
       loom_low_resolved_target_bundle(function_state->target);
+  if (!bundle) return iree_ok_status();
   const uint64_t limit = bundle->snapshot->max_workgroup_storage_bytes;
   if (limit == 0 || function_state->body == NULL ||
       loom_low_verify_should_stop(function_state->state)) {

@@ -61,8 +61,6 @@ using TargetProfilePtr =
 using WorkspacePtr = HandlePtr<loomc_workspace_t, loomc_workspace_release>;
 
 static constexpr char kSourceText[] = R"(
-target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
-
 kernel.def @add_seven(%element_count: index) {
   %one = index.constant 1 : index
   %bounded_count = index.assume %element_count [range(%element_count, 1, 128)] : index
@@ -79,13 +77,13 @@ kernel.def @add_seven(%element_count: index) {
   kernel.return
 }
 
-command.program.def public target(@command_target) @add_seven_once(%element_count: index) launch(%parameters: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+command.program.def public @add_seven_once(%element_count: index) launch(%parameters: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
   %source = command.parameter %parameters, "source_values"[] : view<128xi32, #dense>
   kernel.launch @add_seven[%element_count](%source, %target) : [index](view<128xi32, #dense>, buffer)
   command.return
 }
 
-command.program.def public target(@command_target) @add_seven_twice(%element_count: index) launch(%parameters: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+command.program.def public @add_seven_twice(%element_count: index) launch(%parameters: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
   %source = command.parameter %parameters, "source_values"[] : view<128xi32, #dense>
   %intermediate_byte_length = index.constant 512 : offset
   %intermediate = buffer.alloca %intermediate_byte_length {base_alignment = 256, memory_space = global} : buffer

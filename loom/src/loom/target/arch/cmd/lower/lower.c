@@ -572,10 +572,6 @@ static iree_status_t loom_cmd_lower_create_function(
   IREE_ASSERT(loom_symbol_ref_is_valid(callee));
   IREE_ASSERT_EQ(callee.module_id, 0u);
   IREE_ASSERT_LT(callee.symbol_id, state->module->symbols.count);
-  IREE_ASSERT(loom_symbol_ref_is_valid(state->plan->command_target));
-  IREE_ASSERT_EQ(state->plan->command_target.module_id, 0u);
-  IREE_ASSERT_LT(state->plan->command_target.symbol_id,
-                 state->module->symbols.count);
 
   loom_string_id_t descriptor_set_key = LOOM_STRING_ID_INVALID;
   IREE_RETURN_IF_ERROR(loom_module_intern_string(
@@ -585,7 +581,6 @@ static iree_status_t loom_cmd_lower_create_function(
       &descriptor_set_key));
 
   loom_low_func_def_build_flags_t build_flags =
-      LOOM_LOW_FUNC_DEF_BUILD_FLAG_HAS_TARGET |
       LOOM_LOW_FUNC_DEF_BUILD_FLAG_HAS_ABI;
   uint8_t visibility = 0;
   if (loom_func_like_visibility(state->source_program) != 0) {
@@ -605,7 +600,7 @@ static iree_status_t loom_cmd_lower_create_function(
   IREE_RETURN_IF_ERROR(loom_low_func_def_build(
       &state->builder, build_flags, visibility, retain,
       /*cc=*/0, /*purity=*/0, /*allocation=*/0, /*schedule=*/0,
-      descriptor_set_key, state->plan->command_target,
+      descriptor_set_key, loom_symbol_ref_null(),
       LOOM_TARGET_ABI_COMMAND_PROGRAM, loom_named_attr_slice_empty(),
       loom_named_attr_slice_empty(), LOOM_STRING_ID_INVALID,
       loom_named_attr_slice_empty(), callee,
@@ -652,10 +647,6 @@ iree_status_t loom_cmd_lower_program_to_low(loom_module_t* module,
   IREE_ASSERT(plan->binding_count == 0 || plan->bindings != NULL);
   IREE_ASSERT(plan->buffer_range_count == 0 || plan->buffer_ranges != NULL);
   IREE_ASSERT(plan->launch_graph != NULL);
-  IREE_ASSERT(loom_symbol_ref_is_valid(plan->command_target));
-  IREE_ASSERT_EQ(plan->command_target.module_id, 0u);
-  IREE_ASSERT_LT(plan->command_target.symbol_id, module->symbols.count);
-
   iree_arena_allocator_t scratch_arena;
   iree_arena_initialize(module->arena.block_pool, &scratch_arena);
   iree_status_t status = iree_ok_status();

@@ -79,11 +79,11 @@ typedef struct loom_cmd_program_plan_t {
   iree_allocator_t host_allocator;
 } loom_cmd_program_plan_t;
 
-// Prepares targeted command-program roots for independent compilation.
+// Prepares command-program roots for independent compilation.
 //
 // |source_program_ops| must contain unique linked module-boundary
-// command.program.def operations with selected targets. Preparation selectively
-// links their union dependency closure into one module, interns equivalent
+// command.program.def operations. Preparation selectively links their union
+// dependency closure into one module, interns equivalent
 // launch sites across roots into private dependency units, materializes one
 // launch-count program per root, assigns plan-wide dense dependency slots, and
 // lowers every command root. The source module is unchanged and need not

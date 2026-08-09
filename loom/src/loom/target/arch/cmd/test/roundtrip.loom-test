@@ -1,8 +1,6 @@
 // RUN: roundtrip
 
-target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
-
-low.func.def target<cmd.core>(@command_target) abi(command_program) @one_dispatch() {
+low.func.def target<cmd.core> abi(command_program) @one_dispatch() {
   %parameters = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.buffer>
   %output = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
   %executable = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.executable>

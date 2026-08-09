@@ -242,8 +242,6 @@ class CommandLifecycleTest : public ::testing::Test {
 
   void CompileProgram(ProgramPtr* out_program) {
     static const char kSource[] = R"(
-target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
-
 kernel.def @increment(%element_count: index) {
   %one = index.constant 1 : index
   kernel.launch.config workgroups(%element_count, %one, %one) workgroup_size(%one, %one, %one) : index
@@ -259,17 +257,17 @@ kernel.def @increment(%element_count: index) {
   kernel.return
 }
 
-command.program.def target(@command_target) @increment_stage(%element_count: index) launch(%source: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+command.program.def @increment_stage(%element_count: index) launch(%source: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
   kernel.launch @increment[%element_count](%source, %target) : [index](buffer, buffer)
   command.return
 }
 
-command.program.def public target(@command_target) @increment_once(%element_count: index) launch(%source: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+command.program.def public @increment_once(%element_count: index) launch(%source: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
   command.program.launch @increment_stage[%element_count](%source, %target) : [index](buffer, buffer)
   command.return
 }
 
-command.program.def public target(@command_target) @increment_twice(%element_count: index) launch(%source: buffer, %intermediate: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
+command.program.def public @increment_twice(%element_count: index) launch(%source: buffer, %intermediate: buffer, %target: buffer) where [range(%element_count, 1, 128)] {
   command.program.launch @increment_stage[%element_count](%source, %intermediate) : [index](buffer, buffer)
   command.program.launch @increment_stage[%element_count](%intermediate, %target) : [index](buffer, buffer)
   command.return

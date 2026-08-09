@@ -255,7 +255,6 @@ static iree_status_t loom_cmd_program_plan_build_lower_plan(
   const bool has_transient =
       transient_layout.requirement.binding_index != UINT32_MAX;
   *out_lower_plan = (loom_cmd_lower_plan_t){
-      .command_target = loom_func_like_target(root_program),
       .bindings = bindings,
       .binding_count = binding_count,
       .buffer_ranges = buffer_ranges,
@@ -352,13 +351,6 @@ iree_status_t loom_cmd_program_plan_prepare(
         loom_cmd_program_plan_find_symbol(preparation_module, root->name);
     root->program = loom_func_like_cast(preparation_module, root->program_op);
     IREE_ASSERT(loom_func_like_isa(root->program));
-    if (!loom_symbol_ref_is_valid(loom_func_like_target(root->program))) {
-      status = iree_make_status(
-          IREE_STATUS_FAILED_PRECONDITION,
-          "command root `%.*s` must have a selected target before preparation",
-          (int)root->name.size, root->name.data);
-      break;
-    }
     root_programs[i] = root->program;
   }
   if (iree_status_is_ok(status)) {

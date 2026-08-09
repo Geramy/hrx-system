@@ -78,8 +78,6 @@ typedef struct loom_cmd_lower_launch_count_binding_t {
 // Conversion preserves these facts; it does not rediscover kernel identity,
 // launch arithmetic, or command ordering from the source module.
 typedef struct loom_cmd_lower_plan_t {
-  // Derived cmd.core target referenced by the resulting low function.
-  loom_symbol_ref_t command_target;
   // Source launch-binding rows in command-program signature order.
   const loom_cmd_lower_binding_t* bindings;
   // Number of source launch-binding rows, excluding specialization arguments.
@@ -104,8 +102,9 @@ typedef struct loom_cmd_lower_plan_t {
   const loom_cmd_lower_launch_t* launches;
 } loom_cmd_lower_plan_t;
 
-// Replaces one specialized command.program.def with a zero-signature
-// command_program low.func.def using the cmd.core representation contract.
+// Replaces one specialized command.program.def with a targetless,
+// zero-signature command_program low.func.def using the cmd.core
+// representation contract.
 //
 // The first issue-time slice accepts buffer roots and explicitly resolved view
 // ranges plus workgroup counts classified by |plan->launch_graph|. Exact

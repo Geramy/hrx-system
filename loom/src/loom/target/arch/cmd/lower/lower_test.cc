@@ -248,18 +248,6 @@ class CmdLowerTest : public ::testing::Test {
     return module->symbols.entries[symbol_id].defining_op;
   }
 
-  loom_symbol_ref_t FindSymbolRef(loom_module_t* module,
-                                  iree_string_view_t name) {
-    const loom_string_id_t name_id = loom_module_lookup_string(module, name);
-    IREE_ASSERT_NE(name_id, LOOM_STRING_ID_INVALID);
-    const loom_symbol_id_t symbol_id = loom_module_find_symbol(module, name_id);
-    IREE_ASSERT_NE(symbol_id, LOOM_SYMBOL_ID_INVALID);
-    return loom_symbol_ref_t{
-        /*.module_id=*/0,
-        /*.symbol_id=*/symbol_id,
-    };
-  }
-
   ModulePtr ReadAndVerifyModule(const std::vector<uint8_t>& bytes) {
     loom_bytecode_read_options_t options = {};
     options.verify_module = true;
@@ -284,8 +272,6 @@ class CmdLowerTest : public ::testing::Test {
 
 TEST_F(CmdLowerTest, LowersAndRecordsPrepareThenConcurrentQkv) {
   ModulePtr module = ParseAndVerifySource(R"(
-target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
-
 kernel.def @prepare() {
   %sixteen = index.constant 16 : index
   %one = index.constant 1 : index
@@ -396,8 +382,6 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
        projection_argument_ordinals.data()},
   }};
   const loom_cmd_lower_plan_t plan = {
-      /*.command_target=*/FindSymbolRef(module.get(),
-                                        IREE_SV("command_target")),
       /*.bindings=*/binding_plan.data(),
       /*.binding_count=*/binding_plan.size(),
       /*.buffer_ranges=*/&buffer_range,
@@ -619,8 +603,6 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
 
 TEST_F(CmdLowerTest, RejectsUnsupportedKernelArgumentWithoutMutation) {
   ModulePtr module = ParseAndVerifySource(R"(
-target.generic<reference> @command_target {abi = command_program, contract_set_key = "cmd.core"}
-
 kernel.def @unsupported() {
   %one = index.constant 1 : index
   kernel.launch.config workgroups(%one, %one, %one) workgroup_size(%one, %one, %one) : index
@@ -658,8 +640,6 @@ command.program.def @residual(%value: index) launch() {
       /*.source_argument_ordinals=*/&source_argument_ordinal,
   };
   const loom_cmd_lower_plan_t plan = {
-      /*.command_target=*/FindSymbolRef(module.get(),
-                                        IREE_SV("command_target")),
       /*.bindings=*/nullptr,
       /*.binding_count=*/0,
       /*.buffer_ranges=*/nullptr,
