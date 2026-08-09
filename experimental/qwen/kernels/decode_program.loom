@@ -4,8 +4,6 @@
 // fully unrolls the layer loop and folds the storage predicates before command
 // planning, leaving one exact parameter placement and dispatch schedule.
 
-target.generic<reference> @qwen_command_target {abi = command_program, contract_set_key = "cmd.core"}
-
 config.def @qwen3_moe.workload.token_capacity = 1 : index
 config.def @qwen.attention.metadata_context_capacity = 576 : index
 config.def @qwen3_moe.model.hidden_size = 2048 : index
@@ -20,6 +18,7 @@ config.def @qwen3_moe.dense_quantized.input_size = 4096 : index
 config.def @qwen3_moe.dense_quantized.output_size = 2048 : index
 config.def @qwen3_moe.dense_quantized.output_accumulation = 1 : index
 config.def @qwen3_moe.router.expert_count = 128 : index
+config.def @qwen3_moe.router.route_count = 8 : index
 config.def @qwen3_moe.routed_gate_up.input_size = 2048 : index
 config.def @qwen3_moe.routed_gate_up.output_size = 768 : index
 config.def @qwen3_moe.routed_gate_up.route_count = 8 : index
@@ -59,7 +58,7 @@ kernel.decl @ggml_linear_q6k_q8_1_x4_partial_argmax(%token_count: index, %input_
 
 kernel.decl @qwen_greedy_argmax_partials(%partial_count: index, %context_increment: index) launch(%partial_count: index, %context_increment: index, %partial_logits: buffer, %partial_ids: buffer, %next_token_id: buffer, %next_control: buffer, %observed_token_id: buffer)
 
-command.program.def public target(@qwen_command_target) @qwen3_30b_decode_576() launch(%parameters: buffer, %auxiliary_parameters: buffer, %key_cache: buffer, %value_cache: buffer, %request_state: buffer, %output_staging: buffer) {
+command.program.def public @qwen3_30b_decode_576() launch(%parameters: buffer, %auxiliary_parameters: buffer, %key_cache: buffer, %value_cache: buffer, %request_state: buffer, %output_staging: buffer) {
   %zero = index.constant 0 : offset
   %token_count = index.constant 1 : index
   %context_count = index.constant 576 : index
