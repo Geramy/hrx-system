@@ -42,20 +42,7 @@ typedef enum loom_cmd_serialize_value_kind_e {
   LOOM_CMD_SERIALIZE_VALUE_KIND_ENTRY = 6,
   // Serialized buffer-reference table index.
   LOOM_CMD_SERIALIZE_VALUE_KIND_BUFFER_REF = 7,
-  // Immutable logical argument-list node.
-  LOOM_CMD_SERIALIZE_VALUE_KIND_ARGUMENTS = 8,
 } loom_cmd_serialize_value_kind_t;
-
-typedef struct loom_cmd_serialize_argument_node_t {
-  // Parent argument-list SSA value, or LOOM_VALUE_ID_INVALID at the root.
-  loom_value_id_t parent;
-  // Appended scalar or buffer-reference SSA value.
-  loom_value_id_t value;
-  // Number of logical arguments through this node.
-  uint32_t count;
-  // Serialized interpretation of |value|.
-  loom_cmd_program_argument_kind_t kind;
-} loom_cmd_serialize_argument_node_t;
 
 typedef struct loom_cmd_serialize_value_t {
   // Active payload kind.
@@ -66,8 +53,6 @@ typedef struct loom_cmd_serialize_value_t {
     uint64_t scalar;
     // Dense resource or serialized table index.
     uint32_t index;
-    // Immutable argument-list node.
-    loom_cmd_serialize_argument_node_t arguments;
   } payload;
 } loom_cmd_serialize_value_t;
 
@@ -335,50 +320,44 @@ static iree_status_t loom_cmd_serialize_buffer_ref(
                                               &result->payload.index);
 }
 
-static void loom_cmd_serialize_empty_arguments(
-    loom_cmd_serialize_build_t* build, const loom_op_t* op) {
-  loom_cmd_serialize_value_t* result =
-      loom_cmd_serialize_result(build, loom_low_op_results(op).values[0]);
-  result->kind = LOOM_CMD_SERIALIZE_VALUE_KIND_ARGUMENTS;
-  result->payload.arguments = (loom_cmd_serialize_argument_node_t){
-      .parent = LOOM_VALUE_ID_INVALID,
-      .value = LOOM_VALUE_ID_INVALID,
-      .count = 0,
-      .kind = 0,
-  };
-}
-
-static void loom_cmd_serialize_append_argument(
-    loom_cmd_serialize_build_t* build, const loom_op_t* op,
-    loom_cmd_program_argument_kind_t kind,
-    loom_cmd_serialize_value_kind_t expected_value_kind) {
-  const loom_value_slice_t operands = loom_low_op_operands(op);
-  const loom_cmd_serialize_value_t* parent =
-      loom_cmd_serialize_operand(build, operands.values[0]);
+static void loom_cmd_serialize_argument(
+    const loom_cmd_serialize_build_t* build, loom_value_id_t value_id,
+    loom_cmd_program_argument_t* out_argument) {
   const loom_cmd_serialize_value_t* value =
-      loom_cmd_serialize_operand(build, operands.values[1]);
-  IREE_ASSERT_EQ(parent->kind, LOOM_CMD_SERIALIZE_VALUE_KIND_ARGUMENTS);
-  IREE_ASSERT_EQ(value->kind, expected_value_kind);
-  loom_cmd_serialize_value_t* result =
-      loom_cmd_serialize_result(build, loom_low_op_results(op).values[0]);
-  result->kind = LOOM_CMD_SERIALIZE_VALUE_KIND_ARGUMENTS;
-  result->payload.arguments = (loom_cmd_serialize_argument_node_t){
-      .parent = operands.values[0],
-      .value = operands.values[1],
-      .count = parent->payload.arguments.count + 1,
-      .kind = kind,
-  };
+      loom_cmd_serialize_operand(build, value_id);
+  switch (value->kind) {
+    case LOOM_CMD_SERIALIZE_VALUE_KIND_U32:
+      *out_argument = (loom_cmd_program_argument_t){
+          .kind = LOOM_CMD_PROGRAM_ARGUMENT_KIND_U32,
+          .payload = (uint32_t)value->payload.scalar,
+      };
+      return;
+    case LOOM_CMD_SERIALIZE_VALUE_KIND_U64:
+      *out_argument = (loom_cmd_program_argument_t){
+          .kind = LOOM_CMD_PROGRAM_ARGUMENT_KIND_U64,
+          .payload = value->payload.scalar,
+      };
+      return;
+    case LOOM_CMD_SERIALIZE_VALUE_KIND_BUFFER_REF:
+      *out_argument = (loom_cmd_program_argument_t){
+          .kind = LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF,
+          .payload = value->payload.index,
+      };
+      return;
+    default:
+      IREE_ASSERT_UNREACHABLE("verified cmd dispatch argument kind");
+      return;
+  }
 }
 
 static iree_status_t loom_cmd_serialize_flatten_arguments(
-    loom_cmd_serialize_build_t* build, loom_value_id_t arguments_id,
-    uint32_t* out_argument_offset, uint32_t* out_argument_count) {
+    loom_cmd_serialize_build_t* build, loom_value_slice_t operands,
+    uint16_t argument_start, uint32_t* out_argument_offset,
+    uint32_t* out_argument_count) {
   *out_argument_offset = 0;
   *out_argument_count = 0;
-  const loom_cmd_serialize_value_t* arguments =
-      loom_cmd_serialize_operand(build, arguments_id);
-  IREE_ASSERT_EQ(arguments->kind, LOOM_CMD_SERIALIZE_VALUE_KIND_ARGUMENTS);
-  const uint32_t argument_count = arguments->payload.arguments.count;
+  IREE_ASSERT_LE(argument_start, operands.count);
+  const uint32_t argument_count = operands.count - argument_start;
   if (argument_count == 0) return iree_ok_status();
   if (build->arguments.count > UINT32_MAX - argument_count) {
     return iree_make_status(
@@ -389,35 +368,10 @@ static iree_status_t loom_cmd_serialize_flatten_arguments(
       loom_cmd_serialize_reserve_arguments(build, argument_count));
   const uint32_t argument_offset = (uint32_t)build->arguments.count;
   build->arguments.count += argument_count;
-
-  loom_value_id_t node_id = arguments_id;
-  for (uint32_t i = argument_count; i > 0; --i) {
-    const loom_cmd_serialize_value_t* node =
-        loom_cmd_serialize_operand(build, node_id);
-    IREE_ASSERT_EQ(node->kind, LOOM_CMD_SERIALIZE_VALUE_KIND_ARGUMENTS);
-    const loom_cmd_serialize_value_t* value =
-        loom_cmd_serialize_operand(build, node->payload.arguments.value);
-    loom_cmd_program_argument_t* target =
-        &build->arguments.values[argument_offset + i - 1];
-    target->kind = node->payload.arguments.kind;
-    if (target->kind == LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF) {
-      IREE_ASSERT_EQ(value->kind, LOOM_CMD_SERIALIZE_VALUE_KIND_BUFFER_REF);
-      target->payload = value->payload.index;
-    } else if (target->kind == LOOM_CMD_PROGRAM_ARGUMENT_KIND_U32) {
-      IREE_ASSERT_EQ(value->kind, LOOM_CMD_SERIALIZE_VALUE_KIND_U32);
-      target->payload = (uint32_t)value->payload.scalar;
-    } else {
-      IREE_ASSERT_EQ(target->kind, LOOM_CMD_PROGRAM_ARGUMENT_KIND_U64);
-      IREE_ASSERT_EQ(value->kind, LOOM_CMD_SERIALIZE_VALUE_KIND_U64);
-      target->payload = value->payload.scalar;
-    }
-    node_id = node->payload.arguments.parent;
+  for (uint32_t i = 0; i < argument_count; ++i) {
+    loom_cmd_serialize_argument(build, operands.values[argument_start + i],
+                                &build->arguments.values[argument_offset + i]);
   }
-  const loom_cmd_serialize_value_t* root =
-      loom_cmd_serialize_operand(build, node_id);
-  IREE_ASSERT_EQ(root->kind, LOOM_CMD_SERIALIZE_VALUE_KIND_ARGUMENTS);
-  IREE_ASSERT_EQ(root->payload.arguments.count, 0u);
-  IREE_ASSERT_EQ(root->payload.arguments.parent, LOOM_VALUE_ID_INVALID);
   *out_argument_offset = argument_offset;
   *out_argument_count = argument_count;
   return iree_ok_status();
@@ -480,7 +434,7 @@ static iree_status_t loom_cmd_serialize_dispatch(
   loom_cmd_program_command_t command = {
       .kind = kind,
   };
-  loom_value_id_t arguments_id = LOOM_VALUE_ID_INVALID;
+  uint16_t argument_start = 0;
   if (kind == LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT) {
     const loom_cmd_serialize_value_t* workgroup_count_x =
         loom_cmd_serialize_operand(build, operands.values[2]);
@@ -500,7 +454,7 @@ static iree_status_t loom_cmd_serialize_dispatch(
         (uint32_t)workgroup_count_y->payload.scalar;
     command.payload.dispatch_direct.workgroup_count_z =
         (uint32_t)workgroup_count_z->payload.scalar;
-    arguments_id = operands.values[5];
+    argument_start = 5;
   } else {
     const loom_cmd_serialize_value_t* workgroup_count =
         loom_cmd_serialize_operand(build, operands.values[2]);
@@ -539,10 +493,11 @@ static iree_status_t loom_cmd_serialize_dispatch(
       requirement->minimum_alignment =
           LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_ALIGNMENT;
     }
-    arguments_id = operands.values[3];
+    argument_start = 3;
   }
   IREE_RETURN_IF_ERROR(loom_cmd_serialize_flatten_arguments(
-      build, arguments_id, &command.argument_offset, &command.argument_count));
+      build, operands, argument_start, &command.argument_offset,
+      &command.argument_count));
   return loom_cmd_serialize_append_command(build, command);
 }
 
@@ -571,32 +526,6 @@ static iree_status_t loom_cmd_serialize_packet(
     return loom_cmd_serialize_buffer_ref(
         build, op, LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE,
         LOOM_CMD_SERIALIZE_VALUE_KIND_BINDING);
-  }
-  if (loom_cmd_serialize_packet_is(build, packet,
-                                   CMD_CORE_DESCRIPTOR_REF_ARGUMENTS_EMPTY)) {
-    loom_cmd_serialize_empty_arguments(build, op);
-    return iree_ok_status();
-  }
-  if (loom_cmd_serialize_packet_is(
-          build, packet, CMD_CORE_DESCRIPTOR_REF_ARGUMENTS_APPEND_U32)) {
-    loom_cmd_serialize_append_argument(build, op,
-                                       LOOM_CMD_PROGRAM_ARGUMENT_KIND_U32,
-                                       LOOM_CMD_SERIALIZE_VALUE_KIND_U32);
-    return iree_ok_status();
-  }
-  if (loom_cmd_serialize_packet_is(
-          build, packet, CMD_CORE_DESCRIPTOR_REF_ARGUMENTS_APPEND_U64)) {
-    loom_cmd_serialize_append_argument(build, op,
-                                       LOOM_CMD_PROGRAM_ARGUMENT_KIND_U64,
-                                       LOOM_CMD_SERIALIZE_VALUE_KIND_U64);
-    return iree_ok_status();
-  }
-  if (loom_cmd_serialize_packet_is(
-          build, packet, CMD_CORE_DESCRIPTOR_REF_ARGUMENTS_APPEND_BUFFER_REF)) {
-    loom_cmd_serialize_append_argument(
-        build, op, LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF,
-        LOOM_CMD_SERIALIZE_VALUE_KIND_BUFFER_REF);
-    return iree_ok_status();
   }
   if (loom_cmd_serialize_packet_is(build, packet,
                                    CMD_CORE_DESCRIPTOR_REF_FILL)) {

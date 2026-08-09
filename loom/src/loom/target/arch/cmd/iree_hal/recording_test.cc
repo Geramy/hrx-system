@@ -386,21 +386,9 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 3, 
   %value_output_ref = low.op<cmd.buffer.ref.binding>(%value_output, %zero_u64, %buffer_length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
   low.op<cmd.fill>(%scratch_ref, %zero_u32, %one_u32) : (reg<cmd.buffer_ref>, reg<cmd.u32>, reg<cmd.u32>)
   low.op<cmd.execution.barrier>() : ()
-  %query_args0 = low.op<cmd.arguments.empty>() : () -> reg<cmd.arguments>
-  %query_args1 = low.op<cmd.arguments.append.buffer_ref>(%query_args0, %parameters_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  %query_args2 = low.op<cmd.arguments.append.buffer_ref>(%query_args1, %input_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  %query_args3 = low.op<cmd.arguments.append.buffer_ref>(%query_args2, %query_output_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  low.op<cmd.dispatch.direct>(%query_executable, %query_entry, %workgroup_count_x, %one_u32, %one_u32, %query_args3) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.arguments>)
-  %key_args0 = low.op<cmd.arguments.empty>() : () -> reg<cmd.arguments>
-  %key_args1 = low.op<cmd.arguments.append.buffer_ref>(%key_args0, %parameters_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  %key_args2 = low.op<cmd.arguments.append.buffer_ref>(%key_args1, %input_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  %key_args3 = low.op<cmd.arguments.append.buffer_ref>(%key_args2, %key_output_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  low.op<cmd.dispatch.direct>(%key_executable, %key_entry, %workgroup_count_x, %one_u32, %one_u32, %key_args3) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.arguments>)
-  %value_args0 = low.op<cmd.arguments.empty>() : () -> reg<cmd.arguments>
-  %value_args1 = low.op<cmd.arguments.append.buffer_ref>(%value_args0, %parameters_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  %value_args2 = low.op<cmd.arguments.append.buffer_ref>(%value_args1, %input_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  %value_args3 = low.op<cmd.arguments.append.buffer_ref>(%value_args2, %value_output_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  low.op<cmd.dispatch.direct>(%value_executable, %value_entry, %workgroup_count_x, %one_u32, %one_u32, %value_args3) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.arguments>)
+  low.op<cmd.dispatch.direct>(%query_executable, %query_entry, %workgroup_count_x, %one_u32, %one_u32, %parameters_ref, %input_ref, %query_output_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>)
+  low.op<cmd.dispatch.direct>(%key_executable, %key_entry, %workgroup_count_x, %one_u32, %one_u32, %parameters_ref, %input_ref, %key_output_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>)
+  low.op<cmd.dispatch.direct>(%value_executable, %value_entry, %workgroup_count_x, %one_u32, %one_u32, %parameters_ref, %input_ref, %value_output_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>)
   low.op<cmd.execution.barrier>() : ()
   low.return
 }
@@ -493,11 +481,7 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, 
   %zero = low.const<cmd.constant.u64> {value = 0} : reg<cmd.u64>
   %length = low.const<cmd.constant.u64> {value = 64} : reg<cmd.u64>
   %buffer_ref = low.op<cmd.buffer.ref.binding>(%buffer, %zero, %length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
-  %args0 = low.op<cmd.arguments.empty>() : () -> reg<cmd.arguments>
-  %args1 = low.op<cmd.arguments.append.u32>(%args0, %u32) : (reg<cmd.arguments>, reg<cmd.u32>) -> reg<cmd.arguments>
-  %args2 = low.op<cmd.arguments.append.buffer_ref>(%args1, %buffer_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  %args3 = low.op<cmd.arguments.append.u64>(%args2, %u64) : (reg<cmd.arguments>, reg<cmd.u64>) -> reg<cmd.arguments>
-  low.op<cmd.dispatch.direct>(%executable, %entry, %one, %one, %one, %args3) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.arguments>)
+  low.op<cmd.dispatch.direct>(%executable, %entry, %one, %one, %one, %u32, %buffer_ref, %u64) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer_ref>, reg<cmd.u64>)
   low.return
 }
 )");
@@ -578,11 +562,7 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, 
   %length = low.const<cmd.constant.u64> {value = 16} : reg<cmd.u64>
   %source_ref = low.op<cmd.buffer.ref.binding>(%source, %zero, %length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
   %target_ref = low.op<cmd.buffer.ref.binding>(%target, %zero, %length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
-  %args0 = low.op<cmd.arguments.empty>() : () -> reg<cmd.arguments>
-  %args1 = low.op<cmd.arguments.append.u32>(%args0, %addend) : (reg<cmd.arguments>, reg<cmd.u32>) -> reg<cmd.arguments>
-  %args2 = low.op<cmd.arguments.append.buffer_ref>(%args1, %source_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  %args3 = low.op<cmd.arguments.append.buffer_ref>(%args2, %target_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  low.op<cmd.dispatch.direct>(%executable, %entry, %workgroup_count, %one, %one, %args3) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.arguments>)
+  low.op<cmd.dispatch.direct>(%executable, %entry, %workgroup_count, %one, %one, %addend, %source_ref, %target_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>)
   low.return
 }
 )");
@@ -673,10 +653,9 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, 
   %zero = low.const<cmd.constant.u64> {value = 0} : reg<cmd.u64>
   %count_length = low.const<cmd.constant.u64> {value = 12} : reg<cmd.u64>
   %count_ref = low.op<cmd.buffer.ref.binding>(%launch_counts, %zero, %count_length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
-  %arguments = low.op<cmd.arguments.empty>() : () -> reg<cmd.arguments>
-  low.op<cmd.dispatch.indirect.static>(%executable, %entry, %count_ref, %arguments) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.buffer_ref>, reg<cmd.arguments>)
+  low.op<cmd.dispatch.indirect.static>(%executable, %entry, %count_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.buffer_ref>)
   low.op<cmd.execution.barrier>() : ()
-  low.op<cmd.dispatch.indirect.dynamic>(%executable, %entry, %count_ref, %arguments) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.buffer_ref>, reg<cmd.arguments>)
+  low.op<cmd.dispatch.indirect.dynamic>(%executable, %entry, %count_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.buffer_ref>)
   low.return
 }
 )");

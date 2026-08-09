@@ -2,7 +2,7 @@
 
 // A Q/K/V preparation wave follows one scratch initialization wave. The
 // executable and entry values are symbol-free ABI inputs, and the argument
-// lists preserve variable kernel arity without making low packets variadic.
+// suffixes preserve variable kernel arity directly on the dispatch packets.
 low.func.def target<cmd.core> abi(command_program) @qkv_two_wave() {
   %parameters = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.buffer>
   %input = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
@@ -32,23 +32,11 @@ low.func.def target<cmd.core> abi(command_program) @qkv_two_wave() {
   low.op<cmd.fill>(%scratch_ref, %zero_u32, %one_u32) : (reg<cmd.buffer_ref>, reg<cmd.u32>, reg<cmd.u32>)
   low.op<cmd.execution.barrier>() : ()
 
-  %query_args0 = low.op<cmd.arguments.empty>() : () -> reg<cmd.arguments>
-  %query_args1 = low.op<cmd.arguments.append.buffer_ref>(%query_args0, %parameters_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  %query_args2 = low.op<cmd.arguments.append.buffer_ref>(%query_args1, %input_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  %query_args3 = low.op<cmd.arguments.append.buffer_ref>(%query_args2, %query_output_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  low.op<cmd.dispatch.direct>(%query_executable, %query_entry, %workgroup_count_x, %one_u32, %one_u32, %query_args3) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.arguments>)
+  low.op<cmd.dispatch.direct>(%query_executable, %query_entry, %workgroup_count_x, %one_u32, %one_u32, %parameters_ref, %input_ref, %query_output_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>)
 
-  %key_args0 = low.op<cmd.arguments.empty>() : () -> reg<cmd.arguments>
-  %key_args1 = low.op<cmd.arguments.append.buffer_ref>(%key_args0, %parameters_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  %key_args2 = low.op<cmd.arguments.append.buffer_ref>(%key_args1, %input_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  %key_args3 = low.op<cmd.arguments.append.buffer_ref>(%key_args2, %key_output_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  low.op<cmd.dispatch.direct>(%key_executable, %key_entry, %workgroup_count_x, %one_u32, %one_u32, %key_args3) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.arguments>)
+  low.op<cmd.dispatch.direct>(%key_executable, %key_entry, %workgroup_count_x, %one_u32, %one_u32, %parameters_ref, %input_ref, %key_output_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>)
 
-  %value_args0 = low.op<cmd.arguments.empty>() : () -> reg<cmd.arguments>
-  %value_args1 = low.op<cmd.arguments.append.buffer_ref>(%value_args0, %parameters_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  %value_args2 = low.op<cmd.arguments.append.buffer_ref>(%value_args1, %input_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  %value_args3 = low.op<cmd.arguments.append.buffer_ref>(%value_args2, %value_output_ref) : (reg<cmd.arguments>, reg<cmd.buffer_ref>) -> reg<cmd.arguments>
-  low.op<cmd.dispatch.direct>(%value_executable, %value_entry, %workgroup_count_x, %one_u32, %one_u32, %value_args3) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.arguments>)
+  low.op<cmd.dispatch.direct>(%value_executable, %value_entry, %workgroup_count_x, %one_u32, %one_u32, %parameters_ref, %input_ref, %value_output_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>)
 
   low.op<cmd.execution.barrier>() : ()
   low.return
@@ -63,9 +51,8 @@ low.func.def target<cmd.core> abi(command_program) @indirect_modes() {
   %zero = low.const<cmd.constant.u64> {value = 0} : reg<cmd.u64>
   %count_length = low.const<cmd.constant.u64> {value = 12} : reg<cmd.u64>
   %count_ref = low.op<cmd.buffer.ref.binding>(%launch_counts, %zero, %count_length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
-  %arguments = low.op<cmd.arguments.empty>() : () -> reg<cmd.arguments>
-  low.op<cmd.dispatch.indirect.static>(%executable, %entry, %count_ref, %arguments) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.buffer_ref>, reg<cmd.arguments>)
+  low.op<cmd.dispatch.indirect.static>(%executable, %entry, %count_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.buffer_ref>)
   low.op<cmd.execution.barrier>() : ()
-  low.op<cmd.dispatch.indirect.dynamic>(%executable, %entry, %count_ref, %arguments) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.buffer_ref>, reg<cmd.arguments>)
+  low.op<cmd.dispatch.indirect.dynamic>(%executable, %entry, %count_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.buffer_ref>)
   low.return
 }

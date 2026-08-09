@@ -45,7 +45,8 @@ typedef struct loom_cmd_program_buffer_ref_t {
   uint64_t byte_length;
 } loom_cmd_program_buffer_ref_t;
 
-// Kind of one flattened logical kernel argument.
+// Kind of one flattened logical kernel argument. Kinds preserve source-level
+// type identity and do not encode a target-native argument layout.
 typedef enum loom_cmd_program_argument_kind_e {
   // An unsigned 32-bit scalar stored in the low bits of |payload|.
   LOOM_CMD_PROGRAM_ARGUMENT_KIND_U32 = 1,
@@ -55,7 +56,10 @@ typedef enum loom_cmd_program_argument_kind_e {
   LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF = 3,
 } loom_cmd_program_argument_kind_t;
 
-// One flattened logical kernel argument.
+// One flattened logical kernel argument in kernel ABI order. A command-program
+// materializer combines this logical stream with executable entry reflection
+// to populate its native constants, bindings, or argument storage. The
+// serialized program never fixes native offsets, alignment, or padding.
 typedef struct loom_cmd_program_argument_t {
   // Interpretation of |payload|.
   loom_cmd_program_argument_kind_t kind;

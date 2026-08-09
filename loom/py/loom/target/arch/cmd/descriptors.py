@@ -13,6 +13,8 @@ from pathlib import Path
 from loom.target.low_descriptors import (
     AsmForm,
     AsmImmediate,
+    AsmOperandSegment,
+    AsmOperandSegmentDelimiter,
     Descriptor,
     DescriptorFlag,
     DescriptorOpKind,
@@ -28,6 +30,7 @@ from loom.target.low_descriptors import (
     MemorySpace,
     ModelQuality,
     Operand,
+    OperandFlag,
     OperandRole,
     RegClass,
     RegClassAlt,
@@ -44,7 +47,6 @@ _REG_U64 = "cmd.u64"
 _REG_BUFFER = "cmd.buffer"
 _REG_BINDING = "cmd.binding"
 _REG_BUFFER_REF = "cmd.buffer_ref"
-_REG_ARGUMENTS = "cmd.arguments"
 _REG_EXECUTABLE = "cmd.executable"
 _REG_ENTRY = "cmd.entry"
 
@@ -83,7 +85,6 @@ _ALT_BY_CLASS = {
         _REG_BUFFER,
         _REG_BINDING,
         _REG_BUFFER_REF,
-        _REG_ARGUMENTS,
         _REG_EXECUTABLE,
         _REG_ENTRY,
     )
@@ -100,6 +101,15 @@ def _result(reg_class: str, field_name: str = "result") -> Operand:
 
 def _operand(reg_class: str, field_name: str) -> Operand:
     return _value(reg_class, OperandRole.OPERAND, field_name)
+
+
+def _variadic_operand(reg_classes: tuple[str, ...], field_name: str) -> Operand:
+    return Operand(
+        field_name,
+        OperandRole.OPERAND,
+        tuple(RegClassAlt(reg_class) for reg_class in reg_classes),
+        flags=(OperandFlag.VARIADIC,),
+    )
 
 
 _U32_VALUE_IMMEDIATE = Immediate(
@@ -177,54 +187,6 @@ _VALUE_DESCRIPTORS = (
         schedule_class=_SCHEDULE_PURE,
         flags=(DescriptorFlag.DEAD_REMOVABLE,),
     ),
-    Descriptor(
-        key="cmd.arguments.empty",
-        mnemonic="cmd.arguments.empty",
-        semantic_tag="command.arguments.empty",
-        operands=(_result(_REG_ARGUMENTS),),
-        asm_forms=_asm(results=("result",)),
-        schedule_class=_SCHEDULE_PURE,
-        flags=(DescriptorFlag.DEAD_REMOVABLE,),
-    ),
-    Descriptor(
-        key="cmd.arguments.append.u32",
-        mnemonic="cmd.arguments.append.u32",
-        semantic_tag="command.arguments.append.u32",
-        operands=(
-            _result(_REG_ARGUMENTS),
-            _operand(_REG_ARGUMENTS, "arguments"),
-            _operand(_REG_U32, "value"),
-        ),
-        asm_forms=_asm(results=("result",), operands=("arguments", "value")),
-        schedule_class=_SCHEDULE_PURE,
-        flags=(DescriptorFlag.DEAD_REMOVABLE,),
-    ),
-    Descriptor(
-        key="cmd.arguments.append.u64",
-        mnemonic="cmd.arguments.append.u64",
-        semantic_tag="command.arguments.append.u64",
-        operands=(
-            _result(_REG_ARGUMENTS),
-            _operand(_REG_ARGUMENTS, "arguments"),
-            _operand(_REG_U64, "value"),
-        ),
-        asm_forms=_asm(results=("result",), operands=("arguments", "value")),
-        schedule_class=_SCHEDULE_PURE,
-        flags=(DescriptorFlag.DEAD_REMOVABLE,),
-    ),
-    Descriptor(
-        key="cmd.arguments.append.buffer_ref",
-        mnemonic="cmd.arguments.append.buffer_ref",
-        semantic_tag="command.arguments.append.buffer_ref",
-        operands=(
-            _result(_REG_ARGUMENTS),
-            _operand(_REG_ARGUMENTS, "arguments"),
-            _operand(_REG_BUFFER_REF, "value"),
-        ),
-        asm_forms=_asm(results=("result",), operands=("arguments", "value")),
-        schedule_class=_SCHEDULE_PURE,
-        flags=(DescriptorFlag.DEAD_REMOVABLE,),
-    ),
 )
 
 
@@ -253,9 +215,22 @@ def _dispatch_descriptor(*, indirect_mode: str | None) -> Descriptor:
             _operand(_REG_EXECUTABLE, "executable"),
             _operand(_REG_ENTRY, "entry"),
             *workgroup_operands,
-            _operand(_REG_ARGUMENTS, "arguments"),
+            _variadic_operand((_REG_U32, _REG_U64, _REG_BUFFER_REF), "arguments"),
         ),
-        asm_forms=_asm(operands=("executable", "entry", *workgroup_names, "arguments")),
+        asm_forms=(
+            AsmForm(
+                operand_segments=(
+                    AsmOperandSegment(
+                        AsmOperandSegmentDelimiter.ANGLE,
+                        ("executable", "entry"),
+                    ),
+                    AsmOperandSegment(
+                        AsmOperandSegmentDelimiter.SQUARE, workgroup_names
+                    ),
+                    AsmOperandSegment(AsmOperandSegmentDelimiter.PAREN, ("arguments",)),
+                )
+            ),
+        ),
         effects=(_RECORD_EFFECT,),
         schedule_class=_SCHEDULE_RECORD,
         flags=(DescriptorFlag.SIDE_EFFECTING,),
@@ -354,7 +329,6 @@ CMD_CORE_DESCRIPTOR_SET = DescriptorSet(
         _reference_reg_class(_REG_BUFFER),
         _scalar_reg_class(_REG_BINDING, 32),
         _reference_reg_class(_REG_BUFFER_REF),
-        _reference_reg_class(_REG_ARGUMENTS),
         _reference_reg_class(_REG_EXECUTABLE),
         _scalar_reg_class(_REG_ENTRY, 64),
     ),

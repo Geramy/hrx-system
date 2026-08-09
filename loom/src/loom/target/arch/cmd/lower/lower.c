@@ -54,8 +54,6 @@ typedef struct loom_cmd_lower_types_t {
   loom_type_t binding;
   // Resolved buffer-range register type.
   loom_type_t buffer_ref;
-  // Immutable dispatch-argument chain register type.
-  loom_type_t arguments;
   // Loaded executable resource register type.
   loom_type_t executable;
   // Executable-local entry-token resource register type.
@@ -128,9 +126,6 @@ static iree_status_t loom_cmd_lower_initialize_types(
   IREE_RETURN_IF_ERROR(loom_low_build_register_type(
       state->descriptor_set, CMD_CORE_REG_CLASS_ID_BUFFER_REF, 1,
       &state->types.buffer_ref));
-  IREE_RETURN_IF_ERROR(loom_low_build_register_type(
-      state->descriptor_set, CMD_CORE_REG_CLASS_ID_ARGUMENTS, 1,
-      &state->types.arguments));
   IREE_RETURN_IF_ERROR(loom_low_build_register_type(
       state->descriptor_set, CMD_CORE_REG_CLASS_ID_EXECUTABLE, 1,
       &state->types.executable));
@@ -407,17 +402,18 @@ static iree_status_t loom_cmd_lower_build_launch_count_refs(
   return iree_ok_status();
 }
 
-static iree_status_t loom_cmd_lower_build_launch_arguments(
+static iree_status_t loom_cmd_lower_build_launch_operands(
     loom_cmd_lower_state_t* state, const loom_op_t* launch_op,
-    const loom_cmd_lower_launch_t* launch, loom_value_id_t* out_arguments) {
-  *out_arguments = LOOM_VALUE_ID_INVALID;
-  loom_op_t* arguments_op = NULL;
-  IREE_RETURN_IF_ERROR(loom_cmd_lower_build_descriptor_op(
-      state, CMD_CORE_DESCRIPTOR_REF_ARGUMENTS_EMPTY,
-      /*operands=*/NULL, /*operand_count=*/0, &state->types.arguments,
-      /*result_count=*/1, launch_op->location, &arguments_op));
-  loom_value_id_t arguments = loom_low_op_results(arguments_op).values[0];
-
+    const loom_cmd_lower_launch_t* launch,
+    const loom_value_id_t* prefix_operands,
+    iree_host_size_t prefix_operand_count, loom_value_id_t** out_operands,
+    iree_host_size_t* out_operand_count) {
+  *out_operands = NULL;
+  *out_operand_count = prefix_operand_count + launch->argument_count;
+  IREE_RETURN_IF_ERROR(loom_cmd_lower_allocate_value_array(
+      state, *out_operand_count, out_operands));
+  memcpy(*out_operands, prefix_operands,
+         prefix_operand_count * sizeof(**out_operands));
   const loom_value_slice_t source_arguments =
       loom_kernel_launch_arguments(launch_op);
   IREE_ASSERT(launch->argument_count == 0 ||
@@ -437,17 +433,9 @@ static iree_status_t loom_cmd_lower_build_launch_arguments(
                               "buffer range",
                               source_argument_ordinal);
     }
-    const loom_value_id_t operands[] = {
-        arguments,
-        state->resources.source_value_map[source_value],
-    };
-    IREE_RETURN_IF_ERROR(loom_cmd_lower_build_descriptor_op(
-        state, CMD_CORE_DESCRIPTOR_REF_ARGUMENTS_APPEND_BUFFER_REF, operands,
-        IREE_ARRAYSIZE(operands), &state->types.arguments, /*result_count=*/1,
-        launch_op->location, &arguments_op));
-    arguments = loom_low_op_results(arguments_op).values[0];
+    (*out_operands)[prefix_operand_count + i] =
+        state->resources.source_value_map[source_value];
   }
-  *out_arguments = arguments;
   return iree_ok_status();
 }
 
@@ -459,9 +447,6 @@ static iree_status_t loom_cmd_lower_build_direct_launch(
   IREE_ASSERT_LT(launch->executable_index, state->plan->executable_count);
   IREE_ASSERT_LT(launch->entry_index, state->plan->entry_count);
 
-  loom_value_id_t arguments = LOOM_VALUE_ID_INVALID;
-  IREE_RETURN_IF_ERROR(loom_cmd_lower_build_launch_arguments(
-      state, source_op, launch, &arguments));
   loom_value_id_t workgroup_count_x = LOOM_VALUE_ID_INVALID;
   loom_value_id_t workgroup_count_y = LOOM_VALUE_ID_INVALID;
   loom_value_id_t workgroup_count_z = LOOM_VALUE_ID_INVALID;
@@ -471,19 +456,23 @@ static iree_status_t loom_cmd_lower_build_direct_launch(
       state, workgroup_count.y, source_op->location, &workgroup_count_y));
   IREE_RETURN_IF_ERROR(loom_cmd_lower_build_u32_constant(
       state, workgroup_count.z, source_op->location, &workgroup_count_z));
-  const loom_value_id_t operands[] = {
+  const loom_value_id_t prefix_operands[] = {
       state->resources.executables[launch->executable_index],
       state->resources.entries[launch->entry_index],
       workgroup_count_x,
       workgroup_count_y,
       workgroup_count_z,
-      arguments,
   };
+  loom_value_id_t* operands = NULL;
+  iree_host_size_t operand_count = 0;
+  IREE_RETURN_IF_ERROR(loom_cmd_lower_build_launch_operands(
+      state, source_op, launch, prefix_operands,
+      IREE_ARRAYSIZE(prefix_operands), &operands, &operand_count));
   loom_op_t* dispatch_op = NULL;
   return loom_cmd_lower_build_descriptor_op(
-      state, CMD_CORE_DESCRIPTOR_REF_DISPATCH_DIRECT, operands,
-      IREE_ARRAYSIZE(operands), /*result_types=*/NULL, /*result_count=*/0,
-      source_op->location, &dispatch_op);
+      state, CMD_CORE_DESCRIPTOR_REF_DISPATCH_DIRECT, operands, operand_count,
+      /*result_types=*/NULL, /*result_count=*/0, source_op->location,
+      &dispatch_op);
 }
 
 static iree_status_t loom_cmd_lower_build_host_launch(
@@ -495,19 +484,20 @@ static iree_status_t loom_cmd_lower_build_host_launch(
   IREE_ASSERT_LT(host_tuple_ordinal,
                  state->plan->launch_graph->host_tuple_count);
 
-  loom_value_id_t arguments = LOOM_VALUE_ID_INVALID;
-  IREE_RETURN_IF_ERROR(loom_cmd_lower_build_launch_arguments(
-      state, source_op, launch, &arguments));
-  const loom_value_id_t operands[] = {
+  const loom_value_id_t prefix_operands[] = {
       state->resources.executables[launch->executable_index],
       state->resources.entries[launch->entry_index],
       state->resources.launch_counts[host_tuple_ordinal],
-      arguments,
   };
+  loom_value_id_t* operands = NULL;
+  iree_host_size_t operand_count = 0;
+  IREE_RETURN_IF_ERROR(loom_cmd_lower_build_launch_operands(
+      state, source_op, launch, prefix_operands,
+      IREE_ARRAYSIZE(prefix_operands), &operands, &operand_count));
   loom_op_t* dispatch_op = NULL;
   return loom_cmd_lower_build_descriptor_op(
       state, CMD_CORE_DESCRIPTOR_REF_DISPATCH_INDIRECT_STATIC, operands,
-      IREE_ARRAYSIZE(operands), /*result_types=*/NULL, /*result_count=*/0,
+      operand_count, /*result_types=*/NULL, /*result_count=*/0,
       source_op->location, &dispatch_op);
 }
 
