@@ -868,7 +868,6 @@ func.template<qwen3_moe.routed_gate_up.q4k_q8.body> device @qwen3_moe_routed_gat
 // paired Q8_1 load before independent raw-weight dot products and a fused
 // SwiGLU epilogue.
 kernel.def @qwen3_moe_routed_gate_up_swiglu_q4k_q8(%token_count: index, %route_count: index, %route_stride: index, %expert_count: index, %output_size: index) {
-  %token_capacity = config.get @qwen3_moe.workload.token_capacity : index
   %configured_route_count = config.get @qwen3_moe.routed_gate_up.route_count : index
   %configured_output_size = config.get @qwen3_moe.routed_gate_up.output_size : index
   %unit = index.constant 1 : index
@@ -877,13 +876,12 @@ kernel.def @qwen3_moe_routed_gate_up_swiglu_q4k_q8(%token_count: index, %route_c
   %workgroup_size = index.constant 128 : index
   %padded_output_size = index.add %configured_output_size, %c3 : index
   %channel_workgroup_count = index.div %padded_output_size, %c4 : index
-  kernel.launch.config workgroups(%channel_workgroup_count, %configured_route_count, %token_capacity) workgroup_size(%workgroup_size, %unit, %unit) : index
+  kernel.launch.config workgroups(%channel_workgroup_count, %configured_route_count, %token_count) workgroup_size(%workgroup_size, %unit, %unit) : index
 } launch(%token_count: index, %route_count: index, %route_stride: index, %expert_count: index, %output_size: index, %q8_input: buffer, %route_ids: buffer, %gate_weight: buffer, %up_weight: buffer, %output: buffer) {
-  %token_capacity = config.get @qwen3_moe.workload.token_capacity : index
   %configured_route_count0 = config.get @qwen3_moe.routed_gate_up.route_count : index
   %configured_expert_count0 = config.get @qwen3_moe.routed_gate_up.expert_count : index
   %configured_output_size0 = config.get @qwen3_moe.routed_gate_up.output_size : index
-  %bounded_token_count = index.assume %token_count [range(%token_count, 1, 512), le(%token_count, %token_capacity)] : index
+  %bounded_token_count = index.assume %token_count [range(%token_count, 1, 512)] : index
   %bounded_route_count, %configured_route_count = index.assume %route_count, %configured_route_count0 [range(%route_count, 1, 8), eq(%route_count, %configured_route_count0)] : index, index
   %bounded_route_stride = index.assume %route_stride [range(%route_stride, 1, 128)] : index
   %bounded_expert_count, %configured_expert_count = index.assume %expert_count, %configured_expert_count0 [range(%expert_count, 1, 128), eq(%expert_count, %configured_expert_count0)] : index, index
