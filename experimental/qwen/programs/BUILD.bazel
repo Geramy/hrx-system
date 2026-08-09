@@ -36,7 +36,6 @@ loom_link_module(
 
 iree_c_embed_data(
     name = "decode_source",
-    testonly = True,
     srcs = [":decode_linked"],
     c_file_output = "decode_source.c",
     flatten = True,
