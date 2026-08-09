@@ -48,6 +48,7 @@ iree_runtime_cc_test(
     deps = [
         "//experimental/qwen/programs:decode_source",
         "//experimental/qwen/programs:dense_projection_specialization_test_source",
+        "//experimental/qwen/programs:prefill_source",
         "//loom/binding/c:loomc",
         "//loom/binding/c/target/amdgpu",
         "//loom/binding/c/target/cmd",

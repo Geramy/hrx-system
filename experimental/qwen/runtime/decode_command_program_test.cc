@@ -12,6 +12,7 @@
 
 #include "experimental/qwen/programs/decode_source.h"
 #include "experimental/qwen/programs/dense_projection_specialization_test_source.h"
+#include "experimental/qwen/programs/prefill_source.h"
 #include "iree/testing/gtest.h"
 #include "loomc/artifact.h"
 #include "loomc/context.h"
@@ -121,6 +122,11 @@ static SourcePtr CreateEmbeddedSource(const iree_file_toc_t* files,
 static SourcePtr CreateDecodeSource() {
   return CreateEmbeddedSource(qwen_loom_decode_program_source_create(),
                               qwen_loom_decode_program_source_size());
+}
+
+static SourcePtr CreatePrefillSource() {
+  return CreateEmbeddedSource(qwen_loom_prefill_program_source_create(),
+                              qwen_loom_prefill_program_source_size());
 }
 
 static SourcePtr CreateDenseProjectionSpecializationSource() {
@@ -459,6 +465,130 @@ TEST(QwenDecodeCommandProgramTest, CompilesCompleteProductionPlan) {
 
   const loomc_artifact_t* command_artifact =
       FindCommandArtifact(assembled_program.get(), "qwen3_30b_decode_576");
+  ASSERT_NE(command_artifact, nullptr);
+  EXPECT_GT(command_artifact->contents.data_length, 0u);
+}
+
+TEST(QwenDecodeCommandProgramTest, CompilesExactPrefill512Plan) {
+  TargetEnvironmentPtr target_environment = CreateTargetEnvironment();
+  ContextPtr context = CreateContext(target_environment.get());
+  WorkspacePtr coordinator_workspace = CreateWorkspace();
+  SourcePtr source = CreatePrefillSource();
+  ModulePtr module = DeserializeModule(
+      context.get(), coordinator_workspace.get(), source.get());
+  CompilerPtr compiler = CreateCompiler(context.get());
+  PassProgramPtr preparation_pass_program =
+      CreatePreparationPassProgram(context.get());
+  PassProgramPtr unit_pass_program = CreateUnitPassProgram(context.get());
+
+  const loomc_cmd_program_plan_options_t command_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PLAN_OPTIONS,
+      /*.structure_size=*/sizeof(command_options),
+      /*.next=*/nullptr,
+      /*.dependency_artifact_format=*/
+      loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_AMDGPU_HSACO),
+  };
+  const loomc_program_plan_options_t plan_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_OPTIONS,
+      /*.structure_size=*/sizeof(plan_options),
+      /*.next=*/&command_options,
+      /*.config=*/
+      {
+          /*.bindings=*/nullptr,
+          /*.binding_count=*/0,
+          /*.json_object=*/loomc_string_view_empty(),
+          /*.flags=*/LOOMC_CONFIG_POLICY_FLAG_REQUIRE_RESOLVED,
+      },
+  };
+  loomc_program_plan_t* raw_plan = nullptr;
+  loomc_result_t* raw_result = nullptr;
+  LOOMC_ASSERT_OK(loomc_prepare_programs(
+      compiler.get(), coordinator_workspace.get(),
+      preparation_pass_program.get(), unit_pass_program.get(), module.get(),
+      &plan_options, loomc_allocator_system(), &raw_plan, &raw_result));
+  PlanPtr plan(raw_plan);
+  ResultPtr prepare_result(raw_result);
+  ASSERT_TRUE(
+      ResultSucceeded(prepare_result.get(), "prefill plan preparation"));
+
+  ASSERT_EQ(loomc_program_plan_root_count(plan.get()), 1u);
+  loomc_program_plan_root_t root = loomc_program_plan_root_invalid();
+  LOOMC_ASSERT_OK(loomc_program_plan_lookup_root(
+      plan.get(), loomc_make_cstring_view("qwen3_30b_prefill_512"), &root));
+  loomc_program_plan_root_info_t root_info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_ROOT_INFO,
+      /*.structure_size=*/sizeof(root_info),
+  };
+  LOOMC_ASSERT_OK(loomc_program_plan_root_info(plan.get(), root, &root_info));
+  EXPECT_EQ(root_info.dependency_count, 27u);
+
+  std::vector<ProgramPtr> unit_programs;
+  std::vector<loomc_program_t*> unit_table_values;
+  const loomc_host_size_t unit_count =
+      loomc_program_plan_unit_count(plan.get());
+  ASSERT_EQ(unit_count, 28u);
+  unit_programs.reserve(unit_count);
+  unit_table_values.reserve(unit_count);
+  for (loomc_host_size_t i = 0; i < unit_count; ++i) {
+    WorkspacePtr worker_workspace = CreateWorkspace();
+    loomc_program_t* raw_program = nullptr;
+    raw_result = nullptr;
+    LOOMC_ASSERT_OK(loomc_program_plan_compile_unit(
+        plan.get(), worker_workspace.get(),
+        loomc_program_plan_unit_from_index(static_cast<uint32_t>(i)),
+        /*options=*/nullptr, loomc_allocator_system(), &raw_program,
+        &raw_result));
+    ProgramPtr program(raw_program);
+    ResultPtr result(raw_result);
+    ASSERT_TRUE(
+        ResultSucceeded(result.get(), "prefill unit " + std::to_string(i)));
+    unit_table_values.push_back(program.get());
+    unit_programs.push_back(std::move(program));
+  }
+
+  const loomc_program_plan_unit_table_t unit_table = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_UNIT_TABLE,
+      /*.structure_size=*/sizeof(unit_table),
+      /*.next=*/nullptr,
+      /*.programs=*/unit_table_values.data(),
+      /*.program_count=*/unit_table_values.size(),
+  };
+  loomc_program_t* raw_assembled_program = nullptr;
+  loomc_result_t* raw_assemble_result = nullptr;
+  LOOMC_ASSERT_OK(loomc_program_plan_assemble(
+      plan.get(), coordinator_workspace.get(), &root, 1, &unit_table,
+      /*options=*/nullptr, loomc_allocator_system(), &raw_assembled_program,
+      &raw_assemble_result));
+  ProgramPtr assembled_program(raw_assembled_program);
+  ResultPtr assemble_result(raw_assemble_result);
+  ASSERT_TRUE(ResultSucceeded(assemble_result.get(), "prefill plan assembly"));
+
+  loomc_program_export_t root_export = loomc_program_export_invalid();
+  LOOMC_ASSERT_OK(loomc_program_lookup_export(
+      assembled_program.get(), loomc_make_cstring_view("qwen3_30b_prefill_512"),
+      &root_export));
+  loomc_cmd_program_t* raw_command_program = nullptr;
+  LOOMC_ASSERT_OK(loomc_cmd_program_create_from_export(
+      assembled_program.get(), root_export, loomc_allocator_system(),
+      &raw_command_program));
+  CmdProgramPtr command_program(raw_command_program);
+  loomc_cmd_program_info_t info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_INFO,
+      /*.structure_size=*/sizeof(info),
+  };
+  LOOMC_ASSERT_OK(loomc_cmd_program_info(command_program.get(), &info));
+  EXPECT_EQ(info.fixed_buffer_count, 2u);
+  EXPECT_EQ(info.rebindable_binding_count, 5u);
+  EXPECT_EQ(info.parameter_root_count, 2u);
+  EXPECT_EQ(info.parameter_count, 580u);
+  EXPECT_EQ(info.transient.binding_index, 4u);
+  EXPECT_EQ(info.transient.required_byte_length, 39845888u);
+  EXPECT_EQ(info.transient.minimum_alignment, 256u);
+  EXPECT_EQ(info.launch_counts.binding_index,
+            LOOMC_CMD_PROGRAM_BINDING_INVALID);
+
+  const loomc_artifact_t* command_artifact =
+      FindCommandArtifact(assembled_program.get(), "qwen3_30b_prefill_512");
   ASSERT_NE(command_artifact, nullptr);
   EXPECT_GT(command_artifact->contents.data_length, 0u);
 }
