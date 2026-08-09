@@ -380,8 +380,7 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 3, 
   %buffer_length = low.const<cmd.constant.u64> {value = 4096} : reg<cmd.u64>
   %scratch_ref = low.op<cmd.buffer.ref.binding>(%scratch, %zero_u64, %buffer_length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
   low.op<cmd.fill>(%scratch_ref, %zero_u32, %one_u32) : (reg<cmd.buffer_ref>, reg<cmd.u32>, reg<cmd.u32>)
-  low.op<cmd.barrier.execution>() : ()
-  low.op<cmd.dispatch.direct>(%query_executable, %query_entry, %workgroup_count_x, %one_u32, %one_u32, %parameters, %zero_u64, %buffer_length, %input, %zero_u64, %buffer_length, %query_output, %zero_u64, %buffer_length) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>)
+  low.op<cmd.dispatch.direct.barrier>(%query_executable, %query_entry, %workgroup_count_x, %one_u32, %one_u32, %parameters, %zero_u64, %buffer_length, %input, %zero_u64, %buffer_length, %query_output, %zero_u64, %buffer_length) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>)
   low.op<cmd.dispatch.direct>(%key_executable, %key_entry, %workgroup_count_x, %one_u32, %one_u32, %parameters, %zero_u64, %buffer_length, %input, %zero_u64, %buffer_length, %key_output, %zero_u64, %buffer_length) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>)
   low.op<cmd.dispatch.direct>(%value_executable, %value_entry, %workgroup_count_x, %one_u32, %one_u32, %parameters, %zero_u64, %buffer_length, %input, %zero_u64, %buffer_length, %value_output, %zero_u64, %buffer_length) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>)
   low.op<cmd.barrier.execution>() : ()
@@ -726,8 +725,7 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, 
   %count_length = low.const<cmd.constant.u64> {value = 12} : reg<cmd.u64>
   %count_ref = low.op<cmd.buffer.ref.binding>(%launch_counts, %zero, %count_length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
   low.op<cmd.dispatch.indirect.static>(%executable, %entry, %count_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.buffer_ref>)
-  low.op<cmd.barrier.execution>() : ()
-  low.op<cmd.dispatch.indirect.dynamic>(%executable, %entry, %count_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.buffer_ref>)
+  low.op<cmd.dispatch.indirect.dynamic.barrier>(%executable, %entry, %count_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.buffer_ref>)
   low.return
 }
 )");
@@ -797,10 +795,8 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 0, 
   %source_ref = low.op<cmd.buffer.ref.binding>(%source, %zero, %length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
   %target_ref = low.op<cmd.buffer.ref.binding>(%target, %zero, %length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
   low.op<cmd.fill>(%source_ref, %pattern, %pattern_length) : (reg<cmd.buffer_ref>, reg<cmd.u32>, reg<cmd.u32>)
-  low.op<cmd.barrier.execution>() : ()
-  low.op<cmd.copy>(%source_ref, %fixed_ref) : (reg<cmd.buffer_ref>, reg<cmd.buffer_ref>)
-  low.op<cmd.barrier.execution>() : ()
-  low.op<cmd.copy>(%fixed_ref, %target_ref) : (reg<cmd.buffer_ref>, reg<cmd.buffer_ref>)
+  low.op<cmd.copy.barrier>(%source_ref, %fixed_ref) : (reg<cmd.buffer_ref>, reg<cmd.buffer_ref>)
+  low.op<cmd.copy.barrier>(%fixed_ref, %target_ref) : (reg<cmd.buffer_ref>, reg<cmd.buffer_ref>)
   low.return
 }
 )");

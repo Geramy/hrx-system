@@ -580,8 +580,9 @@ static iree_status_t loom_cmd_serialize_flatten_arguments(
   return iree_ok_status();
 }
 
-static iree_status_t loom_cmd_serialize_fill(loom_cmd_serialize_build_t* build,
-                                             const loom_op_t* op) {
+static iree_status_t loom_cmd_serialize_fill(
+    loom_cmd_serialize_build_t* build, const loom_op_t* op,
+    loom_cmd_program_command_kind_t kind) {
   const loom_value_slice_t operands = loom_low_op_operands(op);
   const loom_cmd_serialize_value_t* target =
       loom_cmd_serialize_operand(build, operands.values[0]);
@@ -593,7 +594,7 @@ static iree_status_t loom_cmd_serialize_fill(loom_cmd_serialize_build_t* build,
   IREE_ASSERT_EQ(pattern->kind, LOOM_CMD_SERIALIZE_VALUE_KIND_U32);
   IREE_ASSERT_EQ(pattern_length->kind, LOOM_CMD_SERIALIZE_VALUE_KIND_U32);
   const loom_cmd_program_command_t command = {
-      .kind = LOOM_CMD_PROGRAM_COMMAND_KIND_FILL,
+      .kind = kind,
       .payload.fill =
           {
               .target_buffer_ref = target->payload.index,
@@ -604,8 +605,9 @@ static iree_status_t loom_cmd_serialize_fill(loom_cmd_serialize_build_t* build,
   return loom_cmd_serialize_append_command(build, command);
 }
 
-static iree_status_t loom_cmd_serialize_copy(loom_cmd_serialize_build_t* build,
-                                             const loom_op_t* op) {
+static iree_status_t loom_cmd_serialize_copy(
+    loom_cmd_serialize_build_t* build, const loom_op_t* op,
+    loom_cmd_program_command_kind_t kind) {
   const loom_value_slice_t operands = loom_low_op_operands(op);
   const loom_cmd_serialize_value_t* source =
       loom_cmd_serialize_operand(build, operands.values[0]);
@@ -614,7 +616,7 @@ static iree_status_t loom_cmd_serialize_copy(loom_cmd_serialize_build_t* build,
   IREE_ASSERT_EQ(source->kind, LOOM_CMD_SERIALIZE_VALUE_KIND_BUFFER_REF);
   IREE_ASSERT_EQ(target->kind, LOOM_CMD_SERIALIZE_VALUE_KIND_BUFFER_REF);
   const loom_cmd_program_command_t command = {
-      .kind = LOOM_CMD_PROGRAM_COMMAND_KIND_COPY,
+      .kind = kind,
       .payload.copy =
           {
               .source_buffer_ref = source->payload.index,
@@ -638,7 +640,11 @@ static iree_status_t loom_cmd_serialize_dispatch(
       .kind = kind,
   };
   uint16_t argument_start = 0;
-  if (kind == LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT) {
+  const loom_cmd_program_command_kind_t base_kind =
+      loom_cmd_program_command_kind_base(kind);
+  const bool is_direct =
+      base_kind == LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT;
+  if (is_direct) {
     const loom_cmd_serialize_value_t* workgroup_count_x =
         loom_cmd_serialize_operand(build, operands.values[2]);
     const loom_cmd_serialize_value_t* workgroup_count_y =
@@ -668,7 +674,7 @@ static iree_status_t loom_cmd_serialize_dispatch(
     command.payload.dispatch_indirect.entry_index = entry->payload.index;
     command.payload.dispatch_indirect.workgroup_count_buffer_ref =
         workgroup_count->payload.index;
-    if (kind == LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC) {
+    if (base_kind == LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC) {
       const loom_cmd_program_buffer_ref_t buffer_ref =
           build->buffer_refs.values[workgroup_count->payload.index];
       IREE_ASSERT_EQ(buffer_ref.role, LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE);
@@ -752,11 +758,23 @@ static iree_status_t loom_cmd_serialize_packet(
   }
   if (loom_cmd_serialize_packet_is(build, packet,
                                    CMD_CORE_DESCRIPTOR_REF_FILL)) {
-    return loom_cmd_serialize_fill(build, op);
+    return loom_cmd_serialize_fill(build, op,
+                                   LOOM_CMD_PROGRAM_COMMAND_KIND_FILL);
+  }
+  if (loom_cmd_serialize_packet_is(build, packet,
+                                   CMD_CORE_DESCRIPTOR_REF_FILL_BARRIER)) {
+    return loom_cmd_serialize_fill(build, op,
+                                   LOOM_CMD_PROGRAM_COMMAND_KIND_FILL_BARRIER);
   }
   if (loom_cmd_serialize_packet_is(build, packet,
                                    CMD_CORE_DESCRIPTOR_REF_COPY)) {
-    return loom_cmd_serialize_copy(build, op);
+    return loom_cmd_serialize_copy(build, op,
+                                   LOOM_CMD_PROGRAM_COMMAND_KIND_COPY);
+  }
+  if (loom_cmd_serialize_packet_is(build, packet,
+                                   CMD_CORE_DESCRIPTOR_REF_COPY_BARRIER)) {
+    return loom_cmd_serialize_copy(build, op,
+                                   LOOM_CMD_PROGRAM_COMMAND_KIND_COPY_BARRIER);
   }
   if (loom_cmd_serialize_packet_is(build, packet,
                                    CMD_CORE_DESCRIPTOR_REF_DISPATCH_DIRECT)) {
@@ -764,14 +782,33 @@ static iree_status_t loom_cmd_serialize_packet(
         build, op, LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT);
   }
   if (loom_cmd_serialize_packet_is(
+          build, packet, CMD_CORE_DESCRIPTOR_REF_DISPATCH_DIRECT_BARRIER)) {
+    return loom_cmd_serialize_dispatch(
+        build, op, LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT_BARRIER);
+  }
+  if (loom_cmd_serialize_packet_is(
           build, packet, CMD_CORE_DESCRIPTOR_REF_DISPATCH_INDIRECT_STATIC)) {
     return loom_cmd_serialize_dispatch(
         build, op, LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
   }
   if (loom_cmd_serialize_packet_is(
+          build, packet,
+          CMD_CORE_DESCRIPTOR_REF_DISPATCH_INDIRECT_STATIC_BARRIER)) {
+    return loom_cmd_serialize_dispatch(
+        build, op,
+        LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC_BARRIER);
+  }
+  if (loom_cmd_serialize_packet_is(
           build, packet, CMD_CORE_DESCRIPTOR_REF_DISPATCH_INDIRECT_DYNAMIC)) {
     return loom_cmd_serialize_dispatch(
         build, op, LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_DYNAMIC);
+  }
+  if (loom_cmd_serialize_packet_is(
+          build, packet,
+          CMD_CORE_DESCRIPTOR_REF_DISPATCH_INDIRECT_DYNAMIC_BARRIER)) {
+    return loom_cmd_serialize_dispatch(
+        build, op,
+        LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_DYNAMIC_BARRIER);
   }
   if (loom_cmd_serialize_packet_is(build, packet,
                                    CMD_CORE_DESCRIPTOR_REF_BARRIER_EXECUTION)) {
@@ -977,7 +1014,7 @@ static void loom_cmd_serialize_write_commands(
         data.data + layout->command_offset + i * LOOM_CMD_PROGRAM_COMMAND_SIZE;
     const loom_cmd_program_command_t command = build->commands.values[i];
     iree_unaligned_store_le_u32(record + LOOM_CMD_PROGRAM_COMMAND_KIND_OFFSET,
-                                command.kind);
+                                (uint32_t)command.kind);
     iree_unaligned_store_le_u32(
         record + LOOM_CMD_PROGRAM_COMMAND_ARGUMENT_OFFSET_OFFSET,
         command.argument_offset);
@@ -985,7 +1022,7 @@ static void loom_cmd_serialize_write_commands(
         record + LOOM_CMD_PROGRAM_COMMAND_ARGUMENT_SCHEMA_INDEX_OFFSET,
         command.argument_schema_index);
     uint32_t operands[5] = {0};
-    switch (command.kind) {
+    switch ((uint32_t)loom_cmd_program_command_kind_base(command.kind)) {
       case LOOM_CMD_PROGRAM_COMMAND_KIND_FILL:
         operands[0] = command.payload.fill.target_buffer_ref;
         operands[1] = command.payload.fill.pattern;

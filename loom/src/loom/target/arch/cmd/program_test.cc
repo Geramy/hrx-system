@@ -61,7 +61,7 @@ static void StoreCommand(std::vector<uint8_t>& data, uint32_t table_offset,
   uint8_t* record =
       data.data() + table_offset + index * LOOM_CMD_PROGRAM_COMMAND_SIZE;
   iree_unaligned_store_le_u32(record + LOOM_CMD_PROGRAM_COMMAND_KIND_OFFSET,
-                              kind);
+                              (uint32_t)kind);
   iree_unaligned_store_le_u32(
       record + LOOM_CMD_PROGRAM_COMMAND_ARGUMENT_OFFSET_OFFSET,
       argument_offset);
@@ -491,6 +491,49 @@ TEST(CmdProgramTest, RejectsMalformedCommand) {
       1);
   loom_cmd_program_t program = {};
   IREE_EXPECT_STATUS_IS(IREE_STATUS_OUT_OF_RANGE,
+                        loom_cmd_program_parse(AsByteSpan(data), &program));
+}
+
+TEST(CmdProgramTest, ParsesBarrierDispatchKind) {
+  std::vector<uint8_t> data = BuildValidProgram();
+  const uint32_t table_offset = iree_unaligned_load_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_COMMAND_TABLE_OFFSET);
+  iree_unaligned_store_le_u32(
+      data.data() + table_offset + 2 * LOOM_CMD_PROGRAM_COMMAND_SIZE +
+          LOOM_CMD_PROGRAM_COMMAND_KIND_OFFSET,
+      LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT_BARRIER);
+  loom_cmd_program_t program = {};
+  IREE_ASSERT_OK(loom_cmd_program_parse(AsByteSpan(data), &program));
+  const loom_cmd_program_command_t command =
+      loom_cmd_program_command_at(&program, 2);
+  EXPECT_EQ(command.kind,
+            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT_BARRIER);
+  EXPECT_EQ(command.payload.dispatch_direct.workgroup_count_x, 1u);
+}
+
+TEST(CmdProgramTest, RejectsUnknownCommandKind) {
+  std::vector<uint8_t> data = BuildValidProgram();
+  const uint32_t table_offset = iree_unaligned_load_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_COMMAND_TABLE_OFFSET);
+  iree_unaligned_store_le_u32(
+      data.data() + table_offset + LOOM_CMD_PROGRAM_COMMAND_KIND_OFFSET,
+      LOOM_CMD_PROGRAM_COMMAND_KIND_FILL | (2u << 8));
+  loom_cmd_program_t program = {};
+  IREE_EXPECT_STATUS_IS(IREE_STATUS_INVALID_ARGUMENT,
+                        loom_cmd_program_parse(AsByteSpan(data), &program));
+}
+
+TEST(CmdProgramTest, RejectsUnsupportedBarrierKind) {
+  std::vector<uint8_t> data = BuildValidProgram();
+  const uint32_t table_offset = iree_unaligned_load_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_COMMAND_TABLE_OFFSET);
+  iree_unaligned_store_le_u32(data.data() + table_offset +
+                                  5 * LOOM_CMD_PROGRAM_COMMAND_SIZE +
+                                  LOOM_CMD_PROGRAM_COMMAND_KIND_OFFSET,
+                              LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_EXECUTION |
+                                  LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_BIT);
+  loom_cmd_program_t program = {};
+  IREE_EXPECT_STATUS_IS(IREE_STATUS_INVALID_ARGUMENT,
                         loom_cmd_program_parse(AsByteSpan(data), &program));
 }
 

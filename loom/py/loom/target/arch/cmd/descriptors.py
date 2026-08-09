@@ -193,7 +193,7 @@ _VALUE_DESCRIPTORS = (
 )
 
 
-def _dispatch_descriptor(*, indirect_mode: str | None) -> Descriptor:
+def _dispatch_descriptor(*, indirect_mode: str | None, barrier: bool) -> Descriptor:
     if indirect_mode is None:
         key = "cmd.dispatch.direct"
         workgroup_operands = (
@@ -210,6 +210,8 @@ def _dispatch_descriptor(*, indirect_mode: str | None) -> Descriptor:
         key = f"cmd.dispatch.indirect.{indirect_mode}"
         workgroup_operands = (_operand(_REG_BUFFER_REF, "workgroup_count"),)
         workgroup_names = ("workgroup_count",)
+    if barrier:
+        key = f"{key}.barrier"
     return Descriptor(
         key=key,
         mnemonic=key,
@@ -242,49 +244,82 @@ def _dispatch_descriptor(*, indirect_mode: str | None) -> Descriptor:
                         AsmOperandSegmentDelimiter.SQUARE, workgroup_names
                     ),
                     AsmOperandSegment(AsmOperandSegmentDelimiter.PAREN, ("arguments",)),
-                )
+                ),
             ),
         ),
-        effects=(_RECORD_EFFECT,),
-        schedule_class=_SCHEDULE_RECORD,
-        flags=(DescriptorFlag.SIDE_EFFECTING,),
-        instruction_classes=(InstructionClass.CONTROL,),
+        effects=(_RECORD_EFFECT, _BARRIER_EFFECT) if barrier else (_RECORD_EFFECT,),
+        schedule_class=_SCHEDULE_BARRIER if barrier else _SCHEDULE_RECORD,
+        flags=(DescriptorFlag.SIDE_EFFECTING, DescriptorFlag.BARRIER)
+        if barrier
+        else (DescriptorFlag.SIDE_EFFECTING,),
+        instruction_classes=(InstructionClass.CONTROL, InstructionClass.BARRIER)
+        if barrier
+        else (InstructionClass.CONTROL,),
     )
 
 
-_COMMAND_DESCRIPTORS = (
-    Descriptor(
-        key="cmd.fill",
-        mnemonic="cmd.fill",
-        semantic_tag="command.fill",
+def _fill_descriptor(*, barrier: bool) -> Descriptor:
+    key = "cmd.fill.barrier" if barrier else "cmd.fill"
+    return Descriptor(
+        key=key,
+        mnemonic=key,
+        semantic_tag=key.replace("cmd.", "command."),
         operands=(
             _operand(_REG_BUFFER_REF, "target"),
             _operand(_REG_U32, "pattern"),
             _operand(_REG_U32, "pattern_length"),
         ),
         asm_forms=_asm(operands=("target", "pattern", "pattern_length")),
-        effects=(_RECORD_EFFECT,),
-        schedule_class=_SCHEDULE_RECORD,
-        flags=(DescriptorFlag.SIDE_EFFECTING,),
-        instruction_classes=(InstructionClass.GENERIC_MEMORY,),
-    ),
-    Descriptor(
-        key="cmd.copy",
-        mnemonic="cmd.copy",
-        semantic_tag="command.copy",
+        effects=(_RECORD_EFFECT, _BARRIER_EFFECT) if barrier else (_RECORD_EFFECT,),
+        schedule_class=_SCHEDULE_BARRIER if barrier else _SCHEDULE_RECORD,
+        flags=(DescriptorFlag.SIDE_EFFECTING, DescriptorFlag.BARRIER)
+        if barrier
+        else (DescriptorFlag.SIDE_EFFECTING,),
+        instruction_classes=(
+            InstructionClass.GENERIC_MEMORY,
+            InstructionClass.BARRIER,
+        )
+        if barrier
+        else (InstructionClass.GENERIC_MEMORY,),
+    )
+
+
+def _copy_descriptor(*, barrier: bool) -> Descriptor:
+    key = "cmd.copy.barrier" if barrier else "cmd.copy"
+    return Descriptor(
+        key=key,
+        mnemonic=key,
+        semantic_tag=key.replace("cmd.", "command."),
         operands=(
             _operand(_REG_BUFFER_REF, "source"),
             _operand(_REG_BUFFER_REF, "target"),
         ),
         asm_forms=_asm(operands=("source", "target")),
-        effects=(_RECORD_EFFECT,),
-        schedule_class=_SCHEDULE_RECORD,
-        flags=(DescriptorFlag.SIDE_EFFECTING,),
-        instruction_classes=(InstructionClass.GENERIC_MEMORY,),
-    ),
-    _dispatch_descriptor(indirect_mode=None),
-    _dispatch_descriptor(indirect_mode="static"),
-    _dispatch_descriptor(indirect_mode="dynamic"),
+        effects=(_RECORD_EFFECT, _BARRIER_EFFECT) if barrier else (_RECORD_EFFECT,),
+        schedule_class=_SCHEDULE_BARRIER if barrier else _SCHEDULE_RECORD,
+        flags=(DescriptorFlag.SIDE_EFFECTING, DescriptorFlag.BARRIER)
+        if barrier
+        else (DescriptorFlag.SIDE_EFFECTING,),
+        instruction_classes=(
+            InstructionClass.GENERIC_MEMORY,
+            InstructionClass.BARRIER,
+        )
+        if barrier
+        else (InstructionClass.GENERIC_MEMORY,),
+    )
+
+
+_COMMAND_DESCRIPTORS = (
+    _fill_descriptor(barrier=False),
+    _fill_descriptor(barrier=True),
+    _copy_descriptor(barrier=False),
+    _copy_descriptor(barrier=True),
+    _dispatch_descriptor(indirect_mode=None, barrier=False),
+    _dispatch_descriptor(indirect_mode=None, barrier=True),
+    _dispatch_descriptor(indirect_mode="static", barrier=False),
+    _dispatch_descriptor(indirect_mode="static", barrier=True),
+    _dispatch_descriptor(indirect_mode="dynamic", barrier=False),
+    _dispatch_descriptor(indirect_mode="dynamic", barrier=True),
     Descriptor(
         key="cmd.barrier.execution",
         mnemonic="cmd.barrier.execution",

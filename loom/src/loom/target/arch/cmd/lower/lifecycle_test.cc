@@ -533,13 +533,11 @@ TEST_F(CommandLifecycleTest,
   ASSERT_EQ(twice_program.requirements.rebindable_binding_count, 4u);
   ASSERT_EQ(twice_program.requirements.executable_count, 1u);
   ASSERT_EQ(twice_program.requirements.entry_count, 1u);
-  ASSERT_EQ(twice_program.commands.count, 3u);
+  ASSERT_EQ(twice_program.commands.count, 2u);
   EXPECT_EQ(loom_cmd_program_command_at(&twice_program, 0).kind,
             LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
   EXPECT_EQ(loom_cmd_program_command_at(&twice_program, 1).kind,
-            LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_EXECUTION);
-  EXPECT_EQ(loom_cmd_program_command_at(&twice_program, 2).kind,
-            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
+            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC_BARRIER);
 
   iree_hal_device_group_t* device_group = CreateSyncDeviceGroup();
   iree_hal_device_t* device = iree_hal_device_group_device_at(device_group, 0);

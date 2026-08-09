@@ -182,7 +182,7 @@ loom_cmd_program_command_t loom_cmd_program_command_at(
       .argument_schema_index = iree_unaligned_load_le_u32(
           record + LOOM_CMD_PROGRAM_COMMAND_ARGUMENT_SCHEMA_INDEX_OFFSET),
   };
-  switch (kind) {
+  switch ((uint32_t)loom_cmd_program_command_kind_base(kind)) {
     case LOOM_CMD_PROGRAM_COMMAND_KIND_FILL:
       command.payload.fill.target_buffer_ref = operand_0;
       command.payload.fill.pattern = operand_1;
@@ -295,15 +295,16 @@ iree_status_t loom_cmd_program_relocate_dependencies(
   for (uint32_t i = 0; i < program->commands.count; ++i) {
     const loom_cmd_program_command_t command =
         loom_cmd_program_command_at(program, i);
-    if (command.kind != LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT &&
-        command.kind !=
-            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC &&
-        command.kind !=
-            LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_DYNAMIC) {
+    const loom_cmd_program_command_kind_t base_kind =
+        loom_cmd_program_command_kind_base(command.kind);
+    const bool is_direct =
+        base_kind == LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT;
+    const bool is_indirect =
+        base_kind == LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC ||
+        base_kind == LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_DYNAMIC;
+    if (!is_direct && !is_indirect) {
       continue;
     }
-    const bool is_direct =
-        command.kind == LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT;
     const uint32_t executable_index =
         is_direct ? command.payload.dispatch_direct.executable_index
                   : command.payload.dispatch_indirect.executable_index;
@@ -474,8 +475,8 @@ static iree_status_t loom_cmd_program_validate_dispatch(
     const loom_cmd_program_t* program, uint32_t command_index,
     const loom_cmd_program_command_t* command,
     uint32_t* expected_argument_offset) {
-  const bool is_direct =
-      command->kind == LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT;
+  const bool is_direct = loom_cmd_program_command_kind_base(command->kind) ==
+                         LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT;
   const uint32_t executable_index =
       is_direct ? command->payload.dispatch_direct.executable_index
                 : command->payload.dispatch_indirect.executable_index;
@@ -567,7 +568,14 @@ static iree_status_t loom_cmd_program_validate_commands(
         record + LOOM_CMD_PROGRAM_COMMAND_OPERAND_3_OFFSET);
     const uint32_t operand_4 = iree_unaligned_load_le_u32(
         record + LOOM_CMD_PROGRAM_COMMAND_OPERAND_4_OFFSET);
-    switch (command.kind) {
+    const loom_cmd_program_command_kind_t base_kind =
+        loom_cmd_program_command_kind_base(command.kind);
+    if (loom_cmd_program_command_kind_has_barrier(command.kind) &&
+        base_kind == LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_EXECUTION) {
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                              "command kind %u is unsupported", command.kind);
+    }
+    switch ((uint32_t)base_kind) {
       case LOOM_CMD_PROGRAM_COMMAND_KIND_FILL:
         if (command.argument_offset != 0 ||
             command.argument_schema_index != 0 ||
@@ -820,7 +828,7 @@ static iree_status_t loom_cmd_program_validate_launch_counts(
   for (uint32_t i = 0; i < program->commands.count; ++i) {
     const loom_cmd_program_command_t command =
         loom_cmd_program_command_at(program, i);
-    if (command.kind !=
+    if (loom_cmd_program_command_kind_base(command.kind) !=
         LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC) {
       continue;
     }

@@ -76,6 +76,10 @@ typedef struct loom_cmd_program_entry_schema_t {
   uint32_t argument_byte_length;
 } loom_cmd_program_entry_schema_t;
 
+// Bit set on command kinds that perform a full execution barrier before their
+// payload. Every supported barrier kind has its own named enum value below.
+#define LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_BIT (1u << 8)
+
 // Kind of one command recorded by a portable command program.
 typedef enum loom_cmd_program_command_kind_e {
   // Fill one buffer range with a repeated scalar pattern.
@@ -90,7 +94,43 @@ typedef enum loom_cmd_program_command_kind_e {
   LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_DYNAMIC = 5,
   // Order all earlier commands before all later commands.
   LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_EXECUTION = 6,
+  // Perform a full execution barrier, then fill one buffer range.
+  LOOM_CMD_PROGRAM_COMMAND_KIND_FILL_BARRIER =
+      LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_BIT |
+      LOOM_CMD_PROGRAM_COMMAND_KIND_FILL,
+  // Perform a full execution barrier, then copy one buffer range.
+  LOOM_CMD_PROGRAM_COMMAND_KIND_COPY_BARRIER =
+      LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_BIT |
+      LOOM_CMD_PROGRAM_COMMAND_KIND_COPY,
+  // Perform a full execution barrier, then dispatch with exact counts.
+  LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT_BARRIER =
+      LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_BIT |
+      LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT,
+  // Perform a full execution barrier, then dispatch with stable indirect
+  // counts.
+  LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC_BARRIER =
+      LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_BIT |
+      LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC,
+  // Perform a full execution barrier, then dispatch with dynamically produced
+  // indirect counts.
+  LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_DYNAMIC_BARRIER =
+      LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_BIT |
+      LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_DYNAMIC,
 } loom_cmd_program_command_kind_t;
+
+// Returns true when |kind| joins all prior execution before its payload.
+static inline bool loom_cmd_program_command_kind_has_barrier(
+    loom_cmd_program_command_kind_t kind) {
+  return ((uint32_t)kind & LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_BIT) != 0;
+}
+
+// Returns the payload command kind without its preceding barrier semantic.
+static inline loom_cmd_program_command_kind_t
+loom_cmd_program_command_kind_base(loom_cmd_program_command_kind_t kind) {
+  const uint32_t base_kind =
+      (uint32_t)kind & ~LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_BIT;
+  return (loom_cmd_program_command_kind_t)base_kind;
+}
 
 // One decoded portable command.
 typedef struct loom_cmd_program_command_t {
@@ -102,7 +142,7 @@ typedef struct loom_cmd_program_command_t {
   uint32_t argument_schema_index;
   // Command-specific payload.
   union {
-    // Payload for LOOM_CMD_PROGRAM_COMMAND_KIND_FILL.
+    // Payload for either fill command kind.
     struct {
       // Target buffer-reference table index.
       uint32_t target_buffer_ref;
@@ -111,14 +151,14 @@ typedef struct loom_cmd_program_command_t {
       // Number of low pattern bytes to repeat.
       uint32_t pattern_length;
     } fill;
-    // Payload for LOOM_CMD_PROGRAM_COMMAND_KIND_COPY.
+    // Payload for either copy command kind.
     struct {
       // Source buffer-reference table index.
       uint32_t source_buffer_ref;
       // Target buffer-reference table index.
       uint32_t target_buffer_ref;
     } copy;
-    // Payload for LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT.
+    // Payload for either direct dispatch command kind.
     struct {
       // Dense executable requirement index.
       uint32_t executable_index;
@@ -131,7 +171,7 @@ typedef struct loom_cmd_program_command_t {
       // Exact Z workgroup count.
       uint32_t workgroup_count_z;
     } dispatch_direct;
-    // Payload for either indirect dispatch command kind.
+    // Payload for any indirect dispatch command kind.
     struct {
       // Dense executable requirement index.
       uint32_t executable_index;

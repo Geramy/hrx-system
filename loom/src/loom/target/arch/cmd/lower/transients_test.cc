@@ -209,7 +209,7 @@ command.program.def public @attention_wave() launch(%source: buffer, %target: bu
   EXPECT_EQ(program.requirements.transient.required_byte_length, 320u);
   EXPECT_EQ(program.requirements.launch_counts.binding_index, UINT32_MAX);
   EXPECT_EQ(program.requirements.launch_counts.required_byte_length, 0u);
-  ASSERT_EQ(program.commands.count, 9u);
+  ASSERT_EQ(program.commands.count, 6u);
 
   const std::array<loom_cmd_program_buffer_ref_t, 3> branches = {
       DispatchBufferRef(&program, 0, 1),
@@ -225,7 +225,17 @@ command.program.def public @attention_wave() launch(%source: buffer, %target: bu
   EXPECT_NE(branches[0].byte_offset, branches[2].byte_offset);
   EXPECT_NE(branches[1].byte_offset, branches[2].byte_offset);
 
-  const loom_cmd_program_buffer_ref_t post = DispatchBufferRef(&program, 6, 1);
+  for (uint32_t command_index = 0; command_index < program.commands.count;
+       ++command_index) {
+    const loom_cmd_program_command_t command =
+        loom_cmd_program_command_at(&program, command_index);
+    EXPECT_EQ(command.kind,
+              command_index < 3
+                  ? LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT
+                  : LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT_BARRIER);
+  }
+
+  const loom_cmd_program_buffer_ref_t post = DispatchBufferRef(&program, 4, 1);
   EXPECT_EQ(post.role, LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE);
   EXPECT_EQ(post.root_index, 2u);
   EXPECT_EQ(post.byte_offset, 0u);

@@ -548,8 +548,15 @@ static iree_status_t loom_cmd_iree_hal_record_packet(
     loom_cmd_iree_hal_make_binding_buffer_ref(workspace, op);
     return iree_ok_status();
   }
-  if (loom_cmd_iree_hal_packet_is(workspace, packet,
-                                  CMD_CORE_DESCRIPTOR_REF_FILL)) {
+  const bool is_fill = loom_cmd_iree_hal_packet_is(
+      workspace, packet, CMD_CORE_DESCRIPTOR_REF_FILL);
+  const bool is_fill_barrier = loom_cmd_iree_hal_packet_is(
+      workspace, packet, CMD_CORE_DESCRIPTOR_REF_FILL_BARRIER);
+  if (is_fill || is_fill_barrier) {
+    if (is_fill_barrier) {
+      IREE_RETURN_IF_ERROR(loom_cmd_iree_hal_record_execution_barrier(
+          workspace->command_buffer));
+    }
     const loom_value_slice_t operands = loom_low_op_operands(op);
     const uint32_t pattern = workspace->values[operands.values[1]].u32;
     return iree_hal_command_buffer_fill_buffer(
@@ -557,8 +564,15 @@ static iree_status_t loom_cmd_iree_hal_record_packet(
         workspace->values[operands.values[0]].buffer_ref, &pattern,
         workspace->values[operands.values[2]].u32, IREE_HAL_FILL_FLAG_NONE);
   }
-  if (loom_cmd_iree_hal_packet_is(workspace, packet,
-                                  CMD_CORE_DESCRIPTOR_REF_COPY)) {
+  const bool is_copy = loom_cmd_iree_hal_packet_is(
+      workspace, packet, CMD_CORE_DESCRIPTOR_REF_COPY);
+  const bool is_copy_barrier = loom_cmd_iree_hal_packet_is(
+      workspace, packet, CMD_CORE_DESCRIPTOR_REF_COPY_BARRIER);
+  if (is_copy || is_copy_barrier) {
+    if (is_copy_barrier) {
+      IREE_RETURN_IF_ERROR(loom_cmd_iree_hal_record_execution_barrier(
+          workspace->command_buffer));
+    }
     const loom_value_slice_t operands = loom_low_op_operands(op);
     return iree_hal_command_buffer_copy_buffer(
         workspace->command_buffer,
@@ -566,8 +580,15 @@ static iree_status_t loom_cmd_iree_hal_record_packet(
         workspace->values[operands.values[1]].buffer_ref,
         IREE_HAL_COPY_FLAG_NONE);
   }
-  if (loom_cmd_iree_hal_packet_is(workspace, packet,
-                                  CMD_CORE_DESCRIPTOR_REF_DISPATCH_DIRECT)) {
+  const bool is_direct = loom_cmd_iree_hal_packet_is(
+      workspace, packet, CMD_CORE_DESCRIPTOR_REF_DISPATCH_DIRECT);
+  const bool is_direct_barrier = loom_cmd_iree_hal_packet_is(
+      workspace, packet, CMD_CORE_DESCRIPTOR_REF_DISPATCH_DIRECT_BARRIER);
+  if (is_direct || is_direct_barrier) {
+    if (is_direct_barrier) {
+      IREE_RETURN_IF_ERROR(loom_cmd_iree_hal_record_execution_barrier(
+          workspace->command_buffer));
+    }
     const loom_value_slice_t operands = loom_low_op_operands(op);
     const iree_hal_dispatch_config_t config =
         iree_hal_make_static_dispatch_config(
@@ -578,21 +599,30 @@ static iree_status_t loom_cmd_iree_hal_record_packet(
                                       IREE_HAL_DISPATCH_FLAG_NONE,
                                       /*argument_start=*/5);
   }
-  if (loom_cmd_iree_hal_packet_is(
-          workspace, packet,
-          CMD_CORE_DESCRIPTOR_REF_DISPATCH_INDIRECT_STATIC) ||
-      loom_cmd_iree_hal_packet_is(
-          workspace, packet,
-          CMD_CORE_DESCRIPTOR_REF_DISPATCH_INDIRECT_DYNAMIC)) {
+  const bool is_indirect_static = loom_cmd_iree_hal_packet_is(
+      workspace, packet, CMD_CORE_DESCRIPTOR_REF_DISPATCH_INDIRECT_STATIC);
+  const bool is_indirect_static_barrier = loom_cmd_iree_hal_packet_is(
+      workspace, packet,
+      CMD_CORE_DESCRIPTOR_REF_DISPATCH_INDIRECT_STATIC_BARRIER);
+  const bool is_indirect_dynamic = loom_cmd_iree_hal_packet_is(
+      workspace, packet, CMD_CORE_DESCRIPTOR_REF_DISPATCH_INDIRECT_DYNAMIC);
+  const bool is_indirect_dynamic_barrier = loom_cmd_iree_hal_packet_is(
+      workspace, packet,
+      CMD_CORE_DESCRIPTOR_REF_DISPATCH_INDIRECT_DYNAMIC_BARRIER);
+  if (is_indirect_static || is_indirect_static_barrier || is_indirect_dynamic ||
+      is_indirect_dynamic_barrier) {
+    if (is_indirect_static_barrier || is_indirect_dynamic_barrier) {
+      IREE_RETURN_IF_ERROR(loom_cmd_iree_hal_record_execution_barrier(
+          workspace->command_buffer));
+    }
     const loom_value_slice_t operands = loom_low_op_operands(op);
     iree_hal_dispatch_config_t config = {0};
     config.workgroup_count_ref =
         workspace->values[operands.values[2]].buffer_ref;
-    const bool is_static = loom_cmd_iree_hal_packet_is(
-        workspace, packet, CMD_CORE_DESCRIPTOR_REF_DISPATCH_INDIRECT_STATIC);
     const iree_hal_dispatch_flags_t flags =
-        is_static ? IREE_HAL_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS
-                  : IREE_HAL_DISPATCH_FLAG_DYNAMIC_INDIRECT_PARAMETERS;
+        is_indirect_static || is_indirect_static_barrier
+            ? IREE_HAL_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS
+            : IREE_HAL_DISPATCH_FLAG_DYNAMIC_INDIRECT_PARAMETERS;
     return loom_cmd_iree_hal_dispatch(workspace, op, config, flags,
                                       /*argument_start=*/3);
   }
@@ -801,8 +831,10 @@ static iree_status_t loom_cmd_iree_hal_pack_program_arguments(
 static iree_status_t loom_cmd_iree_hal_record_program_dispatch(
     loom_cmd_iree_hal_program_workspace_t* workspace,
     const loom_cmd_program_command_t* command) {
+  const loom_cmd_program_command_kind_t base_kind =
+      loom_cmd_program_command_kind_base(command->kind);
   const bool is_direct =
-      command->kind == LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT;
+      base_kind == LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT;
   const uint32_t executable_index =
       is_direct ? command->payload.dispatch_direct.executable_index
                 : command->payload.dispatch_indirect.executable_index;
@@ -834,10 +866,10 @@ static iree_status_t loom_cmd_iree_hal_record_program_dispatch(
     config.workgroup_count_ref =
         workspace->buffer_refs[command->payload.dispatch_indirect
                                    .workgroup_count_buffer_ref];
-    flags =
-        command->kind == LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC
-            ? IREE_HAL_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS
-            : IREE_HAL_DISPATCH_FLAG_DYNAMIC_INDIRECT_PARAMETERS;
+    const bool is_static =
+        base_kind == LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC;
+    flags = is_static ? IREE_HAL_DISPATCH_FLAG_STATIC_INDIRECT_PARAMETERS
+                      : IREE_HAL_DISPATCH_FLAG_DYNAMIC_INDIRECT_PARAMETERS;
   }
   return iree_hal_command_buffer_dispatch(
       workspace->command_buffer,
@@ -848,7 +880,11 @@ static iree_status_t loom_cmd_iree_hal_record_program_dispatch(
 static iree_status_t loom_cmd_iree_hal_record_program_command(
     loom_cmd_iree_hal_program_workspace_t* workspace,
     const loom_cmd_program_command_t* command) {
-  switch (command->kind) {
+  if (loom_cmd_program_command_kind_has_barrier(command->kind)) {
+    IREE_RETURN_IF_ERROR(
+        loom_cmd_iree_hal_record_execution_barrier(workspace->command_buffer));
+  }
+  switch ((uint32_t)loom_cmd_program_command_kind_base(command->kind)) {
     case LOOM_CMD_PROGRAM_COMMAND_KIND_FILL: {
       const uint32_t pattern = command->payload.fill.pattern;
       return iree_hal_command_buffer_fill_buffer(

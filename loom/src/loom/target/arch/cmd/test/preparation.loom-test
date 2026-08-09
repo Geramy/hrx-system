@@ -72,8 +72,7 @@ low.func.def public retain target<cmd.core> abi(command_program) abi_layout({ent
   %10 = cmd.buffer.ref.binding %4, %7, %9
   cmd.dispatch.indirect.static<%5, %6>[%10](%0, %7, %8, %1, %7, %8)
   cmd.dispatch.indirect.static<%5, %6>[%10](%0, %7, %8, %2, %7, %8)
-  cmd.barrier.execution
-  cmd.dispatch.indirect.static<%5, %6>[%10](%2, %7, %8, %3, %7, %8)
+  cmd.dispatch.indirect.static.barrier<%5, %6>[%10](%2, %7, %8, %3, %7, %8)
   return
 }
 
@@ -160,8 +159,7 @@ low.func.def public retain target<cmd.core> abi(command_program) abi_layout({ent
   %6 = cmd.constant.u64 -1
   %7 = cmd.constant.u32 1
   cmd.dispatch.direct<%3, %4>[%7, %7, %7](%0, %5, %6, %1, %5, %6)
-  cmd.barrier.execution
-  cmd.dispatch.direct<%3, %4>[%7, %7, %7](%1, %5, %6, %2, %5, %6)
+  cmd.dispatch.direct.barrier<%3, %4>[%7, %7, %7](%1, %5, %6, %2, %5, %6)
   return
 }
 
@@ -226,8 +224,7 @@ low.func.def public retain target<cmd.core> abi(command_program) abi_layout({ent
   %10 = cmd.constant.u64 12
   %11 = cmd.buffer.ref.binding %3, %8, %10
   cmd.dispatch.indirect.static<%4, %6>[%11](%0, %8, %9, %1, %8, %9)
-  cmd.barrier.execution
-  cmd.dispatch.indirect.static<%5, %7>[%11](%1, %8, %9, %2, %8, %9)
+  cmd.dispatch.indirect.static.barrier<%5, %7>[%11](%1, %8, %9, %2, %8, %9)
   return
 }
 
@@ -243,8 +240,7 @@ low.func.def public retain target<cmd.core> abi(command_program) abi_layout({ent
   %20 = cmd.constant.u64 12
   %21 = cmd.buffer.ref.binding %15, %18, %20
   cmd.dispatch.indirect.static<%16, %17>[%21](%12, %18, %19, %13, %18, %19)
-  cmd.barrier.execution
-  cmd.dispatch.indirect.static<%16, %17>[%21](%13, %18, %19, %14, %18, %19)
+  cmd.dispatch.indirect.static.barrier<%16, %17>[%21](%13, %18, %19, %14, %18, %19)
   return
 }
 
@@ -285,7 +281,6 @@ low.func.def public retain target<cmd.core> abi(command_program) abi_layout({ent
   %5 = cmd.constant.u64 -1
   %6 = cmd.constant.u32 1
   cmd.dispatch.direct<%2, %3>[%6, %6, %6](%0, %4, %5, %1, %4, %5)
-  cmd.barrier.execution
-  cmd.dispatch.direct<%2, %3>[%6, %6, %6](%0, %4, %5, %1, %4, %5)
+  cmd.dispatch.direct.barrier<%2, %3>[%6, %6, %6](%0, %4, %5, %1, %4, %5)
   return
 }

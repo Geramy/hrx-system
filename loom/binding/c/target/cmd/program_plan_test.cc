@@ -1017,7 +1017,7 @@ command.program.def public target(@command_target) @decode(%element_count: index
   for (uint32_t i = 0; i < parsed.commands.count; ++i) {
     const loom_cmd_program_command_t command =
         loom_cmd_program_command_at(&parsed, i);
-    if (command.kind ==
+    if (loom_cmd_program_command_kind_base(command.kind) ==
         LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC) {
       ++dispatch_count;
     }

@@ -529,7 +529,7 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
   EXPECT_EQ(program.entry_schema_kinds.count, 9u);
   EXPECT_EQ(program.argument_data.data_length,
             9u * LOOM_CMD_PROGRAM_BUFFER_REF_SIZE);
-  ASSERT_EQ(program.commands.count, 5u);
+  ASSERT_EQ(program.commands.count, 4u);
   const loom_cmd_program_buffer_ref_t launch_count_ref =
       loom_cmd_program_buffer_ref_at(&program, 0);
   EXPECT_EQ(launch_count_ref.role, LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE);
@@ -567,11 +567,13 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
   EXPECT_EQ(parameter_ref.root_index, 0u);
   EXPECT_EQ(parameter_ref.byte_offset, 256u);
   EXPECT_EQ(parameter_ref.byte_length, 512u);
-  for (uint32_t i = 2; i < program.commands.count; ++i) {
+  for (uint32_t i = 1; i < program.commands.count; ++i) {
     const loom_cmd_program_command_t command =
         loom_cmd_program_command_at(&program, i);
-    EXPECT_EQ(command.kind,
-              LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
+    EXPECT_EQ(
+        command.kind,
+        i == 1 ? LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC_BARRIER
+               : LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
     EXPECT_EQ(command.payload.dispatch_indirect.workgroup_count_buffer_ref, 0u);
   }
 

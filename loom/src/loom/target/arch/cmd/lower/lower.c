@@ -451,7 +451,7 @@ static iree_status_t loom_cmd_lower_build_launch_operands(
 static iree_status_t loom_cmd_lower_build_direct_launch(
     loom_cmd_lower_state_t* state, const loom_op_t* source_op,
     const loom_cmd_lower_launch_t* launch,
-    loom_target_dispatch_workgroup_count_t workgroup_count) {
+    loom_target_dispatch_workgroup_count_t workgroup_count, bool has_barrier) {
   IREE_ASSERT(loom_kernel_launch_isa(source_op));
   IREE_ASSERT_LT(launch->executable_index, state->plan->executable_count);
   IREE_ASSERT_LT(launch->entry_index, state->plan->entry_count);
@@ -478,15 +478,19 @@ static iree_status_t loom_cmd_lower_build_direct_launch(
       state, source_op, launch, prefix_operands,
       IREE_ARRAYSIZE(prefix_operands), &operands, &operand_count));
   loom_op_t* dispatch_op = NULL;
+  const uint32_t descriptor_ordinal =
+      has_barrier ? CMD_CORE_DESCRIPTOR_REF_DISPATCH_DIRECT_BARRIER
+                  : CMD_CORE_DESCRIPTOR_REF_DISPATCH_DIRECT;
   return loom_cmd_lower_build_descriptor_op(
-      state, CMD_CORE_DESCRIPTOR_REF_DISPATCH_DIRECT, operands, operand_count,
+      state, descriptor_ordinal, operands, operand_count,
       /*result_types=*/NULL, /*result_count=*/0, source_op->location,
       &dispatch_op);
 }
 
 static iree_status_t loom_cmd_lower_build_host_launch(
     loom_cmd_lower_state_t* state, const loom_op_t* source_op,
-    const loom_cmd_lower_launch_t* launch, uint32_t host_tuple_ordinal) {
+    const loom_cmd_lower_launch_t* launch, uint32_t host_tuple_ordinal,
+    bool has_barrier) {
   IREE_ASSERT(loom_kernel_launch_isa(source_op));
   IREE_ASSERT_LT(launch->executable_index, state->plan->executable_count);
   IREE_ASSERT_LT(launch->entry_index, state->plan->entry_count);
@@ -504,38 +508,34 @@ static iree_status_t loom_cmd_lower_build_host_launch(
       state, source_op, launch, prefix_operands,
       IREE_ARRAYSIZE(prefix_operands), &operands, &operand_count));
   loom_op_t* dispatch_op = NULL;
+  const uint32_t descriptor_ordinal =
+      has_barrier ? CMD_CORE_DESCRIPTOR_REF_DISPATCH_INDIRECT_STATIC_BARRIER
+                  : CMD_CORE_DESCRIPTOR_REF_DISPATCH_INDIRECT_STATIC;
   return loom_cmd_lower_build_descriptor_op(
-      state, CMD_CORE_DESCRIPTOR_REF_DISPATCH_INDIRECT_STATIC, operands,
-      operand_count, /*result_types=*/NULL, /*result_count=*/0,
-      source_op->location, &dispatch_op);
+      state, descriptor_ordinal, operands, operand_count,
+      /*result_types=*/NULL, /*result_count=*/0, source_op->location,
+      &dispatch_op);
 }
 
-static iree_status_t loom_cmd_lower_build_launch(
-    loom_cmd_lower_state_t* state, iree_host_size_t launch_index) {
+static iree_status_t loom_cmd_lower_build_launch(loom_cmd_lower_state_t* state,
+                                                 iree_host_size_t launch_index,
+                                                 bool has_barrier) {
   const loom_cmd_lower_launch_t* launch = &state->plan->launches[launch_index];
   const loom_cmd_launch_count_t* launch_count =
       &state->plan->launch_graph->launches[launch_index];
   switch (launch_count->kind) {
     case LOOM_CMD_LAUNCH_COUNT_KIND_DIRECT:
       return loom_cmd_lower_build_direct_launch(
-          state, launch_count->source_op, launch, launch_count->payload.direct);
+          state, launch_count->source_op, launch, launch_count->payload.direct,
+          has_barrier);
     case LOOM_CMD_LAUNCH_COUNT_KIND_HOST:
       return loom_cmd_lower_build_host_launch(
           state, launch_count->source_op, launch,
-          launch_count->payload.host_tuple_ordinal);
+          launch_count->payload.host_tuple_ordinal, has_barrier);
     default:
       IREE_ASSERT_UNREACHABLE("aggregate launch count kind is valid");
       IREE_BUILTIN_UNREACHABLE();
   }
-}
-
-static iree_status_t loom_cmd_lower_build_barrier(loom_cmd_lower_state_t* state,
-                                                  loom_location_id_t location) {
-  loom_op_t* barrier_op = NULL;
-  return loom_cmd_lower_build_descriptor_op(
-      state, CMD_CORE_DESCRIPTOR_REF_BARRIER_EXECUTION,
-      /*operands=*/NULL, /*operand_count=*/0, /*result_types=*/NULL,
-      /*result_count=*/0, location, &barrier_op);
 }
 
 static iree_status_t loom_cmd_lower_build_commands(
@@ -550,14 +550,9 @@ static iree_status_t loom_cmd_lower_build_commands(
     IREE_ASSERT_GT(wave.command_count, 0u);
     for (iree_host_size_t i = 0; i < wave.command_count; ++i) {
       const iree_host_size_t launch_index = wave.command_offset + i;
-      IREE_RETURN_IF_ERROR(loom_cmd_lower_build_launch(state, launch_index));
-    }
-    if (wave_index + 1 < graph->wave_count) {
-      const loom_op_t* last_op =
-          graph->launches[wave.command_offset + wave.command_count - 1]
-              .source_op;
+      const bool has_barrier = wave_index != 0 && i == 0;
       IREE_RETURN_IF_ERROR(
-          loom_cmd_lower_build_barrier(state, last_op->location));
+          loom_cmd_lower_build_launch(state, launch_index, has_barrier));
     }
   }
   loom_op_t* return_op = NULL;
