@@ -24,6 +24,11 @@ See [KERNEL_INTEGRATION.md](KERNEL_INTEGRATION.md) for the exact authored-source
 map, prefill/decode routing, JIT and export boundary, Qwen-owned model
 endpoints, and remaining bounded attention-tail workaround.
 
+See [COMMAND_PROGRAM_INTEGRATION.md](COMMAND_PROGRAM_INTEGRATION.md) for the
+targetless command-program source, public `plan -> JIT[] -> materialize`
+lifecycle, and the intended integration boundary with a llama.cpp graph
+planner.
+
 The first completed integration milestone was one complete layer-0 prefill-512
 execution:
 
