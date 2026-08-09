@@ -228,6 +228,10 @@ TEST(QwenDecodeCommandProgramTest, CompilesCompleteProductionPlan) {
   const loomc_config_binding_t config_bindings[] = {
       {
           /*.key=*/loomc_make_cstring_view("qwen3_moe.workload.token_capacity"),
+          /*.value=*/loomc_make_cstring_view("1"),
+      },
+      {
+          /*.key=*/loomc_make_cstring_view("qwen3_30b.request.token_capacity"),
           /*.value=*/loomc_make_cstring_view("512"),
       },
   };
@@ -333,7 +337,7 @@ TEST(QwenDecodeCommandProgramTest, CompilesCompleteProductionPlan) {
   EXPECT_EQ(info.parameter_root_count, 2u);
   EXPECT_EQ(info.parameter_count, 580u);
   EXPECT_EQ(info.transient.binding_index, 4u);
-  EXPECT_EQ(info.transient.required_byte_length, 225536u);
+  EXPECT_EQ(info.transient.required_byte_length, 209152u);
   EXPECT_EQ(info.transient.minimum_alignment, 256u);
   EXPECT_EQ(info.launch_counts.binding_index,
             LOOMC_CMD_PROGRAM_BINDING_INVALID);
