@@ -44,6 +44,39 @@ iree_c_embed_data(
 )
 
 loom_link_module(
+    name = "prefill_linked",
+    srcs = ["prefill.loom"],
+    libraries = [
+        "//experimental/qwen/kernels:attention_metadata_runtime_module",
+        "//experimental/qwen/kernels:attention_postprocess_f32_f16_runtime_module",
+        "//experimental/qwen/kernels:attention_prepare_quantized_runtime_module",
+        "//experimental/qwen/kernels:dense_linear_quantized_f16_runtime_module",
+        "//experimental/qwen/kernels:expert_table_partition_fused_runtime_module",
+        "//experimental/qwen/kernels:flash_attention_prefill_f32_f16_runtime_module",
+        "//experimental/qwen/kernels:greedy_argmax_partials_runtime_module",
+        "//experimental/qwen/kernels:routed_down_f16_runtime_module",
+        "//experimental/qwen/kernels:routed_down_next_rmsnorm_f32_runtime_module",
+        "//experimental/qwen/kernels:routed_gate_up_f16_runtime_module",
+        "//experimental/qwen/kernels:router_projection_f32_runtime_module",
+        "//experimental/qwen/kernels:router_top8_f32_runtime_module",
+        "//experimental/qwen/kernels:token_embedding_q4k_runtime_module",
+        "//experimental/qwen/kernels:vocabulary_projection_q6_runtime_module",
+    ],
+    mode = "selective",
+    roots = ["@qwen3_30b_prefill_512"],
+    strip_check = True,
+)
+
+iree_c_embed_data(
+    name = "prefill_source",
+    srcs = [":prefill_linked"],
+    c_file_output = "prefill_source.c",
+    flatten = True,
+    h_file_output = "prefill_source.h",
+    identifier = "qwen_loom_prefill_program_source",
+)
+
+loom_link_module(
     name = "dense_projection_specialization_test_linked",
     srcs = ["dense_projection_specialization_test.loom"],
     libraries = [
