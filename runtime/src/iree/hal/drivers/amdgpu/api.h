@@ -495,6 +495,85 @@ IREE_API_EXPORT iree_status_t iree_hal_amdgpu_logical_device_create(
     const iree_hal_device_create_params_t* create_params,
     iree_allocator_t host_allocator, iree_hal_device_t** out_device);
 
+// Process-local memory backing one host queue's retained dispatch progress.
+//
+// The addresses name storage in the process that owns |device|. They remain
+// stable from a successful partial-dispatch profiling begin until the matching
+// profiling end or device destruction. An external fault monitor may read the
+// storage only after freezing the process: queue submission and profiling
+// flush mutate the cursors and ring records concurrently during execution.
+//
+// Event positions are monotonically increasing. Map a position to a physical
+// ring slot with `position % event_capacity`, then read one
+// iree_hal_profile_dispatch_event_t at that slot. The paired completion signal
+// uses the same slot. Its signed 64-bit value and unsigned 64-bit start/end
+// ticks are located by the supplied stride and offsets. A completed profiling
+// harvest rearms the raw signal slot, so its progress fields are meaningful
+// only while the owning submission is incomplete and frozen before harvest.
+typedef struct iree_hal_amdgpu_dispatch_progress_memory_t {
+  // Size of this record in bytes for forward-compatible transport.
+  uint32_t record_length;
+
+  // Physical device ordinal owning the queue.
+  uint32_t physical_device_ordinal;
+
+  // Queue ordinal within |physical_device_ordinal|.
+  uint32_t queue_ordinal;
+
+  // Power-of-two number of records in both paired rings.
+  uint32_t event_capacity;
+
+  // Active HAL profile session identifier.
+  uint64_t session_id;
+
+  // Address of the next logical event position eligible for sink flush.
+  uint64_t read_position_address;
+
+  // Address one past the last logical event ready for sink flush.
+  uint64_t ready_position_address;
+
+  // Address one past the last reserved logical event.
+  uint64_t write_position_address;
+
+  // Address of the first iree_hal_profile_dispatch_event_t ring record.
+  uint64_t event_records_address;
+
+  // Byte stride between dispatch event ring records.
+  uint32_t event_record_stride;
+
+  // Reserved for future event record layout fields; must be zero.
+  uint32_t reserved0;
+
+  // Address of the first raw dispatch completion-signal ring record.
+  uint64_t completion_signals_address;
+
+  // Byte stride between raw completion-signal records.
+  uint32_t completion_signal_stride;
+
+  // Byte offset of the signed 64-bit completion value in each signal.
+  uint32_t completion_value_offset;
+
+  // Byte offset of the unsigned 64-bit dispatch start tick in each signal.
+  uint32_t completion_start_tick_offset;
+
+  // Byte offset of the unsigned 64-bit dispatch end tick in each signal.
+  uint32_t completion_end_tick_offset;
+} iree_hal_amdgpu_dispatch_progress_memory_t;
+
+// Queries process-local dispatch progress memory for every host queue.
+//
+// This query is available only while an active profiling session requests both
+// IREE_HAL_DEVICE_PROFILING_DATA_DISPATCH_EVENTS and
+// IREE_HAL_DEVICE_PROFILING_FLAG_RETAIN_PARTIAL_DISPATCH_EVENTS. |out_count|
+// always receives the required record count. A NULL |out_memory| with zero
+// |capacity| performs a count query and returns IREE_STATUS_OUT_OF_RANGE when
+// the device has host queues.
+IREE_API_EXPORT iree_status_t
+iree_hal_amdgpu_device_query_dispatch_progress_memory(
+    iree_hal_device_t* device, iree_host_size_t capacity,
+    iree_hal_amdgpu_dispatch_progress_memory_t* out_memory,
+    iree_host_size_t* out_count);
+
 //===----------------------------------------------------------------------===//
 // iree_hal_amdgpu_driver_t
 //===----------------------------------------------------------------------===//

@@ -1092,6 +1092,46 @@ TEST_F(HostQueueCommandBufferProfilingTest,
   EXPECT_TRUE(queue->profiling.retain_partial_dispatch_events);
   EXPECT_TRUE(queue->profiling.completion_signals_host_readable);
 
+  iree_host_size_t progress_memory_count = 0;
+  IREE_EXPECT_STATUS_IS(IREE_STATUS_OUT_OF_RANGE,
+                        iree_hal_amdgpu_device_query_dispatch_progress_memory(
+                            test_device.base_device(), /*capacity=*/0,
+                            /*out_memory=*/nullptr, &progress_memory_count));
+  ASSERT_GT(progress_memory_count, 0u);
+  std::vector<iree_hal_amdgpu_dispatch_progress_memory_t> progress_memory(
+      progress_memory_count);
+  IREE_ASSERT_OK(iree_hal_amdgpu_device_query_dispatch_progress_memory(
+      test_device.base_device(), progress_memory.size(), progress_memory.data(),
+      &progress_memory_count));
+  const iree_hal_amdgpu_dispatch_progress_memory_t& first_progress_memory =
+      progress_memory[0];
+  EXPECT_EQ(sizeof(first_progress_memory), first_progress_memory.record_length);
+  EXPECT_EQ(queue->profiling.dispatch_events.capacity,
+            first_progress_memory.event_capacity);
+  EXPECT_EQ(
+      (uint64_t)(uintptr_t)&queue->profiling.dispatch_events.read_position,
+      first_progress_memory.read_position_address);
+  EXPECT_EQ(
+      (uint64_t)(uintptr_t)&queue->profiling.dispatch_events.ready_position,
+      first_progress_memory.ready_position_address);
+  EXPECT_EQ(
+      (uint64_t)(uintptr_t)&queue->profiling.dispatch_events.write_position,
+      first_progress_memory.write_position_address);
+  EXPECT_EQ((uint64_t)(uintptr_t)queue->profiling.dispatch_events.values,
+            first_progress_memory.event_records_address);
+  EXPECT_EQ((uint64_t)(uintptr_t)queue->profiling.completion_signals,
+            first_progress_memory.completion_signals_address);
+  EXPECT_EQ(sizeof(iree_hal_amdgpu_profile_dispatch_event_t),
+            first_progress_memory.event_record_stride);
+  EXPECT_EQ(sizeof(iree_amd_signal_t),
+            first_progress_memory.completion_signal_stride);
+  EXPECT_EQ(offsetof(iree_amd_signal_t, value),
+            first_progress_memory.completion_value_offset);
+  EXPECT_EQ(offsetof(iree_amd_signal_t, start_ts),
+            first_progress_memory.completion_start_tick_offset);
+  EXPECT_EQ(offsetof(iree_amd_signal_t, end_ts),
+            first_progress_memory.completion_end_tick_offset);
+
   TwoDispatchCommandBuffer fixture;
   IREE_ASSERT_OK(CreateTwoDispatchCommandBuffer(&test_device, &fixture));
 
@@ -1111,6 +1151,43 @@ TEST_F(HostQueueCommandBufferProfilingTest,
   IREE_ASSERT_OK(iree_hal_semaphore_wait(signal, signal_value,
                                          iree_infinite_timeout(),
                                          IREE_ASYNC_WAIT_FLAG_NONE));
+
+  const uint64_t write_position =
+      *(const uint64_t*)(uintptr_t)first_progress_memory.write_position_address;
+  ASSERT_GE(write_position, 2u);
+  for (uint64_t event_position = write_position - 2;
+       event_position < write_position; ++event_position) {
+    const uint64_t slot = event_position % first_progress_memory.event_capacity;
+    const auto* event =
+        (const iree_hal_profile_dispatch_event_t*)(uintptr_t)(first_progress_memory
+                                                                  .event_records_address +
+                                                              slot *
+                                                                  first_progress_memory
+                                                                      .event_record_stride);
+    EXPECT_NE(0u, event->event_id);
+    EXPECT_NE(0u, event->command_buffer_id);
+
+    const uint64_t completion_signal_address =
+        first_progress_memory.completion_signals_address +
+        slot * first_progress_memory.completion_signal_stride;
+    const auto* completion_value =
+        (const volatile int64_t*)(uintptr_t)(completion_signal_address +
+                                             first_progress_memory
+                                                 .completion_value_offset);
+    const auto* start_tick =
+        (const volatile uint64_t*)(uintptr_t)(completion_signal_address +
+                                              first_progress_memory
+                                                  .completion_start_tick_offset);
+    const auto* end_tick =
+        (const volatile uint64_t*)(uintptr_t)(completion_signal_address +
+                                              first_progress_memory
+                                                  .completion_end_tick_offset);
+    EXPECT_NE(0u, event->start_tick);
+    EXPECT_NE(0u, event->end_tick);
+    EXPECT_EQ(1, *completion_value);
+    EXPECT_EQ(0u, *start_tick);
+    EXPECT_EQ(0u, *end_tick);
+  }
 
   IREE_ASSERT_OK(iree_hal_device_profiling_flush(test_device.base_device()));
   IREE_ASSERT_OK(profiling.End());
@@ -1132,6 +1209,12 @@ TEST_F(HostQueueCommandBufferProfilingTest,
   EXPECT_FALSE(queue->profiling.retain_partial_dispatch_events);
   EXPECT_FALSE(queue->profiling.completion_signals_host_readable);
   IREE_ASSERT_OK(normal_profiling.End());
+
+  progress_memory_count = 0;
+  IREE_EXPECT_STATUS_IS(IREE_STATUS_FAILED_PRECONDITION,
+                        iree_hal_amdgpu_device_query_dispatch_progress_memory(
+                            test_device.base_device(), /*capacity=*/0,
+                            /*out_memory=*/nullptr, &progress_memory_count));
 }
 
 TEST_F(HostQueueCommandBufferProfilingTest,

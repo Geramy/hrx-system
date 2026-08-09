@@ -2128,6 +2128,88 @@ iree_status_t iree_hal_amdgpu_logical_device_create(
   return status;
 }
 
+iree_status_t iree_hal_amdgpu_device_query_dispatch_progress_memory(
+    iree_hal_device_t* base_device, iree_host_size_t capacity,
+    iree_hal_amdgpu_dispatch_progress_memory_t* out_memory,
+    iree_host_size_t* out_count) {
+  if (out_count == NULL) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "out_count must not be NULL");
+  }
+  *out_count = 0;
+  if (base_device == NULL ||
+      !iree_hal_resource_is(base_device,
+                            &iree_hal_amdgpu_logical_device_vtable)) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "device must be an AMDGPU logical device");
+  }
+  if (capacity != 0 && out_memory == NULL) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "dispatch progress storage must be provided when capacity is nonzero");
+  }
+
+  iree_hal_amdgpu_logical_device_t* logical_device =
+      (iree_hal_amdgpu_logical_device_t*)base_device;
+  if (!iree_hal_device_profiling_options_requests_partial_dispatch_events(
+          &logical_device->profiling.options)) {
+    return iree_make_status(
+        IREE_STATUS_FAILED_PRECONDITION,
+        "dispatch progress memory requires active retained partial-dispatch "
+        "profiling");
+  }
+
+  iree_host_size_t required_count = 0;
+  for (iree_host_size_t i = 0; i < logical_device->physical_device_count; ++i) {
+    required_count += logical_device->physical_devices[i]->host_queue_count;
+  }
+  *out_count = required_count;
+  if (capacity < required_count) {
+    return iree_status_from_code(IREE_STATUS_OUT_OF_RANGE);
+  }
+
+  iree_host_size_t descriptor_index = 0;
+  for (iree_host_size_t i = 0; i < logical_device->physical_device_count; ++i) {
+    iree_hal_amdgpu_physical_device_t* physical_device =
+        logical_device->physical_devices[i];
+    for (iree_host_size_t j = 0; j < physical_device->host_queue_count; ++j) {
+      iree_hal_amdgpu_host_queue_t* queue = &physical_device->host_queues[j];
+      IREE_ASSERT(queue->profiling.retain_partial_dispatch_events);
+      IREE_ASSERT(queue->profiling.completion_signals_host_readable);
+      IREE_ASSERT(queue->profiling.dispatch_events.values);
+      IREE_ASSERT(queue->profiling.completion_signals);
+      out_memory[descriptor_index++] =
+          (iree_hal_amdgpu_dispatch_progress_memory_t){
+              .record_length = sizeof(out_memory[0]),
+              .physical_device_ordinal =
+                  iree_hal_amdgpu_host_queue_profile_device_ordinal(queue),
+              .queue_ordinal =
+                  iree_hal_amdgpu_host_queue_profile_queue_ordinal(queue),
+              .event_capacity = queue->profiling.dispatch_events.capacity,
+              .session_id = logical_device->profiling.session_id,
+              .read_position_address = (uint64_t)(uintptr_t)&queue->profiling
+                                           .dispatch_events.read_position,
+              .ready_position_address = (uint64_t)(uintptr_t)&queue->profiling
+                                            .dispatch_events.ready_position,
+              .write_position_address = (uint64_t)(uintptr_t)&queue->profiling
+                                            .dispatch_events.write_position,
+              .event_records_address =
+                  (uint64_t)(uintptr_t)queue->profiling.dispatch_events.values,
+              .event_record_stride =
+                  sizeof(iree_hal_amdgpu_profile_dispatch_event_t),
+              .completion_signals_address =
+                  (uint64_t)(uintptr_t)queue->profiling.completion_signals,
+              .completion_signal_stride = sizeof(iree_amd_signal_t),
+              .completion_value_offset = offsetof(iree_amd_signal_t, value),
+              .completion_start_tick_offset =
+                  offsetof(iree_amd_signal_t, start_ts),
+              .completion_end_tick_offset = offsetof(iree_amd_signal_t, end_ts),
+          };
+    }
+  }
+  return iree_ok_status();
+}
+
 static void iree_hal_amdgpu_logical_device_destroy(
     iree_hal_device_t* base_device) {
   iree_hal_amdgpu_logical_device_t* logical_device =
