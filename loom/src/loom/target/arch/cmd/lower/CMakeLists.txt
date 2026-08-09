@@ -373,6 +373,7 @@ loom_cc_test(
     loom::ops::op_registry
     loom::target::arch::cmd::descriptors::low_registry
     loom::target::arch::cmd::iree_hal::recording
+    loom::target::arch::cmd::program
     loom::testing::diagnostic_matchers
     loom::testing::module_ptr
     loom::verify

@@ -16,13 +16,17 @@
 #include "loom/ops/low/ops.h"
 #include "loom/target/arch/cmd/abi_layout.h"
 #include "loom/target/arch/cmd/descriptors/descriptors.h"
+#include "loom/target/arch/cmd/format.h"
 #include "loom/target/registers.h"
 
 typedef enum loom_cmd_iree_hal_argument_kind_e {
   LOOM_CMD_IREE_HAL_ARGUMENT_NONE = 0,
-  LOOM_CMD_IREE_HAL_ARGUMENT_U32 = 1,
-  LOOM_CMD_IREE_HAL_ARGUMENT_U64 = 2,
-  LOOM_CMD_IREE_HAL_ARGUMENT_BUFFER_REF = 3,
+  LOOM_CMD_IREE_HAL_ARGUMENT_B8 = 1,
+  LOOM_CMD_IREE_HAL_ARGUMENT_B16 = 2,
+  LOOM_CMD_IREE_HAL_ARGUMENT_B32 = 3,
+  LOOM_CMD_IREE_HAL_ARGUMENT_B64 = 4,
+  LOOM_CMD_IREE_HAL_ARGUMENT_FIXED_BUFFER = 5,
+  LOOM_CMD_IREE_HAL_ARGUMENT_BINDING = 6,
 } loom_cmd_iree_hal_argument_kind_t;
 
 typedef union loom_cmd_iree_hal_value_t {
@@ -277,16 +281,82 @@ static loom_cmd_iree_hal_argument_kind_t loom_cmd_iree_hal_argument_kind(
     const loom_cmd_iree_hal_workspace_t* workspace, loom_value_id_t value_id) {
   const loom_type_t type = loom_module_value_type(workspace->module, value_id);
   switch (loom_low_register_type_class_id(type)) {
-    case CMD_CORE_REG_CLASS_ID_U32:
-      return LOOM_CMD_IREE_HAL_ARGUMENT_U32;
-    case CMD_CORE_REG_CLASS_ID_U64:
-      return LOOM_CMD_IREE_HAL_ARGUMENT_U64;
-    case CMD_CORE_REG_CLASS_ID_BUFFER_REF:
-      return LOOM_CMD_IREE_HAL_ARGUMENT_BUFFER_REF;
+    case CMD_CORE_REG_CLASS_ID_B8:
+      return LOOM_CMD_IREE_HAL_ARGUMENT_B8;
+    case CMD_CORE_REG_CLASS_ID_B16:
+      return LOOM_CMD_IREE_HAL_ARGUMENT_B16;
+    case CMD_CORE_REG_CLASS_ID_B32:
+      return LOOM_CMD_IREE_HAL_ARGUMENT_B32;
+    case CMD_CORE_REG_CLASS_ID_B64:
+      return LOOM_CMD_IREE_HAL_ARGUMENT_B64;
+    case CMD_CORE_REG_CLASS_ID_BUFFER:
+      return LOOM_CMD_IREE_HAL_ARGUMENT_FIXED_BUFFER;
+    case CMD_CORE_REG_CLASS_ID_BINDING:
+      return LOOM_CMD_IREE_HAL_ARGUMENT_BINDING;
     default:
-      IREE_ASSERT_UNREACHABLE("verified cmd dispatch argument register class");
       return LOOM_CMD_IREE_HAL_ARGUMENT_NONE;
   }
+}
+
+static iree_host_size_t loom_cmd_iree_hal_scalar_byte_length(
+    loom_cmd_iree_hal_argument_kind_t kind) {
+  switch (kind) {
+    case LOOM_CMD_IREE_HAL_ARGUMENT_B8:
+      return 1;
+    case LOOM_CMD_IREE_HAL_ARGUMENT_B16:
+      return 2;
+    case LOOM_CMD_IREE_HAL_ARGUMENT_B32:
+      return 4;
+    case LOOM_CMD_IREE_HAL_ARGUMENT_B64:
+      return 8;
+    default:
+      return 0;
+  }
+}
+
+static void loom_cmd_iree_hal_store_scalar_argument(
+    uint64_t value, iree_host_size_t byte_length, uint8_t* target) {
+  switch (byte_length) {
+    case 1:
+      target[0] = (uint8_t)value;
+      break;
+    case 2:
+      iree_unaligned_store_le_u16(target, (uint16_t)value);
+      break;
+    case 4:
+      iree_unaligned_store_le_u32(target, (uint32_t)value);
+      break;
+    case 8:
+      iree_unaligned_store_le_u64(target, value);
+      break;
+    default:
+      IREE_ASSERT_UNREACHABLE("portable scalar argument byte length");
+  }
+}
+
+static iree_status_t loom_cmd_iree_hal_resolve_argument_buffer(
+    const loom_cmd_iree_hal_workspace_t* workspace,
+    loom_cmd_iree_hal_argument_kind_t kind, loom_value_id_t root_id,
+    loom_value_id_t byte_offset_id, loom_value_id_t byte_length_id,
+    iree_hal_buffer_ref_t* out_buffer_ref) {
+  const iree_device_size_t byte_offset = workspace->values[byte_offset_id].u64;
+  const iree_device_size_t byte_length = workspace->values[byte_length_id].u64;
+  if (kind == LOOM_CMD_IREE_HAL_ARGUMENT_BINDING) {
+    *out_buffer_ref = iree_hal_make_indirect_buffer_ref(
+        workspace->values[root_id].table_index, byte_offset, byte_length);
+    return iree_ok_status();
+  }
+
+  IREE_ASSERT_EQ(kind, LOOM_CMD_IREE_HAL_ARGUMENT_FIXED_BUFFER);
+  const iree_hal_buffer_ref_t root = workspace->values[root_id].buffer_ref;
+  iree_device_size_t adjusted_offset = 0;
+  iree_device_size_t adjusted_length = 0;
+  IREE_RETURN_IF_ERROR(iree_hal_buffer_calculate_range(
+      root.offset, root.length, byte_offset, byte_length, &adjusted_offset,
+      &adjusted_length));
+  *out_buffer_ref =
+      iree_hal_make_buffer_ref(root.buffer, adjusted_offset, adjusted_length);
+  return iree_ok_status();
 }
 
 static iree_status_t loom_cmd_iree_hal_pack_arguments(
@@ -295,58 +365,87 @@ static iree_status_t loom_cmd_iree_hal_pack_arguments(
     uint16_t argument_start, iree_const_byte_span_t* out_constants,
     iree_hal_buffer_ref_list_t* out_bindings) {
   IREE_ASSERT_LE(argument_start, operands.count);
-  const uint16_t argument_count = operands.count - argument_start;
-  if (argument_count != entry->info.parameter_count) {
-    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                            "command dispatch has %" PRIu16
-                            " logical arguments but its entry expects %" PRIu16,
-                            argument_count, entry->info.parameter_count);
+  if (entry->info.constant_byte_length != 0) {
+    memset(workspace->constants, 0, entry->info.constant_byte_length);
   }
-
-  memset(workspace->constants, 0, entry->info.constant_byte_length);
-  memset(workspace->bindings, 0,
-         entry->info.binding_count * sizeof(*workspace->bindings));
-  for (uint16_t i = 0; i < entry->info.parameter_count; ++i) {
-    const loom_value_id_t argument = operands.values[argument_start + i];
+  if (entry->info.binding_count != 0) {
+    memset(workspace->bindings, 0,
+           entry->info.binding_count * sizeof(*workspace->bindings));
+  }
+  uint16_t logical_index = 0;
+  uint16_t operand_index = argument_start;
+  while (operand_index < operands.count) {
+    if (logical_index >= entry->info.parameter_count) {
+      return iree_make_status(
+          IREE_STATUS_INVALID_ARGUMENT,
+          "command dispatch has more logical arguments than its entry");
+    }
+    const loom_value_id_t argument = operands.values[operand_index];
     const loom_cmd_iree_hal_argument_kind_t argument_kind =
         loom_cmd_iree_hal_argument_kind(workspace, argument);
     const iree_hal_executable_function_parameter_t* parameter =
-        &entry->parameters[i];
-    switch (parameter->type) {
-      case IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_CONSTANT:
-        if (argument_kind == LOOM_CMD_IREE_HAL_ARGUMENT_U32 &&
-            parameter->size == sizeof(uint32_t)) {
-          memcpy(workspace->constants + parameter->offset,
-                 &workspace->values[argument].u32, sizeof(uint32_t));
-        } else if (argument_kind == LOOM_CMD_IREE_HAL_ARGUMENT_U64 &&
-                   parameter->size == sizeof(uint64_t)) {
-          memcpy(workspace->constants + parameter->offset,
-                 &workspace->values[argument].u64, sizeof(uint64_t));
-        } else {
-          return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                                  "command argument %" PRIu16
-                                  " does not match its %" PRIu16
-                                  "-byte constant parameter",
-                                  i, parameter->size);
-        }
-        break;
-      case IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_BINDING:
-        if (argument_kind != LOOM_CMD_IREE_HAL_ARGUMENT_BUFFER_REF) {
-          return iree_make_status(
-              IREE_STATUS_INVALID_ARGUMENT,
-              "command argument %" PRIu16 " is not a buffer reference", i);
-        }
-        workspace->bindings[parameter->offset] =
-            workspace->values[argument].buffer_ref;
-        break;
-      case IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_BUFFER_PTR:
-        return iree_make_status(
-            IREE_STATUS_UNIMPLEMENTED,
-            "command entry raw buffer-pointer parameters cannot preserve "
-            "issue-time buffer rebinding");
-      default:
-        IREE_ASSERT_UNREACHABLE("entry parameter types were validated");
+        &entry->parameters[logical_index];
+    const iree_host_size_t scalar_byte_length =
+        loom_cmd_iree_hal_scalar_byte_length(argument_kind);
+    if (scalar_byte_length != 0) {
+      if (parameter->type !=
+              IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_CONSTANT ||
+          parameter->size != scalar_byte_length) {
+        return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                                "command argument %" PRIu16
+                                " does not match its %" PRIu16
+                                "-byte constant parameter",
+                                logical_index, parameter->size);
+      }
+      loom_cmd_iree_hal_store_scalar_argument(
+          workspace->values[argument].u64, scalar_byte_length,
+          workspace->constants + parameter->offset);
+      ++operand_index;
+      ++logical_index;
+      continue;
     }
+
+    if ((argument_kind != LOOM_CMD_IREE_HAL_ARGUMENT_FIXED_BUFFER &&
+         argument_kind != LOOM_CMD_IREE_HAL_ARGUMENT_BINDING) ||
+        (iree_host_size_t)operand_index + 3 > operands.count ||
+        loom_low_register_type_class_id(loom_module_value_type(
+            workspace->module, operands.values[operand_index + 1])) !=
+            CMD_CORE_REG_CLASS_ID_U64 ||
+        loom_low_register_type_class_id(loom_module_value_type(
+            workspace->module, operands.values[operand_index + 2])) !=
+            CMD_CORE_REG_CLASS_ID_U64) {
+      return iree_make_status(
+          IREE_STATUS_INVALID_ARGUMENT,
+          "command buffer argument %" PRIu16
+          " is not a root, byte-offset, and byte-length tuple",
+          logical_index);
+    }
+    if (parameter->type ==
+        IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_BUFFER_PTR) {
+      return iree_make_status(
+          IREE_STATUS_UNIMPLEMENTED,
+          "command entry raw buffer-pointer parameters cannot preserve "
+          "issue-time buffer rebinding");
+    }
+    if (parameter->type !=
+        IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_BINDING) {
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                              "command argument %" PRIu16
+                              " is not a scalar constant",
+                              logical_index);
+    }
+    IREE_RETURN_IF_ERROR(loom_cmd_iree_hal_resolve_argument_buffer(
+        workspace, argument_kind, argument, operands.values[operand_index + 1],
+        operands.values[operand_index + 2],
+        &workspace->bindings[parameter->offset]));
+    operand_index += 3;
+    ++logical_index;
+  }
+  if (logical_index != entry->info.parameter_count) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "command dispatch has %" PRIu16
+                            " logical arguments but its entry expects %" PRIu16,
+                            logical_index, entry->info.parameter_count);
   }
 
   *out_constants = iree_make_const_byte_span(workspace->constants,
@@ -429,6 +528,18 @@ static iree_status_t loom_cmd_iree_hal_record_packet(
     return iree_ok_status();
   }
   if (loom_cmd_iree_hal_packet_is(workspace, packet,
+                                  CMD_CORE_DESCRIPTOR_REF_CONSTANT_B8) ||
+      loom_cmd_iree_hal_packet_is(workspace, packet,
+                                  CMD_CORE_DESCRIPTOR_REF_CONSTANT_B16) ||
+      loom_cmd_iree_hal_packet_is(workspace, packet,
+                                  CMD_CORE_DESCRIPTOR_REF_CONSTANT_B32) ||
+      loom_cmd_iree_hal_packet_is(workspace, packet,
+                                  CMD_CORE_DESCRIPTOR_REF_CONSTANT_B64)) {
+    workspace->values[loom_low_const_result(op)].u64 =
+        (uint64_t)loom_cmd_iree_hal_constant_value(op);
+    return iree_ok_status();
+  }
+  if (loom_cmd_iree_hal_packet_is(workspace, packet,
                                   CMD_CORE_DESCRIPTOR_REF_BUFFER_REF_DIRECT)) {
     return loom_cmd_iree_hal_make_direct_buffer_ref(workspace, op);
   }
@@ -506,7 +617,7 @@ typedef struct loom_cmd_iree_hal_program_workspace_t {
   const loom_cmd_iree_hal_inputs_t* inputs;
   // Begun command buffer receiving portable commands.
   iree_hal_command_buffer_t* command_buffer;
-  // Resolved direct and indirect buffer-reference table.
+  // Resolved ranges used by fills, copies, and indirect launch counts.
   iree_hal_buffer_ref_t* buffer_refs;
   // Scratch storage for one dispatch constant block.
   uint8_t* constants;
@@ -520,41 +631,125 @@ static iree_status_t loom_cmd_iree_hal_validate_program_inputs(
     iree_host_size_t* out_max_binding_count) {
   IREE_RETURN_IF_ERROR(loom_cmd_iree_hal_validate_inputs(
       inputs, out_max_constant_byte_length, out_max_binding_count));
-  return loom_cmd_iree_hal_validate_input_counts(
+  IREE_RETURN_IF_ERROR(loom_cmd_iree_hal_validate_input_counts(
       program->requirements.fixed_buffer_count,
       program->requirements.rebindable_binding_count,
       program->requirements.executable_count, program->requirements.entry_count,
-      inputs);
+      inputs));
+  for (uint32_t schema_index = 0; schema_index < program->entry_schemas.count;
+       ++schema_index) {
+    const loom_cmd_program_entry_schema_t schema =
+        loom_cmd_program_entry_schema_at(program, schema_index);
+    const loom_cmd_iree_hal_entry_t* entry =
+        &inputs->entries[schema.entry_index];
+    if (schema.argument_count != entry->info.parameter_count) {
+      return iree_make_status(
+          IREE_STATUS_INVALID_ARGUMENT,
+          "command entry %" PRIu32 " schema has %" PRIu32
+          " logical arguments but its implementation expects %" PRIu16,
+          schema.entry_index, schema.argument_count,
+          entry->info.parameter_count);
+    }
+    for (uint32_t argument_index = 0; argument_index < schema.argument_count;
+         ++argument_index) {
+      const loom_cmd_program_argument_kind_t kind =
+          loom_cmd_program_entry_schema_kind_at(program, &schema,
+                                                argument_index);
+      const iree_hal_executable_function_parameter_t* parameter =
+          &entry->parameters[argument_index];
+      uint16_t scalar_byte_length = 0;
+      switch (kind) {
+        case LOOM_CMD_PROGRAM_ARGUMENT_KIND_B8:
+          scalar_byte_length = 1;
+          break;
+        case LOOM_CMD_PROGRAM_ARGUMENT_KIND_B16:
+          scalar_byte_length = 2;
+          break;
+        case LOOM_CMD_PROGRAM_ARGUMENT_KIND_B32:
+          scalar_byte_length = 4;
+          break;
+        case LOOM_CMD_PROGRAM_ARGUMENT_KIND_B64:
+          scalar_byte_length = 8;
+          break;
+        case LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER:
+          if (parameter->type ==
+              IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_BINDING) {
+            continue;
+          }
+          if (parameter->type ==
+              IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_BUFFER_PTR) {
+            return iree_make_status(
+                IREE_STATUS_UNIMPLEMENTED,
+                "command entry raw buffer-pointer parameters cannot preserve "
+                "issue-time buffer rebinding");
+          }
+          break;
+      }
+      if (scalar_byte_length == 0 ||
+          parameter->type !=
+              IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_CONSTANT ||
+          parameter->size != scalar_byte_length) {
+        return iree_make_status(
+            IREE_STATUS_INVALID_ARGUMENT,
+            "command entry %" PRIu32 " argument %" PRIu32
+            " is incompatible with its portable logical kind",
+            schema.entry_index, argument_index);
+      }
+    }
+  }
+  return iree_ok_status();
+}
+
+static iree_status_t loom_cmd_iree_hal_resolve_program_buffer_ref(
+    const loom_cmd_iree_hal_program_workspace_t* workspace,
+    loom_cmd_program_buffer_ref_t source,
+    iree_hal_buffer_ref_t* out_buffer_ref) {
+  if (source.role == LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE) {
+    *out_buffer_ref = iree_hal_make_indirect_buffer_ref(
+        source.root_index, source.byte_offset, source.byte_length);
+    return iree_ok_status();
+  }
+
+  const iree_hal_buffer_ref_t root =
+      workspace->inputs->fixed_buffers[source.root_index];
+  if (root.buffer == NULL) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "fixed-buffer root %" PRIu32
+                            " is not a direct buffer",
+                            source.root_index);
+  }
+  iree_device_size_t adjusted_offset = 0;
+  iree_device_size_t adjusted_length = 0;
+  IREE_RETURN_IF_ERROR(iree_hal_buffer_calculate_range(
+      root.offset, root.length, source.byte_offset, source.byte_length,
+      &adjusted_offset, &adjusted_length));
+  *out_buffer_ref =
+      iree_hal_make_buffer_ref(root.buffer, adjusted_offset, adjusted_length);
+  return iree_ok_status();
 }
 
 static iree_status_t loom_cmd_iree_hal_resolve_program_buffer_refs(
     loom_cmd_iree_hal_program_workspace_t* workspace) {
   for (uint32_t i = 0; i < workspace->program->buffer_refs.count; ++i) {
-    const loom_cmd_program_buffer_ref_t source =
-        loom_cmd_program_buffer_ref_at(workspace->program, i);
-    if (source.role == LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE) {
-      workspace->buffer_refs[i] = iree_hal_make_indirect_buffer_ref(
-          source.root_index, source.byte_offset, source.byte_length);
-      continue;
-    }
-
-    const iree_hal_buffer_ref_t root =
-        workspace->inputs->fixed_buffers[source.root_index];
-    if (root.buffer == NULL) {
-      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                              "fixed-buffer root %" PRIu32
-                              " is not a direct buffer",
-                              source.root_index);
-    }
-    iree_device_size_t adjusted_offset = 0;
-    iree_device_size_t adjusted_length = 0;
-    IREE_RETURN_IF_ERROR(iree_hal_buffer_calculate_range(
-        root.offset, root.length, source.byte_offset, source.byte_length,
-        &adjusted_offset, &adjusted_length));
-    workspace->buffer_refs[i] =
-        iree_hal_make_buffer_ref(root.buffer, adjusted_offset, adjusted_length);
+    IREE_RETURN_IF_ERROR(loom_cmd_iree_hal_resolve_program_buffer_ref(
+        workspace, loom_cmd_program_buffer_ref_at(workspace->program, i),
+        &workspace->buffer_refs[i]));
   }
   return iree_ok_status();
+}
+
+static loom_cmd_program_buffer_ref_t
+loom_cmd_iree_hal_decode_program_buffer_argument(const uint8_t* data) {
+  return (loom_cmd_program_buffer_ref_t){
+      .role = (loom_cmd_program_buffer_role_t)iree_unaligned_load_le_u32(
+          data + LOOM_CMD_PROGRAM_BUFFER_REF_ROLE_OFFSET),
+      .root_index = iree_unaligned_load_le_u32(
+          data + LOOM_CMD_PROGRAM_BUFFER_REF_ROOT_INDEX_OFFSET),
+      .byte_offset = iree_unaligned_load_le_u64(
+          data + LOOM_CMD_PROGRAM_BUFFER_REF_BYTE_OFFSET_OFFSET),
+      .byte_length = iree_unaligned_load_le_u64(
+          data + LOOM_CMD_PROGRAM_BUFFER_REF_BYTE_LENGTH_OFFSET),
+  };
 }
 
 static iree_status_t loom_cmd_iree_hal_pack_program_arguments(
@@ -563,59 +758,36 @@ static iree_status_t loom_cmd_iree_hal_pack_program_arguments(
     const loom_cmd_iree_hal_entry_t* entry,
     iree_const_byte_span_t* out_constants,
     iree_hal_buffer_ref_list_t* out_bindings) {
-  if (command->argument_count != entry->info.parameter_count) {
-    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                            "command dispatch has %" PRIu32
-                            " logical arguments but its entry expects %" PRIu16,
-                            command->argument_count,
-                            entry->info.parameter_count);
+  if (entry->info.constant_byte_length != 0) {
+    memset(workspace->constants, 0, entry->info.constant_byte_length);
   }
-
-  memset(workspace->constants, 0, entry->info.constant_byte_length);
-  memset(workspace->bindings, 0,
-         entry->info.binding_count * sizeof(*workspace->bindings));
-  for (uint16_t i = 0; i < entry->info.parameter_count; ++i) {
-    const loom_cmd_program_argument_t argument = loom_cmd_program_argument_at(
-        workspace->program, command->argument_offset + i);
+  if (entry->info.binding_count != 0) {
+    memset(workspace->bindings, 0,
+           entry->info.binding_count * sizeof(*workspace->bindings));
+  }
+  const loom_cmd_program_entry_schema_t schema =
+      loom_cmd_program_entry_schema_at(workspace->program,
+                                       command->argument_schema_index);
+  iree_const_byte_span_t argument_data =
+      loom_cmd_program_command_argument_data(workspace->program, command);
+  const uint8_t* cursor = argument_data.data;
+  for (uint32_t i = 0; i < schema.argument_count; ++i) {
+    const loom_cmd_program_argument_kind_t kind =
+        loom_cmd_program_entry_schema_kind_at(workspace->program, &schema, i);
     const iree_hal_executable_function_parameter_t* parameter =
         &entry->parameters[i];
-    switch (parameter->type) {
-      case IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_CONSTANT:
-        if (argument.kind == LOOM_CMD_PROGRAM_ARGUMENT_KIND_U32 &&
-            parameter->size == sizeof(uint32_t)) {
-          const uint32_t value = (uint32_t)argument.payload;
-          memcpy(workspace->constants + parameter->offset, &value,
-                 sizeof(value));
-        } else if (argument.kind == LOOM_CMD_PROGRAM_ARGUMENT_KIND_U64 &&
-                   parameter->size == sizeof(uint64_t)) {
-          memcpy(workspace->constants + parameter->offset, &argument.payload,
-                 sizeof(argument.payload));
-        } else {
-          return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                                  "command argument %" PRIu16
-                                  " does not match its %" PRIu16
-                                  "-byte constant parameter",
-                                  i, parameter->size);
-        }
-        break;
-      case IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_BINDING:
-        if (argument.kind != LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF) {
-          return iree_make_status(
-              IREE_STATUS_INVALID_ARGUMENT,
-              "command argument %" PRIu16 " is not a buffer reference", i);
-        }
-        workspace->bindings[parameter->offset] =
-            workspace->buffer_refs[(uint32_t)argument.payload];
-        break;
-      case IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_BUFFER_PTR:
-        return iree_make_status(
-            IREE_STATUS_UNIMPLEMENTED,
-            "command entry raw buffer-pointer parameters cannot preserve "
-            "issue-time buffer rebinding");
-      default:
-        IREE_ASSERT_UNREACHABLE("entry parameter types were validated");
+    if (kind == LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER) {
+      const loom_cmd_program_buffer_ref_t source =
+          loom_cmd_iree_hal_decode_program_buffer_argument(cursor);
+      IREE_RETURN_IF_ERROR(loom_cmd_iree_hal_resolve_program_buffer_ref(
+          workspace, source, &workspace->bindings[parameter->offset]));
+      cursor += LOOM_CMD_PROGRAM_BUFFER_REF_SIZE;
+    } else {
+      memcpy(workspace->constants + parameter->offset, cursor, parameter->size);
+      cursor += parameter->size;
     }
   }
+  IREE_ASSERT_EQ(cursor, argument_data.data + argument_data.data_length);
 
   *out_constants = iree_make_const_byte_span(workspace->constants,
                                              entry->info.constant_byte_length);

@@ -34,23 +34,30 @@ static void StoreBufferRef(std::vector<uint8_t>& data, uint32_t table_offset,
       record + LOOM_CMD_PROGRAM_BUFFER_REF_BYTE_LENGTH_OFFSET, byte_length);
 }
 
-static void StoreArgument(std::vector<uint8_t>& data, uint32_t table_offset,
-                          uint32_t index, loom_cmd_program_argument_kind_t kind,
-                          uint64_t payload) {
+static void StoreEntrySchema(std::vector<uint8_t>& data, uint32_t table_offset,
+                             uint32_t index, uint32_t entry_index,
+                             uint32_t kind_offset, uint32_t argument_count,
+                             uint32_t argument_byte_length) {
   uint8_t* record =
-      data.data() + table_offset + index * LOOM_CMD_PROGRAM_ARGUMENT_SIZE;
-  iree_unaligned_store_le_u32(record + LOOM_CMD_PROGRAM_ARGUMENT_KIND_OFFSET,
-                              kind);
-  iree_unaligned_store_le_u64(record + LOOM_CMD_PROGRAM_ARGUMENT_PAYLOAD_OFFSET,
-                              payload);
+      data.data() + table_offset + index * LOOM_CMD_PROGRAM_ENTRY_SCHEMA_SIZE;
+  iree_unaligned_store_le_u32(
+      record + LOOM_CMD_PROGRAM_ENTRY_SCHEMA_ENTRY_INDEX_OFFSET, entry_index);
+  iree_unaligned_store_le_u32(
+      record + LOOM_CMD_PROGRAM_ENTRY_SCHEMA_KIND_OFFSET_OFFSET, kind_offset);
+  iree_unaligned_store_le_u32(
+      record + LOOM_CMD_PROGRAM_ENTRY_SCHEMA_ARGUMENT_COUNT_OFFSET,
+      argument_count);
+  iree_unaligned_store_le_u32(
+      record + LOOM_CMD_PROGRAM_ENTRY_SCHEMA_ARGUMENT_BYTE_LENGTH_OFFSET,
+      argument_byte_length);
 }
 
 static void StoreCommand(std::vector<uint8_t>& data, uint32_t table_offset,
                          uint32_t index, loom_cmd_program_command_kind_t kind,
-                         uint32_t argument_offset, uint32_t argument_count,
-                         uint32_t operand_0 = 0, uint32_t operand_1 = 0,
-                         uint32_t operand_2 = 0, uint32_t operand_3 = 0,
-                         uint32_t operand_4 = 0) {
+                         uint32_t argument_offset,
+                         uint32_t argument_schema_index, uint32_t operand_0 = 0,
+                         uint32_t operand_1 = 0, uint32_t operand_2 = 0,
+                         uint32_t operand_3 = 0, uint32_t operand_4 = 0) {
   uint8_t* record =
       data.data() + table_offset + index * LOOM_CMD_PROGRAM_COMMAND_SIZE;
   iree_unaligned_store_le_u32(record + LOOM_CMD_PROGRAM_COMMAND_KIND_OFFSET,
@@ -59,7 +66,8 @@ static void StoreCommand(std::vector<uint8_t>& data, uint32_t table_offset,
       record + LOOM_CMD_PROGRAM_COMMAND_ARGUMENT_OFFSET_OFFSET,
       argument_offset);
   iree_unaligned_store_le_u32(
-      record + LOOM_CMD_PROGRAM_COMMAND_ARGUMENT_COUNT_OFFSET, argument_count);
+      record + LOOM_CMD_PROGRAM_COMMAND_ARGUMENT_SCHEMA_INDEX_OFFSET,
+      argument_schema_index);
   iree_unaligned_store_le_u32(
       record + LOOM_CMD_PROGRAM_COMMAND_OPERAND_0_OFFSET, operand_0);
   iree_unaligned_store_le_u32(
@@ -115,7 +123,10 @@ static void StoreParameter(std::vector<uint8_t>& data, uint32_t table_offset,
 
 static std::vector<uint8_t> BuildValidProgram() {
   static constexpr uint32_t kBufferRefCount = 2;
-  static constexpr uint32_t kArgumentCount = 3;
+  static constexpr uint32_t kEntrySchemaCount = 1;
+  static constexpr uint32_t kEntrySchemaKindCount = 3;
+  static constexpr uint32_t kArgumentByteLength = 4 + 8 + 24;
+  static constexpr uint32_t kArgumentDataLength = kArgumentByteLength * 3;
   static constexpr uint32_t kCommandCount = 6;
   static constexpr uint32_t kParameterRootCount = 1;
   static constexpr uint32_t kParameterCount = 2;
@@ -127,8 +138,9 @@ static std::vector<uint8_t> BuildValidProgram() {
       kFirstKeyLength + kSecondKeyLength;
   loom_cmd_program_format_layout_t layout = {};
   IREE_CHECK_OK(loom_cmd_program_format_calculate_layout(
-      kBufferRefCount, kArgumentCount, kCommandCount, kParameterRootCount,
-      kParameterCount, kParameterKeyLength, &layout));
+      kBufferRefCount, kEntrySchemaCount, kEntrySchemaKindCount,
+      kArgumentDataLength, kCommandCount, kParameterRootCount, kParameterCount,
+      kParameterKeyLength, &layout));
   std::vector<uint8_t> data(layout.total_length, 0);
 
   memcpy(data.data() + LOOM_CMD_PROGRAM_HEADER_MAGIC_OFFSET,
@@ -153,8 +165,8 @@ static std::vector<uint8_t> BuildValidProgram() {
       data.data() + LOOM_CMD_PROGRAM_HEADER_BUFFER_REF_COUNT_OFFSET,
       kBufferRefCount);
   iree_unaligned_store_le_u32(
-      data.data() + LOOM_CMD_PROGRAM_HEADER_ARGUMENT_COUNT_OFFSET,
-      kArgumentCount);
+      data.data() + LOOM_CMD_PROGRAM_HEADER_ARGUMENT_DATA_LENGTH_OFFSET,
+      kArgumentDataLength);
   iree_unaligned_store_le_u32(
       data.data() + LOOM_CMD_PROGRAM_HEADER_COMMAND_COUNT_OFFSET,
       kCommandCount);
@@ -168,11 +180,23 @@ static std::vector<uint8_t> BuildValidProgram() {
       data.data() + LOOM_CMD_PROGRAM_HEADER_PARAMETER_KEY_LENGTH_OFFSET,
       kParameterKeyLength);
   iree_unaligned_store_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_ENTRY_SCHEMA_COUNT_OFFSET,
+      kEntrySchemaCount);
+  iree_unaligned_store_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_ENTRY_SCHEMA_KIND_COUNT_OFFSET,
+      kEntrySchemaKindCount);
+  iree_unaligned_store_le_u32(
       data.data() + LOOM_CMD_PROGRAM_HEADER_BUFFER_REF_TABLE_OFFSET,
       layout.buffer_ref_offset);
   iree_unaligned_store_le_u32(
-      data.data() + LOOM_CMD_PROGRAM_HEADER_ARGUMENT_TABLE_OFFSET,
-      layout.argument_offset);
+      data.data() + LOOM_CMD_PROGRAM_HEADER_ENTRY_SCHEMA_TABLE_OFFSET,
+      layout.entry_schema_offset);
+  iree_unaligned_store_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_ENTRY_SCHEMA_KIND_TABLE_OFFSET,
+      layout.entry_schema_kind_offset);
+  iree_unaligned_store_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_ARGUMENT_DATA_OFFSET,
+      layout.argument_data_offset);
   iree_unaligned_store_le_u32(
       data.data() + LOOM_CMD_PROGRAM_HEADER_COMMAND_TABLE_OFFSET,
       layout.command_offset);
@@ -203,25 +227,44 @@ static std::vector<uint8_t> BuildValidProgram() {
                  LOOM_CMD_PROGRAM_BUFFER_ROLE_FIXED, 0, 0, 256);
   StoreBufferRef(data, layout.buffer_ref_offset, 1,
                  LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE, 0, 0, 12);
-  StoreArgument(data, layout.argument_offset, 0,
-                LOOM_CMD_PROGRAM_ARGUMENT_KIND_U32, 7);
-  StoreArgument(data, layout.argument_offset, 1,
-                LOOM_CMD_PROGRAM_ARGUMENT_KIND_U64, UINT64_C(0x123456789));
-  StoreArgument(data, layout.argument_offset, 2,
-                LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF, 1);
+  StoreEntrySchema(data, layout.entry_schema_offset, 0, /*entry_index=*/0,
+                   /*kind_offset=*/0, /*argument_count=*/3,
+                   kArgumentByteLength);
+  data[layout.entry_schema_kind_offset + 0] =
+      LOOM_CMD_PROGRAM_ARGUMENT_KIND_B32;
+  data[layout.entry_schema_kind_offset + 1] =
+      LOOM_CMD_PROGRAM_ARGUMENT_KIND_B64;
+  data[layout.entry_schema_kind_offset + 2] =
+      LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER;
+  for (uint32_t i = 0; i < 3; ++i) {
+    uint8_t* argument_data =
+        data.data() + layout.argument_data_offset + i * kArgumentByteLength;
+    iree_unaligned_store_le_u32(argument_data, 7);
+    iree_unaligned_store_le_u64(argument_data + 4, UINT64_C(0x123456789));
+    iree_unaligned_store_le_u32(
+        argument_data + 12 + LOOM_CMD_PROGRAM_BUFFER_REF_ROLE_OFFSET,
+        LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE);
+    iree_unaligned_store_le_u32(
+        argument_data + 12 + LOOM_CMD_PROGRAM_BUFFER_REF_ROOT_INDEX_OFFSET, 0);
+    iree_unaligned_store_le_u64(
+        argument_data + 12 + LOOM_CMD_PROGRAM_BUFFER_REF_BYTE_OFFSET_OFFSET, 4);
+    iree_unaligned_store_le_u64(
+        argument_data + 12 + LOOM_CMD_PROGRAM_BUFFER_REF_BYTE_LENGTH_OFFSET, 8);
+  }
   StoreCommand(data, layout.command_offset, 0,
                LOOM_CMD_PROGRAM_COMMAND_KIND_FILL, 0, 0, 0, 0x12345678, 4);
   StoreCommand(data, layout.command_offset, 1,
                LOOM_CMD_PROGRAM_COMMAND_KIND_COPY, 0, 0, 0, 1);
   StoreCommand(data, layout.command_offset, 2,
-               LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT, 0, 3, 0, 0, 1, 2,
+               LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT,
+               /*argument_offset=*/0, /*argument_schema_index=*/0, 0, 0, 1, 2,
                3);
   StoreCommand(data, layout.command_offset, 3,
-               LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC, 0, 3, 0,
-               0, 1);
+               LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC,
+               kArgumentByteLength, /*argument_schema_index=*/0, 0, 0, 1);
   StoreCommand(data, layout.command_offset, 4,
-               LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_DYNAMIC, 0, 3, 0,
-               0, 1);
+               LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_DYNAMIC,
+               kArgumentByteLength * 2, /*argument_schema_index=*/0, 0, 0, 1);
   StoreCommand(data, layout.command_offset, 5,
                LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_EXECUTION, 0, 0);
   StoreParameterRoot(data, layout.parameter_root_offset, 0,
@@ -260,7 +303,9 @@ TEST(CmdProgramTest, ParsesCanonicalProgram) {
   EXPECT_EQ(program.requirements.executable_count, 1u);
   EXPECT_EQ(program.requirements.entry_count, 1u);
   EXPECT_EQ(program.buffer_refs.count, 2u);
-  EXPECT_EQ(program.arguments.count, 3u);
+  ASSERT_EQ(program.entry_schemas.count, 1u);
+  EXPECT_EQ(program.entry_schema_kinds.count, 3u);
+  EXPECT_EQ(program.argument_data.data_length, 108u);
   EXPECT_EQ(program.commands.count, 6u);
   ASSERT_EQ(program.parameter_roots.count, 1u);
   ASSERT_EQ(program.parameters.count, 2u);
@@ -270,14 +315,22 @@ TEST(CmdProgramTest, ParsesCanonicalProgram) {
   EXPECT_EQ(binding.root_index, 0u);
   EXPECT_EQ(binding.byte_offset, 0u);
   EXPECT_EQ(binding.byte_length, 12u);
-  const loom_cmd_program_argument_t argument =
-      loom_cmd_program_argument_at(&program, 1);
-  EXPECT_EQ(argument.kind, LOOM_CMD_PROGRAM_ARGUMENT_KIND_U64);
-  EXPECT_EQ(argument.payload, UINT64_C(0x123456789));
+  const loom_cmd_program_entry_schema_t schema =
+      loom_cmd_program_entry_schema_at(&program, 0);
+  EXPECT_EQ(schema.entry_index, 0u);
+  EXPECT_EQ(schema.argument_count, 3u);
+  EXPECT_EQ(schema.argument_byte_length, 36u);
+  EXPECT_EQ(loom_cmd_program_entry_schema_kind_at(&program, &schema, 1),
+            LOOM_CMD_PROGRAM_ARGUMENT_KIND_B64);
   const loom_cmd_program_command_t command =
       loom_cmd_program_command_at(&program, 2);
   EXPECT_EQ(command.kind, LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT);
-  EXPECT_EQ(command.argument_count, 3u);
+  EXPECT_EQ(command.argument_schema_index, 0u);
+  const iree_const_byte_span_t argument_data =
+      loom_cmd_program_command_argument_data(&program, &command);
+  ASSERT_EQ(argument_data.data_length, 36u);
+  EXPECT_EQ(iree_unaligned_load_le_u64(argument_data.data + 4),
+            UINT64_C(0x123456789));
   EXPECT_EQ(command.payload.dispatch_direct.workgroup_count_x, 1u);
   EXPECT_EQ(command.payload.dispatch_direct.workgroup_count_y, 2u);
   EXPECT_EQ(command.payload.dispatch_direct.workgroup_count_z, 3u);
@@ -406,16 +459,25 @@ TEST(CmdProgramTest, RejectsMalformedBufferReference) {
                         loom_cmd_program_parse(AsByteSpan(data), &program));
 }
 
-TEST(CmdProgramTest, RejectsMalformedArgument) {
+TEST(CmdProgramTest, RejectsMalformedArgumentBuffer) {
   std::vector<uint8_t> data = BuildValidProgram();
   const uint32_t table_offset = iree_unaligned_load_le_u32(
-      data.data() + LOOM_CMD_PROGRAM_HEADER_ARGUMENT_TABLE_OFFSET);
-  iree_unaligned_store_le_u64(data.data() + table_offset +
-                                  2 * LOOM_CMD_PROGRAM_ARGUMENT_SIZE +
-                                  LOOM_CMD_PROGRAM_ARGUMENT_PAYLOAD_OFFSET,
+      data.data() + LOOM_CMD_PROGRAM_HEADER_ARGUMENT_DATA_OFFSET);
+  iree_unaligned_store_le_u32(data.data() + table_offset + 12 +
+                                  LOOM_CMD_PROGRAM_BUFFER_REF_ROOT_INDEX_OFFSET,
                               2);
   loom_cmd_program_t program = {};
   IREE_EXPECT_STATUS_IS(IREE_STATUS_OUT_OF_RANGE,
+                        loom_cmd_program_parse(AsByteSpan(data), &program));
+}
+
+TEST(CmdProgramTest, RejectsMalformedEntrySchema) {
+  std::vector<uint8_t> data = BuildValidProgram();
+  const uint32_t table_offset = iree_unaligned_load_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_ENTRY_SCHEMA_KIND_TABLE_OFFSET);
+  data[table_offset + 1] = 0xFF;
+  loom_cmd_program_t program = {};
+  IREE_EXPECT_STATUS_IS(IREE_STATUS_INVALID_ARGUMENT,
                         loom_cmd_program_parse(AsByteSpan(data), &program));
 }
 
@@ -425,8 +487,8 @@ TEST(CmdProgramTest, RejectsMalformedCommand) {
       data.data() + LOOM_CMD_PROGRAM_HEADER_COMMAND_TABLE_OFFSET);
   iree_unaligned_store_le_u32(
       data.data() + table_offset + 2 * LOOM_CMD_PROGRAM_COMMAND_SIZE +
-          LOOM_CMD_PROGRAM_COMMAND_ARGUMENT_COUNT_OFFSET,
-      4);
+          LOOM_CMD_PROGRAM_COMMAND_ARGUMENT_SCHEMA_INDEX_OFFSET,
+      1);
   loom_cmd_program_t program = {};
   IREE_EXPECT_STATUS_IS(IREE_STATUS_OUT_OF_RANGE,
                         loom_cmd_program_parse(AsByteSpan(data), &program));

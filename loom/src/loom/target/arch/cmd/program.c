@@ -13,9 +13,10 @@
 #include "loom/target/arch/cmd/format.h"
 
 iree_status_t loom_cmd_program_format_calculate_layout(
-    uint32_t buffer_ref_count, uint32_t argument_count, uint32_t command_count,
-    uint32_t parameter_root_count, uint32_t parameter_count,
-    uint32_t parameter_key_length,
+    uint32_t buffer_ref_count, uint32_t entry_schema_count,
+    uint32_t entry_schema_kind_count, uint32_t argument_data_length,
+    uint32_t command_count, uint32_t parameter_root_count,
+    uint32_t parameter_count, uint32_t parameter_key_length,
     loom_cmd_program_format_layout_t* out_layout) {
   uint64_t offset = LOOM_CMD_PROGRAM_HEADER_SIZE;
   const uint64_t buffer_ref_offset = offset;
@@ -26,12 +27,23 @@ iree_status_t loom_cmd_program_format_calculate_layout(
     return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
                             "command buffer-reference table is too large");
   }
-  const uint64_t argument_offset = offset;
-  if (!iree_checked_mul_u64(argument_count, LOOM_CMD_PROGRAM_ARGUMENT_SIZE,
+  const uint64_t entry_schema_offset = offset;
+  if (!iree_checked_mul_u64(entry_schema_count,
+                            LOOM_CMD_PROGRAM_ENTRY_SCHEMA_SIZE,
                             &table_length) ||
       !iree_checked_add_u64(offset, table_length, &offset)) {
     return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
-                            "command argument table is too large");
+                            "command entry-schema table is too large");
+  }
+  const uint64_t entry_schema_kind_offset = offset;
+  if (!iree_checked_add_u64(offset, entry_schema_kind_count, &offset)) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                            "command entry-schema kind table is too large");
+  }
+  const uint64_t argument_data_offset = offset;
+  if (!iree_checked_add_u64(offset, argument_data_length, &offset)) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                            "command argument payloads are too large");
   }
   const uint64_t command_offset = offset;
   if (!iree_checked_mul_u64(command_count, LOOM_CMD_PROGRAM_COMMAND_SIZE,
@@ -63,7 +75,9 @@ iree_status_t loom_cmd_program_format_calculate_layout(
   }
   *out_layout = (loom_cmd_program_format_layout_t){
       .buffer_ref_offset = (uint32_t)buffer_ref_offset,
-      .argument_offset = (uint32_t)argument_offset,
+      .entry_schema_offset = (uint32_t)entry_schema_offset,
+      .entry_schema_kind_offset = (uint32_t)entry_schema_kind_offset,
+      .argument_data_offset = (uint32_t)argument_data_offset,
       .command_offset = (uint32_t)command_offset,
       .parameter_root_offset = (uint32_t)parameter_root_offset,
       .parameter_offset = (uint32_t)parameter_offset,
@@ -73,12 +87,8 @@ iree_status_t loom_cmd_program_format_calculate_layout(
   return iree_ok_status();
 }
 
-loom_cmd_program_buffer_ref_t loom_cmd_program_buffer_ref_at(
-    const loom_cmd_program_t* program, uint32_t index) {
-  IREE_ASSERT_ARGUMENT(program);
-  IREE_ASSERT_LT(index, program->buffer_refs.count);
-  const uint8_t* record =
-      program->buffer_refs.data + index * LOOM_CMD_PROGRAM_BUFFER_REF_SIZE;
+static loom_cmd_program_buffer_ref_t loom_cmd_program_decode_buffer_ref(
+    const uint8_t* record) {
   return (loom_cmd_program_buffer_ref_t){
       .role = (loom_cmd_program_buffer_role_t)iree_unaligned_load_le_u32(
           record + LOOM_CMD_PROGRAM_BUFFER_REF_ROLE_OFFSET),
@@ -91,18 +101,59 @@ loom_cmd_program_buffer_ref_t loom_cmd_program_buffer_ref_at(
   };
 }
 
-loom_cmd_program_argument_t loom_cmd_program_argument_at(
+loom_cmd_program_buffer_ref_t loom_cmd_program_buffer_ref_at(
     const loom_cmd_program_t* program, uint32_t index) {
   IREE_ASSERT_ARGUMENT(program);
-  IREE_ASSERT_LT(index, program->arguments.count);
+  IREE_ASSERT_LT(index, program->buffer_refs.count);
+  return loom_cmd_program_decode_buffer_ref(
+      program->buffer_refs.data + index * LOOM_CMD_PROGRAM_BUFFER_REF_SIZE);
+}
+
+loom_cmd_program_entry_schema_t loom_cmd_program_entry_schema_at(
+    const loom_cmd_program_t* program, uint32_t index) {
+  IREE_ASSERT_ARGUMENT(program);
+  IREE_ASSERT_LT(index, program->entry_schemas.count);
   const uint8_t* record =
-      program->arguments.data + index * LOOM_CMD_PROGRAM_ARGUMENT_SIZE;
-  return (loom_cmd_program_argument_t){
-      .kind = (loom_cmd_program_argument_kind_t)iree_unaligned_load_le_u32(
-          record + LOOM_CMD_PROGRAM_ARGUMENT_KIND_OFFSET),
-      .payload = iree_unaligned_load_le_u64(
-          record + LOOM_CMD_PROGRAM_ARGUMENT_PAYLOAD_OFFSET),
+      program->entry_schemas.data + index * LOOM_CMD_PROGRAM_ENTRY_SCHEMA_SIZE;
+  return (loom_cmd_program_entry_schema_t){
+      .entry_index = iree_unaligned_load_le_u32(
+          record + LOOM_CMD_PROGRAM_ENTRY_SCHEMA_ENTRY_INDEX_OFFSET),
+      .kind_offset = iree_unaligned_load_le_u32(
+          record + LOOM_CMD_PROGRAM_ENTRY_SCHEMA_KIND_OFFSET_OFFSET),
+      .argument_count = iree_unaligned_load_le_u32(
+          record + LOOM_CMD_PROGRAM_ENTRY_SCHEMA_ARGUMENT_COUNT_OFFSET),
+      .argument_byte_length = iree_unaligned_load_le_u32(
+          record + LOOM_CMD_PROGRAM_ENTRY_SCHEMA_ARGUMENT_BYTE_LENGTH_OFFSET),
   };
+}
+
+loom_cmd_program_argument_kind_t loom_cmd_program_entry_schema_kind_at(
+    const loom_cmd_program_t* program,
+    const loom_cmd_program_entry_schema_t* schema, uint32_t argument_index) {
+  IREE_ASSERT_ARGUMENT(program);
+  IREE_ASSERT_ARGUMENT(schema);
+  IREE_ASSERT_LT(argument_index, schema->argument_count);
+  IREE_ASSERT_LE(schema->kind_offset, program->entry_schema_kinds.count);
+  IREE_ASSERT_LE(schema->argument_count,
+                 program->entry_schema_kinds.count - schema->kind_offset);
+  return (loom_cmd_program_argument_kind_t)
+      program->entry_schema_kinds.data[schema->kind_offset + argument_index];
+}
+
+iree_const_byte_span_t loom_cmd_program_command_argument_data(
+    const loom_cmd_program_t* program,
+    const loom_cmd_program_command_t* command) {
+  IREE_ASSERT_ARGUMENT(program);
+  IREE_ASSERT_ARGUMENT(command);
+  IREE_ASSERT_LT(command->argument_schema_index, program->entry_schemas.count);
+  const loom_cmd_program_entry_schema_t schema =
+      loom_cmd_program_entry_schema_at(program, command->argument_schema_index);
+  IREE_ASSERT_LE(command->argument_offset, program->argument_data.data_length);
+  IREE_ASSERT_LE(schema.argument_byte_length,
+                 program->argument_data.data_length - command->argument_offset);
+  return iree_make_const_byte_span(
+      program->argument_data.data + command->argument_offset,
+      schema.argument_byte_length);
 }
 
 loom_cmd_program_command_t loom_cmd_program_command_at(
@@ -128,8 +179,8 @@ loom_cmd_program_command_t loom_cmd_program_command_at(
       .kind = kind,
       .argument_offset = iree_unaligned_load_le_u32(
           record + LOOM_CMD_PROGRAM_COMMAND_ARGUMENT_OFFSET_OFFSET),
-      .argument_count = iree_unaligned_load_le_u32(
-          record + LOOM_CMD_PROGRAM_COMMAND_ARGUMENT_COUNT_OFFSET),
+      .argument_schema_index = iree_unaligned_load_le_u32(
+          record + LOOM_CMD_PROGRAM_COMMAND_ARGUMENT_SCHEMA_INDEX_OFFSET),
   };
   switch (kind) {
     case LOOM_CMD_PROGRAM_COMMAND_KIND_FILL:
@@ -224,6 +275,21 @@ iree_status_t loom_cmd_program_relocate_dependencies(
   iree_unaligned_store_le_u32(data + LOOM_CMD_PROGRAM_HEADER_ENTRY_COUNT_OFFSET,
                               relocation->entry_count);
 
+  const iree_host_size_t entry_schema_table_offset =
+      (iree_host_size_t)(program->entry_schemas.data - program->storage.data);
+  for (uint32_t i = 0; i < program->entry_schemas.count; ++i) {
+    const loom_cmd_program_entry_schema_t schema =
+        loom_cmd_program_entry_schema_at(program, i);
+    const uint32_t relocated_entry_index =
+        relocation->entry_indices[schema.entry_index];
+    IREE_ASSERT_LT(relocated_entry_index, relocation->entry_count);
+    uint8_t* record = data + entry_schema_table_offset +
+                      i * LOOM_CMD_PROGRAM_ENTRY_SCHEMA_SIZE;
+    iree_unaligned_store_le_u32(
+        record + LOOM_CMD_PROGRAM_ENTRY_SCHEMA_ENTRY_INDEX_OFFSET,
+        relocated_entry_index);
+  }
+
   const iree_host_size_t command_table_offset =
       (iree_host_size_t)(program->commands.data - program->storage.data);
   for (uint32_t i = 0; i < program->commands.count; ++i) {
@@ -264,12 +330,6 @@ iree_status_t loom_cmd_program_relocate_dependencies(
   return iree_ok_status();
 }
 
-static bool loom_cmd_program_slice_is_valid(uint32_t offset, uint32_t count,
-                                            uint32_t total_count) {
-  if (count == 0) return offset == 0;
-  return offset < total_count && count <= total_count - offset;
-}
-
 static iree_status_t loom_cmd_program_validate_buffer_refs(
     const loom_cmd_program_t* program) {
   for (uint32_t i = 0; i < program->buffer_refs.count; ++i) {
@@ -302,54 +362,118 @@ static iree_status_t loom_cmd_program_validate_buffer_refs(
   return iree_ok_status();
 }
 
-static iree_status_t loom_cmd_program_validate_arguments(
+static uint32_t loom_cmd_program_argument_byte_length(
+    loom_cmd_program_argument_kind_t kind) {
+  switch (kind) {
+    case LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER:
+      return LOOM_CMD_PROGRAM_BUFFER_REF_SIZE;
+    case LOOM_CMD_PROGRAM_ARGUMENT_KIND_B8:
+      return 1;
+    case LOOM_CMD_PROGRAM_ARGUMENT_KIND_B16:
+      return 2;
+    case LOOM_CMD_PROGRAM_ARGUMENT_KIND_B32:
+      return 4;
+    case LOOM_CMD_PROGRAM_ARGUMENT_KIND_B64:
+      return 8;
+    default:
+      return 0;
+  }
+}
+
+static iree_status_t loom_cmd_program_validate_entry_schemas(
     const loom_cmd_program_t* program) {
-  for (uint32_t i = 0; i < program->arguments.count; ++i) {
-    const loom_cmd_program_argument_t argument =
-        loom_cmd_program_argument_at(program, i);
-    switch (argument.kind) {
-      case LOOM_CMD_PROGRAM_ARGUMENT_KIND_U32:
-        if (argument.payload > UINT32_MAX) {
-          return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
-                                  "command argument %" PRIu32
-                                  " exceeds its unsigned 32-bit range",
-                                  i);
-        }
-        break;
-      case LOOM_CMD_PROGRAM_ARGUMENT_KIND_U64:
-        break;
-      case LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF:
-        if (argument.payload >= program->buffer_refs.count) {
-          return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
-                                  "command argument %" PRIu32
-                                  " selects buffer reference %" PRIu64
-                                  " outside the table",
-                                  i, argument.payload);
-        }
-        break;
-      default:
-        return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                                "command argument %" PRIu32
-                                " has unknown kind %u",
-                                i, (unsigned)argument.kind);
+  uint32_t expected_kind_offset = 0;
+  for (uint32_t i = 0; i < program->entry_schemas.count; ++i) {
+    const loom_cmd_program_entry_schema_t schema =
+        loom_cmd_program_entry_schema_at(program, i);
+    if (schema.entry_index >= program->requirements.entry_count) {
+      return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                              "command entry schema %" PRIu32
+                              " selects entry %" PRIu32
+                              " outside the requirement table",
+                              i, schema.entry_index);
     }
+    if (schema.argument_count == 0) {
+      if (schema.kind_offset != 0 || schema.argument_byte_length != 0) {
+        return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                                "empty command entry schema %" PRIu32
+                                " has a noncanonical payload",
+                                i);
+      }
+      continue;
+    }
+    if (schema.kind_offset != expected_kind_offset ||
+        schema.argument_count >
+            program->entry_schema_kinds.count - expected_kind_offset) {
+      return iree_make_status(
+          IREE_STATUS_INVALID_ARGUMENT,
+          "command entry schema %" PRIu32 " has a noncanonical kind slice", i);
+    }
+    uint64_t argument_byte_length = 0;
+    for (uint32_t argument_index = 0; argument_index < schema.argument_count;
+         ++argument_index) {
+      const loom_cmd_program_argument_kind_t kind =
+          loom_cmd_program_entry_schema_kind_at(program, &schema,
+                                                argument_index);
+      const uint32_t byte_length = loom_cmd_program_argument_byte_length(kind);
+      if (byte_length == 0) {
+        return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                                "command entry schema %" PRIu32
+                                " argument %" PRIu32 " has unknown kind %u",
+                                i, argument_index, (unsigned)kind);
+      }
+      argument_byte_length += byte_length;
+    }
+    if (argument_byte_length != schema.argument_byte_length) {
+      return iree_make_status(
+          IREE_STATUS_INVALID_ARGUMENT,
+          "command entry schema %" PRIu32 " declares %" PRIu32
+          " argument bytes but its "
+          "kinds require %" PRIu64,
+          i, schema.argument_byte_length, argument_byte_length);
+    }
+    expected_kind_offset += schema.argument_count;
+  }
+  if (expected_kind_offset != program->entry_schema_kinds.count) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "command entry-schema kind storage has unreferenced trailing bytes");
   }
   return iree_ok_status();
 }
 
+static iree_status_t loom_cmd_program_validate_argument_buffer(
+    const loom_cmd_program_t* program, uint32_t command_index,
+    uint32_t argument_index, const uint8_t* data) {
+  const loom_cmd_program_buffer_ref_t buffer_ref =
+      loom_cmd_program_decode_buffer_ref(data);
+  if (buffer_ref.role == LOOM_CMD_PROGRAM_BUFFER_ROLE_FIXED) {
+    if (buffer_ref.root_index < program->requirements.fixed_buffer_count) {
+      return iree_ok_status();
+    }
+  } else if (buffer_ref.role == LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE) {
+    if (buffer_ref.root_index <
+        program->requirements.rebindable_binding_count) {
+      return iree_ok_status();
+    }
+  } else {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "command dispatch %" PRIu32 " argument %" PRIu32
+                            " has unknown buffer role %u",
+                            command_index, argument_index,
+                            (unsigned)buffer_ref.role);
+  }
+  return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                          "command dispatch %" PRIu32 " argument %" PRIu32
+                          " selects buffer root %" PRIu32
+                          " outside its requirement table",
+                          command_index, argument_index, buffer_ref.root_index);
+}
+
 static iree_status_t loom_cmd_program_validate_dispatch(
     const loom_cmd_program_t* program, uint32_t command_index,
-    const loom_cmd_program_command_t* command) {
-  if (!loom_cmd_program_slice_is_valid(command->argument_offset,
-                                       command->argument_count,
-                                       program->arguments.count)) {
-    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
-                            "command dispatch %" PRIu32
-                            " has argument slice [%" PRIu32 ", %" PRIu32
-                            ") outside the argument table",
-                            command_index, command->argument_offset,
-                            command->argument_offset + command->argument_count);
-  }
+    const loom_cmd_program_command_t* command,
+    uint32_t* expected_argument_offset) {
   const bool is_direct =
       command->kind == LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT;
   const uint32_t executable_index =
@@ -372,6 +496,51 @@ static iree_status_t loom_cmd_program_validate_dispatch(
                             " outside the requirement table",
                             command_index, entry_index);
   }
+  if (command->argument_schema_index >= program->entry_schemas.count) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                            "command dispatch %" PRIu32
+                            " selects entry schema %" PRIu32
+                            " outside the schema table",
+                            command_index, command->argument_schema_index);
+  }
+  const loom_cmd_program_entry_schema_t schema =
+      loom_cmd_program_entry_schema_at(program, command->argument_schema_index);
+  if (schema.entry_index != entry_index) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "command dispatch %" PRIu32 " pairs entry %" PRIu32
+                            " with schema for entry %" PRIu32,
+                            command_index, entry_index, schema.entry_index);
+  }
+  if (schema.argument_byte_length == 0) {
+    if (command->argument_offset != 0) {
+      return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                              "empty command dispatch %" PRIu32
+                              " has a nonzero argument offset",
+                              command_index);
+    }
+  } else if (command->argument_offset != *expected_argument_offset ||
+             schema.argument_byte_length > program->argument_data.data_length -
+                                               *expected_argument_offset) {
+    return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                            "command dispatch %" PRIu32
+                            " has a noncanonical argument byte slice",
+                            command_index);
+  } else {
+    const uint8_t* cursor =
+        program->argument_data.data + command->argument_offset;
+    for (uint32_t argument_index = 0; argument_index < schema.argument_count;
+         ++argument_index) {
+      const loom_cmd_program_argument_kind_t kind =
+          loom_cmd_program_entry_schema_kind_at(program, &schema,
+                                                argument_index);
+      if (kind == LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER) {
+        IREE_RETURN_IF_ERROR(loom_cmd_program_validate_argument_buffer(
+            program, command_index, argument_index, cursor));
+      }
+      cursor += loom_cmd_program_argument_byte_length(kind);
+    }
+    *expected_argument_offset += schema.argument_byte_length;
+  }
   if (!is_direct &&
       command->payload.dispatch_indirect.workgroup_count_buffer_ref >=
           program->buffer_refs.count) {
@@ -388,6 +557,7 @@ static iree_status_t loom_cmd_program_validate_dispatch(
 
 static iree_status_t loom_cmd_program_validate_commands(
     const loom_cmd_program_t* program) {
+  uint32_t expected_argument_offset = 0;
   for (uint32_t i = 0; i < program->commands.count; ++i) {
     const uint8_t* record =
         program->commands.data + i * LOOM_CMD_PROGRAM_COMMAND_SIZE;
@@ -399,8 +569,8 @@ static iree_status_t loom_cmd_program_validate_commands(
         record + LOOM_CMD_PROGRAM_COMMAND_OPERAND_4_OFFSET);
     switch (command.kind) {
       case LOOM_CMD_PROGRAM_COMMAND_KIND_FILL:
-        if (!loom_cmd_program_slice_is_valid(command.argument_offset,
-                                             command.argument_count, 0) ||
+        if (command.argument_offset != 0 ||
+            command.argument_schema_index != 0 ||
             command.payload.fill.target_buffer_ref >=
                 program->buffer_refs.count ||
             (command.payload.fill.pattern_length != 1 &&
@@ -413,8 +583,8 @@ static iree_status_t loom_cmd_program_validate_commands(
         }
         break;
       case LOOM_CMD_PROGRAM_COMMAND_KIND_COPY:
-        if (!loom_cmd_program_slice_is_valid(command.argument_offset,
-                                             command.argument_count, 0) ||
+        if (command.argument_offset != 0 ||
+            command.argument_schema_index != 0 ||
             command.payload.copy.source_buffer_ref >=
                 program->buffer_refs.count ||
             command.payload.copy.target_buffer_ref >=
@@ -428,8 +598,8 @@ static iree_status_t loom_cmd_program_validate_commands(
         }
         break;
       case LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT: {
-        IREE_RETURN_IF_ERROR(
-            loom_cmd_program_validate_dispatch(program, i, &command));
+        IREE_RETURN_IF_ERROR(loom_cmd_program_validate_dispatch(
+            program, i, &command, &expected_argument_offset));
         break;
       }
       case LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC:
@@ -440,12 +610,12 @@ static iree_status_t loom_cmd_program_validate_commands(
                                   " has a noncanonical payload",
                                   i);
         }
-        IREE_RETURN_IF_ERROR(
-            loom_cmd_program_validate_dispatch(program, i, &command));
+        IREE_RETURN_IF_ERROR(loom_cmd_program_validate_dispatch(
+            program, i, &command, &expected_argument_offset));
         break;
       case LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_EXECUTION:
-        if (!loom_cmd_program_slice_is_valid(command.argument_offset,
-                                             command.argument_count, 0)) {
+        if (command.argument_offset != 0 ||
+            command.argument_schema_index != 0) {
           return iree_make_status(
               IREE_STATUS_INVALID_ARGUMENT,
               "command barrier %" PRIu32 " has a noncanonical payload", i);
@@ -465,6 +635,11 @@ static iree_status_t loom_cmd_program_validate_commands(
                                 "command %" PRIu32 " has unknown kind %u", i,
                                 (unsigned)command.kind);
     }
+  }
+  if (expected_argument_offset != program->argument_data.data_length) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "command argument storage has unreferenced trailing bytes");
   }
   return iree_ok_status();
 }
@@ -770,10 +945,17 @@ iree_status_t loom_cmd_program_parse(iree_const_byte_span_t data,
               .count = iree_unaligned_load_le_u32(
                   data.data + LOOM_CMD_PROGRAM_HEADER_BUFFER_REF_COUNT_OFFSET),
           },
-      .arguments =
+      .entry_schemas =
           {
               .count = iree_unaligned_load_le_u32(
-                  data.data + LOOM_CMD_PROGRAM_HEADER_ARGUMENT_COUNT_OFFSET),
+                  data.data +
+                  LOOM_CMD_PROGRAM_HEADER_ENTRY_SCHEMA_COUNT_OFFSET),
+          },
+      .entry_schema_kinds =
+          {
+              .count = iree_unaligned_load_le_u32(
+                  data.data +
+                  LOOM_CMD_PROGRAM_HEADER_ENTRY_SCHEMA_KIND_COUNT_OFFSET),
           },
       .commands =
           {
@@ -794,18 +976,28 @@ iree_status_t loom_cmd_program_parse(iree_const_byte_span_t data,
   };
   const uint32_t parameter_key_length = iree_unaligned_load_le_u32(
       data.data + LOOM_CMD_PROGRAM_HEADER_PARAMETER_KEY_LENGTH_OFFSET);
+  const uint32_t argument_data_length = iree_unaligned_load_le_u32(
+      data.data + LOOM_CMD_PROGRAM_HEADER_ARGUMENT_DATA_LENGTH_OFFSET);
   loom_cmd_program_format_layout_t layout = {0};
   IREE_RETURN_IF_ERROR(loom_cmd_program_format_calculate_layout(
-      program.buffer_refs.count, program.arguments.count,
+      program.buffer_refs.count, program.entry_schemas.count,
+      program.entry_schema_kinds.count, argument_data_length,
       program.commands.count, program.parameter_roots.count,
       program.parameters.count, parameter_key_length, &layout));
   if (layout.total_length != total_length ||
       layout.buffer_ref_offset !=
           iree_unaligned_load_le_u32(
               data.data + LOOM_CMD_PROGRAM_HEADER_BUFFER_REF_TABLE_OFFSET) ||
-      layout.argument_offset !=
+      layout.entry_schema_offset !=
           iree_unaligned_load_le_u32(
-              data.data + LOOM_CMD_PROGRAM_HEADER_ARGUMENT_TABLE_OFFSET) ||
+              data.data + LOOM_CMD_PROGRAM_HEADER_ENTRY_SCHEMA_TABLE_OFFSET) ||
+      layout.entry_schema_kind_offset !=
+          iree_unaligned_load_le_u32(
+              data.data +
+              LOOM_CMD_PROGRAM_HEADER_ENTRY_SCHEMA_KIND_TABLE_OFFSET) ||
+      layout.argument_data_offset !=
+          iree_unaligned_load_le_u32(
+              data.data + LOOM_CMD_PROGRAM_HEADER_ARGUMENT_DATA_OFFSET) ||
       layout.command_offset !=
           iree_unaligned_load_le_u32(
               data.data + LOOM_CMD_PROGRAM_HEADER_COMMAND_TABLE_OFFSET) ||
@@ -823,7 +1015,10 @@ iree_status_t loom_cmd_program_parse(iree_const_byte_span_t data,
                             "command program table layout is not canonical");
   }
   program.buffer_refs.data = data.data + layout.buffer_ref_offset;
-  program.arguments.data = data.data + layout.argument_offset;
+  program.entry_schemas.data = data.data + layout.entry_schema_offset;
+  program.entry_schema_kinds.data = data.data + layout.entry_schema_kind_offset;
+  program.argument_data = iree_make_const_byte_span(
+      data.data + layout.argument_data_offset, argument_data_length);
   program.commands.data = data.data + layout.command_offset;
   program.parameter_roots.data = data.data + layout.parameter_root_offset;
   program.parameters.data = data.data + layout.parameter_offset;
@@ -832,7 +1027,7 @@ iree_status_t loom_cmd_program_parse(iree_const_byte_span_t data,
 
   IREE_RETURN_IF_ERROR(loom_cmd_program_validate_transient(&program));
   IREE_RETURN_IF_ERROR(loom_cmd_program_validate_buffer_refs(&program));
-  IREE_RETURN_IF_ERROR(loom_cmd_program_validate_arguments(&program));
+  IREE_RETURN_IF_ERROR(loom_cmd_program_validate_entry_schemas(&program));
   IREE_RETURN_IF_ERROR(loom_cmd_program_validate_commands(&program));
   IREE_RETURN_IF_ERROR(loom_cmd_program_validate_launch_counts(&program));
   IREE_RETURN_IF_ERROR(loom_cmd_program_validate_parameter_roots(&program));

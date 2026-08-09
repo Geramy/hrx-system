@@ -44,6 +44,10 @@ from loom.target.low_descriptors import (
 
 _REG_U32 = "cmd.u32"
 _REG_U64 = "cmd.u64"
+_REG_B8 = "cmd.b8"
+_REG_B16 = "cmd.b16"
+_REG_B32 = "cmd.b32"
+_REG_B64 = "cmd.b64"
 _REG_BUFFER = "cmd.buffer"
 _REG_BINDING = "cmd.binding"
 _REG_BUFFER_REF = "cmd.buffer_ref"
@@ -82,6 +86,10 @@ _ALT_BY_CLASS = {
     for reg_class in (
         _REG_U32,
         _REG_U64,
+        _REG_B8,
+        _REG_B16,
+        _REG_B32,
+        _REG_B64,
         _REG_BUFFER,
         _REG_BINDING,
         _REG_BUFFER_REF,
@@ -112,20 +120,6 @@ def _variadic_operand(reg_classes: tuple[str, ...], field_name: str) -> Operand:
     )
 
 
-_U32_VALUE_IMMEDIATE = Immediate(
-    "value",
-    ImmediateKind.UNSIGNED,
-    bit_width=32,
-    unsigned_max=(2**32) - 1,
-)
-
-_U64_VALUE_IMMEDIATE = Immediate(
-    "value",
-    ImmediateKind.UNSIGNED,
-    bit_width=64,
-    unsigned_max=(2**64) - 1,
-)
-
 _RECORD_EFFECT = Effect(
     EffectKind.CALL,
     flags=(EffectFlag.ORDERED, EffectFlag.DEPENDENCY),
@@ -138,12 +132,17 @@ _BARRIER_EFFECT = Effect(
 )
 
 
-def _constant_descriptor(reg_class: str, bit_width: int) -> Descriptor:
-    immediate = _U32_VALUE_IMMEDIATE if bit_width == 32 else _U64_VALUE_IMMEDIATE
+def _constant_descriptor(reg_class: str, spelling: str, bit_width: int) -> Descriptor:
+    immediate = Immediate(
+        "value",
+        ImmediateKind.UNSIGNED,
+        bit_width=bit_width,
+        unsigned_max=(2**bit_width) - 1,
+    )
     return Descriptor(
-        key=f"cmd.constant.u{bit_width}",
-        mnemonic=f"cmd.constant.u{bit_width}",
-        semantic_tag=f"constant.u{bit_width}",
+        key=f"cmd.constant.{spelling}",
+        mnemonic=f"cmd.constant.{spelling}",
+        semantic_tag=f"constant.{spelling}",
         operands=(_result(reg_class),),
         immediates=(immediate,),
         op_kind=DescriptorOpKind.CONST,
@@ -154,8 +153,12 @@ def _constant_descriptor(reg_class: str, bit_width: int) -> Descriptor:
 
 
 _CONSTANT_DESCRIPTORS = (
-    _constant_descriptor(_REG_U32, 32),
-    _constant_descriptor(_REG_U64, 64),
+    _constant_descriptor(_REG_U32, "u32", 32),
+    _constant_descriptor(_REG_U64, "u64", 64),
+    _constant_descriptor(_REG_B8, "b8", 8),
+    _constant_descriptor(_REG_B16, "b16", 16),
+    _constant_descriptor(_REG_B32, "b32", 32),
+    _constant_descriptor(_REG_B64, "b64", 64),
 )
 
 _VALUE_DESCRIPTORS = (
@@ -215,7 +218,18 @@ def _dispatch_descriptor(*, indirect_mode: str | None) -> Descriptor:
             _operand(_REG_EXECUTABLE, "executable"),
             _operand(_REG_ENTRY, "entry"),
             *workgroup_operands,
-            _variadic_operand((_REG_U32, _REG_U64, _REG_BUFFER_REF), "arguments"),
+            _variadic_operand(
+                (
+                    _REG_B8,
+                    _REG_B16,
+                    _REG_B32,
+                    _REG_B64,
+                    _REG_BUFFER,
+                    _REG_BINDING,
+                    _REG_U64,
+                ),
+                "arguments",
+            ),
         ),
         asm_forms=(
             AsmForm(
@@ -326,6 +340,10 @@ CMD_CORE_DESCRIPTOR_SET = DescriptorSet(
     reg_classes=(
         _scalar_reg_class(_REG_U32, 32),
         _scalar_reg_class(_REG_U64, 64),
+        _scalar_reg_class(_REG_B8, 8),
+        _scalar_reg_class(_REG_B16, 16),
+        _scalar_reg_class(_REG_B32, 32),
+        _scalar_reg_class(_REG_B64, 64),
         _reference_reg_class(_REG_BUFFER),
         _scalar_reg_class(_REG_BINDING, 32),
         _reference_reg_class(_REG_BUFFER_REF),

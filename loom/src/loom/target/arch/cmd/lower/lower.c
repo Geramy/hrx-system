@@ -60,10 +60,19 @@ typedef struct loom_cmd_lower_types_t {
   loom_type_t entry;
 } loom_cmd_lower_types_t;
 
+typedef struct loom_cmd_lower_buffer_tuple_t {
+  // Fixed or rebindable buffer root.
+  loom_value_id_t root;
+  // Root-relative byte offset.
+  loom_value_id_t byte_offset;
+  // Byte length or the remaining-range sentinel.
+  loom_value_id_t byte_length;
+} loom_cmd_lower_buffer_tuple_t;
+
 typedef struct loom_cmd_lower_resources_t {
-  // Low buffer-ref SSA value indexed by source value ID.
-  loom_value_id_t* source_value_map;
-  // Number of entries in |source_value_map|.
+  // Direct buffer argument tuple indexed by source value ID.
+  loom_cmd_lower_buffer_tuple_t* source_buffer_tuples;
+  // Number of entries in |source_buffer_tuples|.
   iree_host_size_t source_value_count;
   // Fixed buffer resources indexed by plan resource ordinal.
   loom_value_id_t* fixed_buffers;
@@ -267,35 +276,46 @@ static iree_status_t loom_cmd_lower_build_abi_resources(
       state->types.entry, &state->resources.entries);
 }
 
-static iree_status_t loom_cmd_lower_build_buffer_ref(
+static iree_status_t loom_cmd_lower_build_buffer_tuple(
     loom_cmd_lower_state_t* state, const loom_cmd_lower_binding_t* binding,
     uint64_t byte_offset, uint64_t byte_length, loom_location_id_t location,
-    loom_value_id_t* out_buffer_ref) {
-  loom_value_id_t root_value = LOOM_VALUE_ID_INVALID;
-  uint32_t descriptor_ordinal = 0;
+    loom_cmd_lower_buffer_tuple_t* out_tuple) {
+  *out_tuple = (loom_cmd_lower_buffer_tuple_t){
+      .root = LOOM_VALUE_ID_INVALID,
+      .byte_offset = LOOM_VALUE_ID_INVALID,
+      .byte_length = LOOM_VALUE_ID_INVALID,
+  };
   if (binding->role == LOOM_CMD_LOWER_BUFFER_ROLE_FIXED) {
     IREE_ASSERT_LT(binding->resource_index, state->plan->fixed_buffer_count);
-    root_value = state->resources.fixed_buffers[binding->resource_index];
-    descriptor_ordinal = CMD_CORE_DESCRIPTOR_REF_BUFFER_REF_DIRECT;
+    out_tuple->root = state->resources.fixed_buffers[binding->resource_index];
   } else {
     IREE_ASSERT_EQ(binding->role, LOOM_CMD_LOWER_BUFFER_ROLE_REBINDABLE);
     IREE_ASSERT_LT(binding->resource_index,
                    state->plan->rebindable_binding_count);
-    root_value = state->resources.bindings[binding->resource_index];
-    descriptor_ordinal = CMD_CORE_DESCRIPTOR_REF_BUFFER_REF_BINDING;
+    out_tuple->root = state->resources.bindings[binding->resource_index];
   }
+  IREE_RETURN_IF_ERROR(loom_cmd_lower_build_u64_constant(
+      state, byte_offset, location, &out_tuple->byte_offset));
+  return loom_cmd_lower_build_u64_constant(state, byte_length, location,
+                                           &out_tuple->byte_length);
+}
 
-  loom_value_id_t low_byte_offset = LOOM_VALUE_ID_INVALID;
-  loom_value_id_t low_byte_length = LOOM_VALUE_ID_INVALID;
-  IREE_RETURN_IF_ERROR(loom_cmd_lower_build_u64_constant(
-      state, byte_offset, location, &low_byte_offset));
-  IREE_RETURN_IF_ERROR(loom_cmd_lower_build_u64_constant(
-      state, byte_length, location, &low_byte_length));
+static iree_status_t loom_cmd_lower_build_buffer_ref(
+    loom_cmd_lower_state_t* state, const loom_cmd_lower_binding_t* binding,
+    uint64_t byte_offset, uint64_t byte_length, loom_location_id_t location,
+    loom_value_id_t* out_buffer_ref) {
+  loom_cmd_lower_buffer_tuple_t tuple = {0};
+  IREE_RETURN_IF_ERROR(loom_cmd_lower_build_buffer_tuple(
+      state, binding, byte_offset, byte_length, location, &tuple));
   const loom_value_id_t operands[] = {
-      root_value,
-      low_byte_offset,
-      low_byte_length,
+      tuple.root,
+      tuple.byte_offset,
+      tuple.byte_length,
   };
+  const uint32_t descriptor_ordinal =
+      binding->role == LOOM_CMD_LOWER_BUFFER_ROLE_FIXED
+          ? CMD_CORE_DESCRIPTOR_REF_BUFFER_REF_DIRECT
+          : CMD_CORE_DESCRIPTOR_REF_BUFFER_REF_BINDING;
   loom_op_t* buffer_ref_op = NULL;
   IREE_RETURN_IF_ERROR(loom_cmd_lower_build_descriptor_op(
       state, descriptor_ordinal, operands, IREE_ARRAYSIZE(operands),
@@ -324,13 +344,11 @@ static iree_status_t loom_cmd_lower_map_source_bindings(
     IREE_ASSERT(loom_type_is_buffer(
         loom_module_value_type(state->module, source_value)));
     const loom_cmd_lower_binding_t* binding = &state->plan->bindings[i];
-    loom_value_id_t buffer_ref = LOOM_VALUE_ID_INVALID;
-    IREE_RETURN_IF_ERROR(loom_cmd_lower_build_buffer_ref(
+    loom_cmd_lower_buffer_tuple_t tuple = {0};
+    IREE_RETURN_IF_ERROR(loom_cmd_lower_build_buffer_tuple(
         state, binding, binding->byte_offset, binding->byte_length,
-        state->source_program.op->location, &buffer_ref));
-    state->resources.source_value_map[source_value] = buffer_ref;
-    IREE_RETURN_IF_ERROR(
-        loom_module_copy_value_name(state->module, source_value, buffer_ref));
+        state->source_program.op->location, &tuple));
+    state->resources.source_buffer_tuples[source_value] = tuple;
   }
   return iree_ok_status();
 }
@@ -342,21 +360,20 @@ static iree_status_t loom_cmd_lower_map_source_buffer_ranges(
   for (iree_host_size_t i = 0; i < state->plan->buffer_range_count; ++i) {
     const loom_cmd_lower_buffer_range_t* range = &state->plan->buffer_ranges[i];
     IREE_ASSERT_LT(range->source_value, state->resources.source_value_count);
-    IREE_ASSERT_EQ(state->resources.source_value_map[range->source_value],
-                   LOOM_VALUE_ID_INVALID);
+    IREE_ASSERT_EQ(
+        state->resources.source_buffer_tuples[range->source_value].root,
+        LOOM_VALUE_ID_INVALID);
     const loom_cmd_lower_binding_t binding = {
         .role = range->role,
         .resource_index = range->resource_index,
         .byte_offset = range->byte_offset,
         .byte_length = range->byte_length,
     };
-    loom_value_id_t buffer_ref = LOOM_VALUE_ID_INVALID;
-    IREE_RETURN_IF_ERROR(loom_cmd_lower_build_buffer_ref(
+    loom_cmd_lower_buffer_tuple_t tuple = {0};
+    IREE_RETURN_IF_ERROR(loom_cmd_lower_build_buffer_tuple(
         state, &binding, range->byte_offset, range->byte_length,
-        state->source_program.op->location, &buffer_ref));
-    state->resources.source_value_map[range->source_value] = buffer_ref;
-    IREE_RETURN_IF_ERROR(loom_module_copy_value_name(
-        state->module, range->source_value, buffer_ref));
+        state->source_program.op->location, &tuple));
+    state->resources.source_buffer_tuples[range->source_value] = tuple;
   }
   return iree_ok_status();
 }
@@ -375,29 +392,17 @@ static iree_status_t loom_cmd_lower_build_launch_count_refs(
 
   const uint64_t tuple_byte_length =
       LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_BYTE_LENGTH;
-  loom_value_id_t byte_length = LOOM_VALUE_ID_INVALID;
-  IREE_RETURN_IF_ERROR(loom_cmd_lower_build_u64_constant(
-      state, tuple_byte_length, state->source_program.op->location,
-      &byte_length));
+  const loom_cmd_lower_binding_t range_binding = {
+      .role = LOOM_CMD_LOWER_BUFFER_ROLE_REBINDABLE,
+      .resource_index = binding.resource_index,
+  };
   for (uint32_t i = 0; i < graph->host_tuple_count; ++i) {
     const uint64_t tuple_byte_offset = (uint64_t)i * tuple_byte_length;
     IREE_ASSERT_LE(binding.byte_offset, UINT64_MAX - tuple_byte_offset);
-    loom_value_id_t byte_offset = LOOM_VALUE_ID_INVALID;
-    IREE_RETURN_IF_ERROR(loom_cmd_lower_build_u64_constant(
-        state, binding.byte_offset + tuple_byte_offset,
-        state->source_program.op->location, &byte_offset));
-    const loom_value_id_t operands[] = {
-        state->resources.bindings[binding.resource_index],
-        byte_offset,
-        byte_length,
-    };
-    loom_op_t* buffer_ref_op = NULL;
-    IREE_RETURN_IF_ERROR(loom_cmd_lower_build_descriptor_op(
-        state, CMD_CORE_DESCRIPTOR_REF_BUFFER_REF_BINDING, operands,
-        IREE_ARRAYSIZE(operands), &state->types.buffer_ref, /*result_count=*/1,
-        state->source_program.op->location, &buffer_ref_op));
-    state->resources.launch_counts[i] =
-        loom_low_op_results(buffer_ref_op).values[0];
+    IREE_RETURN_IF_ERROR(loom_cmd_lower_build_buffer_ref(
+        state, &range_binding, binding.byte_offset + tuple_byte_offset,
+        tuple_byte_length, state->source_program.op->location,
+        &state->resources.launch_counts[i]));
   }
   return iree_ok_status();
 }
@@ -409,7 +414,7 @@ static iree_status_t loom_cmd_lower_build_launch_operands(
     iree_host_size_t prefix_operand_count, loom_value_id_t** out_operands,
     iree_host_size_t* out_operand_count) {
   *out_operands = NULL;
-  *out_operand_count = prefix_operand_count + launch->argument_count;
+  *out_operand_count = prefix_operand_count + launch->argument_count * 3;
   IREE_RETURN_IF_ERROR(loom_cmd_lower_allocate_value_array(
       state, *out_operand_count, out_operands));
   memcpy(*out_operands, prefix_operands,
@@ -425,7 +430,7 @@ static iree_status_t loom_cmd_lower_build_launch_operands(
     const loom_value_id_t source_value =
         source_arguments.values[source_argument_ordinal];
     if (source_value >= state->resources.source_value_count ||
-        state->resources.source_value_map[source_value] ==
+        state->resources.source_buffer_tuples[source_value].root ==
             LOOM_VALUE_ID_INVALID) {
       return iree_make_status(IREE_STATUS_UNIMPLEMENTED,
                               "kernel launch argument %" PRIu16
@@ -433,8 +438,12 @@ static iree_status_t loom_cmd_lower_build_launch_operands(
                               "buffer range",
                               source_argument_ordinal);
     }
-    (*out_operands)[prefix_operand_count + i] =
-        state->resources.source_value_map[source_value];
+    const loom_cmd_lower_buffer_tuple_t tuple =
+        state->resources.source_buffer_tuples[source_value];
+    const iree_host_size_t operand_index = prefix_operand_count + i * 3;
+    (*out_operands)[operand_index + 0] = tuple.root;
+    (*out_operands)[operand_index + 1] = tuple.byte_offset;
+    (*out_operands)[operand_index + 2] = tuple.byte_length;
   }
   return iree_ok_status();
 }
@@ -663,12 +672,16 @@ iree_status_t loom_cmd_lower_program_to_low(loom_module_t* module,
   if (iree_status_is_ok(status) && state.resources.source_value_count != 0) {
     status = iree_arena_allocate_array(
         &scratch_arena, state.resources.source_value_count,
-        sizeof(*state.resources.source_value_map),
-        (void**)&state.resources.source_value_map);
+        sizeof(*state.resources.source_buffer_tuples),
+        (void**)&state.resources.source_buffer_tuples);
   }
   if (iree_status_is_ok(status) && state.resources.source_value_count != 0) {
     for (iree_host_size_t i = 0; i < state.resources.source_value_count; ++i) {
-      state.resources.source_value_map[i] = LOOM_VALUE_ID_INVALID;
+      state.resources.source_buffer_tuples[i] = (loom_cmd_lower_buffer_tuple_t){
+          .root = LOOM_VALUE_ID_INVALID,
+          .byte_offset = LOOM_VALUE_ID_INVALID,
+          .byte_length = LOOM_VALUE_ID_INVALID,
+      };
     }
   }
   if (iree_status_is_ok(status)) {

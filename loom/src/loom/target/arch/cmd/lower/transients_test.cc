@@ -12,6 +12,7 @@
 #include "loom/ir/context.h"
 #include "loom/ir/module.h"
 #include "loom/ops/op_registry.h"
+#include "loom/target/arch/cmd/format.h"
 #include "loom/target/arch/cmd/lower/program_plan.h"
 #include "loom/target/arch/cmd/lower/serialize.h"
 #include "loom/target/arch/cmd/program.h"
@@ -78,10 +79,47 @@ class CmdTransientsTest : public ::testing::Test {
       uint32_t argument_index) {
     const loom_cmd_program_command_t command =
         loom_cmd_program_command_at(program, command_index);
-    const loom_cmd_program_argument_t argument = loom_cmd_program_argument_at(
-        program, command.argument_offset + argument_index);
-    EXPECT_EQ(argument.kind, LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF);
-    return loom_cmd_program_buffer_ref_at(program, (uint32_t)argument.payload);
+    const loom_cmd_program_entry_schema_t schema =
+        loom_cmd_program_entry_schema_at(program,
+                                         command.argument_schema_index);
+    const iree_const_byte_span_t data =
+        loom_cmd_program_command_argument_data(program, &command);
+    const uint8_t* cursor = data.data;
+    for (uint32_t i = 0; i < argument_index; ++i) {
+      switch (loom_cmd_program_entry_schema_kind_at(program, &schema, i)) {
+        case LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER:
+          cursor += LOOM_CMD_PROGRAM_BUFFER_REF_SIZE;
+          break;
+        case LOOM_CMD_PROGRAM_ARGUMENT_KIND_B8:
+          cursor += 1;
+          break;
+        case LOOM_CMD_PROGRAM_ARGUMENT_KIND_B16:
+          cursor += 2;
+          break;
+        case LOOM_CMD_PROGRAM_ARGUMENT_KIND_B32:
+          cursor += 4;
+          break;
+        case LOOM_CMD_PROGRAM_ARGUMENT_KIND_B64:
+          cursor += 8;
+          break;
+      }
+    }
+    EXPECT_EQ(
+        loom_cmd_program_entry_schema_kind_at(program, &schema, argument_index),
+        LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER);
+    return (loom_cmd_program_buffer_ref_t){
+        /*.role=*/(loom_cmd_program_buffer_role_t)iree_unaligned_load_le_u32(
+            cursor + LOOM_CMD_PROGRAM_BUFFER_REF_ROLE_OFFSET),
+        /*.root_index=*/
+        iree_unaligned_load_le_u32(
+            cursor + LOOM_CMD_PROGRAM_BUFFER_REF_ROOT_INDEX_OFFSET),
+        /*.byte_offset=*/
+        iree_unaligned_load_le_u64(
+            cursor + LOOM_CMD_PROGRAM_BUFFER_REF_BYTE_OFFSET_OFFSET),
+        /*.byte_length=*/
+        iree_unaligned_load_le_u64(
+            cursor + LOOM_CMD_PROGRAM_BUFFER_REF_BYTE_LENGTH_OFFSET),
+    };
   }
 
   iree_arena_block_pool_t block_pool_;

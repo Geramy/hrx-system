@@ -68,16 +68,12 @@ low.func.def public retain target<cmd.core> abi(command_program) abi_layout({ent
   %6 = resource<command_input> {index = 0, source_type = index} : reg<cmd.entry>
   %7 = cmd.constant.u64 0
   %8 = cmd.constant.u64 -1
-  %source = cmd.buffer.ref.binding %0, %7, %8
-  %first = cmd.buffer.ref.binding %1, %7, %8
-  %second = cmd.buffer.ref.binding %2, %7, %8
-  %target = cmd.buffer.ref.binding %3, %7, %8
-  %13 = cmd.constant.u64 12
-  %14 = cmd.buffer.ref.binding %4, %7, %13
-  cmd.dispatch.indirect.static<%5, %6>[%14](%source, %first)
-  cmd.dispatch.indirect.static<%5, %6>[%14](%source, %second)
+  %9 = cmd.constant.u64 12
+  %10 = cmd.buffer.ref.binding %4, %7, %9
+  cmd.dispatch.indirect.static<%5, %6>[%10](%0, %7, %8, %1, %7, %8)
+  cmd.dispatch.indirect.static<%5, %6>[%10](%0, %7, %8, %2, %7, %8)
   cmd.barrier.execution
-  cmd.dispatch.indirect.static<%5, %6>[%14](%second, %target)
+  cmd.dispatch.indirect.static<%5, %6>[%10](%2, %7, %8, %3, %7, %8)
   return
 }
 
@@ -162,13 +158,10 @@ low.func.def public retain target<cmd.core> abi(command_program) abi_layout({ent
   %4 = resource<command_input> {index = 0, source_type = index} : reg<cmd.entry>
   %5 = cmd.constant.u64 0
   %6 = cmd.constant.u64 -1
-  %source = cmd.buffer.ref.binding %0, %5, %6
-  %scratch = cmd.buffer.ref.binding %1, %5, %6
-  %target = cmd.buffer.ref.binding %2, %5, %6
-  %10 = cmd.constant.u32 1
-  cmd.dispatch.direct<%3, %4>[%10, %10, %10](%source, %scratch)
+  %7 = cmd.constant.u32 1
+  cmd.dispatch.direct<%3, %4>[%7, %7, %7](%0, %5, %6, %1, %5, %6)
   cmd.barrier.execution
-  cmd.dispatch.direct<%3, %4>[%10, %10, %10](%scratch, %target)
+  cmd.dispatch.direct<%3, %4>[%7, %7, %7](%1, %5, %6, %2, %5, %6)
   return
 }
 
@@ -230,34 +223,28 @@ low.func.def public retain target<cmd.core> abi(command_program) abi_layout({ent
   %7 = resource<command_input> {index = 1, source_type = index} : reg<cmd.entry>
   %8 = cmd.constant.u64 0
   %9 = cmd.constant.u64 -1
-  %source = cmd.buffer.ref.binding %0, %8, %9
-  %scratch = cmd.buffer.ref.binding %1, %8, %9
-  %target = cmd.buffer.ref.binding %2, %8, %9
-  %13 = cmd.constant.u64 12
-  %14 = cmd.buffer.ref.binding %3, %8, %13
-  cmd.dispatch.indirect.static<%4, %6>[%14](%source, %scratch)
+  %10 = cmd.constant.u64 12
+  %11 = cmd.buffer.ref.binding %3, %8, %10
+  cmd.dispatch.indirect.static<%4, %6>[%11](%0, %8, %9, %1, %8, %9)
   cmd.barrier.execution
-  cmd.dispatch.indirect.static<%5, %7>[%14](%scratch, %target)
+  cmd.dispatch.indirect.static<%5, %7>[%11](%1, %8, %9, %2, %8, %9)
   return
 }
 
 low.func.def public retain target<cmd.core> abi(command_program) abi_layout({entry_count = 1, executable_count = 1, fixed_buffer_count = 0, rebindable_binding_count = 4}) @increment_twice() asm {
-  %15 = resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
-  %16 = resource<command_input> {index = 1, source_type = buffer} : reg<cmd.binding>
-  %17 = resource<command_input> {index = 2, source_type = buffer} : reg<cmd.binding>
-  %18 = resource<command_input> {index = 3, source_type = buffer} : reg<cmd.binding>
-  %19 = resource<command_input> {index = 0, source_type = index} : reg<cmd.executable>
-  %20 = resource<command_input> {index = 0, source_type = index} : reg<cmd.entry>
-  %21 = cmd.constant.u64 0
-  %22 = cmd.constant.u64 -1
-  %source = cmd.buffer.ref.binding %15, %21, %22
-  %scratch = cmd.buffer.ref.binding %16, %21, %22
-  %target = cmd.buffer.ref.binding %17, %21, %22
-  %26 = cmd.constant.u64 12
-  %27 = cmd.buffer.ref.binding %18, %21, %26
-  cmd.dispatch.indirect.static<%19, %20>[%27](%source, %scratch)
+  %12 = resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
+  %13 = resource<command_input> {index = 1, source_type = buffer} : reg<cmd.binding>
+  %14 = resource<command_input> {index = 2, source_type = buffer} : reg<cmd.binding>
+  %15 = resource<command_input> {index = 3, source_type = buffer} : reg<cmd.binding>
+  %16 = resource<command_input> {index = 0, source_type = index} : reg<cmd.executable>
+  %17 = resource<command_input> {index = 0, source_type = index} : reg<cmd.entry>
+  %18 = cmd.constant.u64 0
+  %19 = cmd.constant.u64 -1
+  %20 = cmd.constant.u64 12
+  %21 = cmd.buffer.ref.binding %15, %18, %20
+  cmd.dispatch.indirect.static<%16, %17>[%21](%12, %18, %19, %13, %18, %19)
   cmd.barrier.execution
-  cmd.dispatch.indirect.static<%19, %20>[%27](%scratch, %target)
+  cmd.dispatch.indirect.static<%16, %17>[%21](%13, %18, %19, %14, %18, %19)
   return
 }
 
@@ -296,11 +283,9 @@ low.func.def public retain target<cmd.core> abi(command_program) abi_layout({ent
   %3 = resource<command_input> {index = 0, source_type = index} : reg<cmd.entry>
   %4 = cmd.constant.u64 0
   %5 = cmd.constant.u64 -1
-  %source = cmd.buffer.ref.binding %0, %4, %5
-  %target = cmd.buffer.ref.binding %1, %4, %5
-  %8 = cmd.constant.u32 1
-  cmd.dispatch.direct<%2, %3>[%8, %8, %8](%source, %target)
+  %6 = cmd.constant.u32 1
+  cmd.dispatch.direct<%2, %3>[%6, %6, %6](%0, %4, %5, %1, %4, %5)
   cmd.barrier.execution
-  cmd.dispatch.direct<%2, %3>[%8, %8, %8](%source, %target)
+  cmd.dispatch.direct<%2, %3>[%6, %6, %6](%0, %4, %5, %1, %4, %5)
   return
 }

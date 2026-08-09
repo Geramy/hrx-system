@@ -32,16 +32,24 @@ typedef enum loom_cmd_serialize_value_kind_e {
   LOOM_CMD_SERIALIZE_VALUE_KIND_U32 = 1,
   // Exact unsigned 64-bit scalar.
   LOOM_CMD_SERIALIZE_VALUE_KIND_U64 = 2,
+  // Exact 8-bit kernel argument payload.
+  LOOM_CMD_SERIALIZE_VALUE_KIND_B8 = 3,
+  // Exact 16-bit kernel argument payload.
+  LOOM_CMD_SERIALIZE_VALUE_KIND_B16 = 4,
+  // Exact 32-bit kernel argument payload.
+  LOOM_CMD_SERIALIZE_VALUE_KIND_B32 = 5,
+  // Exact 64-bit kernel argument payload.
+  LOOM_CMD_SERIALIZE_VALUE_KIND_B64 = 6,
   // Fixed buffer-root table index.
-  LOOM_CMD_SERIALIZE_VALUE_KIND_FIXED_BUFFER = 3,
+  LOOM_CMD_SERIALIZE_VALUE_KIND_FIXED_BUFFER = 7,
   // Rebindable buffer-root table index.
-  LOOM_CMD_SERIALIZE_VALUE_KIND_BINDING = 4,
+  LOOM_CMD_SERIALIZE_VALUE_KIND_BINDING = 8,
   // Executable requirement table index.
-  LOOM_CMD_SERIALIZE_VALUE_KIND_EXECUTABLE = 5,
+  LOOM_CMD_SERIALIZE_VALUE_KIND_EXECUTABLE = 9,
   // Program entry requirement table index.
-  LOOM_CMD_SERIALIZE_VALUE_KIND_ENTRY = 6,
+  LOOM_CMD_SERIALIZE_VALUE_KIND_ENTRY = 10,
   // Serialized buffer-reference table index.
-  LOOM_CMD_SERIALIZE_VALUE_KIND_BUFFER_REF = 7,
+  LOOM_CMD_SERIALIZE_VALUE_KIND_BUFFER_REF = 11,
 } loom_cmd_serialize_value_kind_t;
 
 typedef struct loom_cmd_serialize_value_t {
@@ -49,7 +57,7 @@ typedef struct loom_cmd_serialize_value_t {
   loom_cmd_serialize_value_kind_t kind;
   // Kind-specific value payload.
   union {
-    // Exact scalar bits for U32 and U64 values.
+    // Exact scalar bits for structural and argument values.
     uint64_t scalar;
     // Dense resource or serialized table index.
     uint32_t index;
@@ -65,14 +73,23 @@ typedef struct loom_cmd_serialize_buffer_ref_table_t {
   iree_host_size_t capacity;
 } loom_cmd_serialize_buffer_ref_table_t;
 
-typedef struct loom_cmd_serialize_argument_table_t {
-  // Arena-owned flattened logical argument rows.
-  loom_cmd_program_argument_t* values;
+typedef struct loom_cmd_serialize_byte_table_t {
+  // Arena-owned bytes.
+  uint8_t* values;
+  // Number of populated bytes.
+  iree_host_size_t count;
+  // Number of allocated bytes.
+  iree_host_size_t capacity;
+} loom_cmd_serialize_byte_table_t;
+
+typedef struct loom_cmd_serialize_entry_schema_table_t {
+  // Arena-owned executable-entry schema rows.
+  loom_cmd_program_entry_schema_t* values;
   // Number of populated rows.
   iree_host_size_t count;
   // Number of allocated rows.
   iree_host_size_t capacity;
-} loom_cmd_serialize_argument_table_t;
+} loom_cmd_serialize_entry_schema_table_t;
 
 typedef struct loom_cmd_serialize_command_table_t {
   // Arena-owned decoded command rows.
@@ -98,10 +115,16 @@ typedef struct loom_cmd_serialize_build_t {
   iree_host_size_t value_count;
   // Immutable external resource counts declared by the function ABI.
   loom_cmd_program_requirements_t requirements;
-  // Resolved buffer-reference rows.
+  // Buffer ranges used by fills, copies, and indirect launch counts.
   loom_cmd_serialize_buffer_ref_table_t buffer_refs;
-  // Flattened logical kernel argument rows.
-  loom_cmd_serialize_argument_table_t arguments;
+  // Executable-entry logical parameter schemas.
+  loom_cmd_serialize_entry_schema_table_t entry_schemas;
+  // Flattened logical parameter kinds referenced by entry schemas.
+  loom_cmd_serialize_byte_table_t entry_schema_kinds;
+  // Tagless dispatch argument payloads.
+  loom_cmd_serialize_byte_table_t argument_data;
+  // Schema index by dense executable entry, or UINT32_MAX before first use.
+  uint32_t* entry_schema_indices;
   // Ordered command rows.
   loom_cmd_serialize_command_table_t commands;
   // Compiler-owned named parameter requirements to persist.
@@ -167,17 +190,29 @@ static iree_status_t loom_cmd_serialize_reserve_buffer_refs(
       (void**)&build->buffer_refs.values);
 }
 
-static iree_status_t loom_cmd_serialize_reserve_arguments(
-    loom_cmd_serialize_build_t* build, iree_host_size_t additional_count) {
-  const iree_host_size_t required_count =
-      build->arguments.count + additional_count;
-  if (required_count <= build->arguments.capacity) return iree_ok_status();
+static iree_status_t loom_cmd_serialize_reserve_bytes(
+    loom_cmd_serialize_build_t* build, loom_cmd_serialize_byte_table_t* table,
+    iree_host_size_t additional_count) {
+  const iree_host_size_t required_count = table->count + additional_count;
+  if (required_count <= table->capacity) return iree_ok_status();
   return iree_arena_grow_array(
-      build->arena, build->arguments.count,
+      build->arena, table->count,
       iree_max(required_count,
                (iree_host_size_t)LOOM_CMD_SERIALIZE_INITIAL_CAPACITY),
-      sizeof(*build->arguments.values), &build->arguments.capacity,
-      (void**)&build->arguments.values);
+      sizeof(*table->values), &table->capacity, (void**)&table->values);
+}
+
+static iree_status_t loom_cmd_serialize_reserve_entry_schemas(
+    loom_cmd_serialize_build_t* build, iree_host_size_t additional_count) {
+  const iree_host_size_t required_count =
+      build->entry_schemas.count + additional_count;
+  if (required_count <= build->entry_schemas.capacity) return iree_ok_status();
+  return iree_arena_grow_array(
+      build->arena, build->entry_schemas.count,
+      iree_max(required_count,
+               (iree_host_size_t)LOOM_CMD_SERIALIZE_INITIAL_CAPACITY),
+      sizeof(*build->entry_schemas.values), &build->entry_schemas.capacity,
+      (void**)&build->entry_schemas.values);
 }
 
 static iree_status_t loom_cmd_serialize_reserve_commands(
@@ -320,60 +355,228 @@ static iree_status_t loom_cmd_serialize_buffer_ref(
                                               &result->payload.index);
 }
 
-static void loom_cmd_serialize_argument(
-    const loom_cmd_serialize_build_t* build, loom_value_id_t value_id,
-    loom_cmd_program_argument_t* out_argument) {
-  const loom_cmd_serialize_value_t* value =
-      loom_cmd_serialize_operand(build, value_id);
-  switch (value->kind) {
-    case LOOM_CMD_SERIALIZE_VALUE_KIND_U32:
-      *out_argument = (loom_cmd_program_argument_t){
-          .kind = LOOM_CMD_PROGRAM_ARGUMENT_KIND_U32,
-          .payload = (uint32_t)value->payload.scalar,
-      };
-      return;
-    case LOOM_CMD_SERIALIZE_VALUE_KIND_U64:
-      *out_argument = (loom_cmd_program_argument_t){
-          .kind = LOOM_CMD_PROGRAM_ARGUMENT_KIND_U64,
-          .payload = value->payload.scalar,
-      };
-      return;
-    case LOOM_CMD_SERIALIZE_VALUE_KIND_BUFFER_REF:
-      *out_argument = (loom_cmd_program_argument_t){
-          .kind = LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF,
-          .payload = value->payload.index,
-      };
-      return;
-    default:
-      IREE_ASSERT_UNREACHABLE("verified cmd dispatch argument kind");
-      return;
+static iree_status_t loom_cmd_serialize_append_argument_bytes(
+    loom_cmd_serialize_build_t* build, iree_host_size_t byte_length,
+    uint8_t** out_data) {
+  *out_data = NULL;
+  if (byte_length > UINT32_MAX ||
+      build->argument_data.count > UINT32_MAX - byte_length) {
+    return iree_make_status(
+        IREE_STATUS_OUT_OF_RANGE,
+        "command program exceeds the argument payload limit");
   }
+  IREE_RETURN_IF_ERROR(loom_cmd_serialize_reserve_bytes(
+      build, &build->argument_data, byte_length));
+  *out_data = build->argument_data.values + build->argument_data.count;
+  build->argument_data.count += byte_length;
+  return iree_ok_status();
+}
+
+static iree_status_t loom_cmd_serialize_append_schema_kind(
+    loom_cmd_serialize_build_t* build, loom_cmd_program_argument_kind_t kind) {
+  if (build->entry_schema_kinds.count >= UINT32_MAX) {
+    return iree_make_status(
+        IREE_STATUS_OUT_OF_RANGE,
+        "command program exceeds the entry-schema kind limit");
+  }
+  IREE_RETURN_IF_ERROR(
+      loom_cmd_serialize_reserve_bytes(build, &build->entry_schema_kinds, 1));
+  build->entry_schema_kinds.values[build->entry_schema_kinds.count++] =
+      (uint8_t)kind;
+  return iree_ok_status();
+}
+
+static iree_status_t loom_cmd_serialize_append_scalar_argument(
+    loom_cmd_serialize_build_t* build, loom_cmd_program_argument_kind_t kind,
+    uint64_t value, uint32_t* out_byte_length) {
+  uint32_t byte_length = 0;
+  switch (kind) {
+    case LOOM_CMD_PROGRAM_ARGUMENT_KIND_B8:
+      byte_length = 1;
+      break;
+    case LOOM_CMD_PROGRAM_ARGUMENT_KIND_B16:
+      byte_length = 2;
+      break;
+    case LOOM_CMD_PROGRAM_ARGUMENT_KIND_B32:
+      byte_length = 4;
+      break;
+    case LOOM_CMD_PROGRAM_ARGUMENT_KIND_B64:
+      byte_length = 8;
+      break;
+    default:
+      IREE_ASSERT_UNREACHABLE("scalar argument kind");
+  }
+  uint8_t* data = NULL;
+  IREE_RETURN_IF_ERROR(
+      loom_cmd_serialize_append_argument_bytes(build, byte_length, &data));
+  switch (byte_length) {
+    case 1:
+      data[0] = (uint8_t)value;
+      break;
+    case 2:
+      iree_unaligned_store_le_u16(data, (uint16_t)value);
+      break;
+    case 4:
+      iree_unaligned_store_le_u32(data, (uint32_t)value);
+      break;
+    case 8:
+      iree_unaligned_store_le_u64(data, value);
+      break;
+  }
+  *out_byte_length = byte_length;
+  return iree_ok_status();
+}
+
+static iree_status_t loom_cmd_serialize_append_buffer_argument(
+    loom_cmd_serialize_build_t* build, loom_cmd_program_buffer_role_t role,
+    const loom_cmd_serialize_value_t* root,
+    const loom_cmd_serialize_value_t* byte_offset,
+    const loom_cmd_serialize_value_t* byte_length) {
+  uint8_t* data = NULL;
+  IREE_RETURN_IF_ERROR(loom_cmd_serialize_append_argument_bytes(
+      build, LOOM_CMD_PROGRAM_BUFFER_REF_SIZE, &data));
+  iree_unaligned_store_le_u32(data + LOOM_CMD_PROGRAM_BUFFER_REF_ROLE_OFFSET,
+                              role);
+  iree_unaligned_store_le_u32(
+      data + LOOM_CMD_PROGRAM_BUFFER_REF_ROOT_INDEX_OFFSET,
+      root->payload.index);
+  iree_unaligned_store_le_u64(
+      data + LOOM_CMD_PROGRAM_BUFFER_REF_BYTE_OFFSET_OFFSET,
+      byte_offset->payload.scalar);
+  iree_unaligned_store_le_u64(
+      data + LOOM_CMD_PROGRAM_BUFFER_REF_BYTE_LENGTH_OFFSET,
+      byte_length->payload.scalar);
+  return iree_ok_status();
 }
 
 static iree_status_t loom_cmd_serialize_flatten_arguments(
     loom_cmd_serialize_build_t* build, loom_value_slice_t operands,
-    uint16_t argument_start, uint32_t* out_argument_offset,
-    uint32_t* out_argument_count) {
+    uint16_t argument_start, uint32_t entry_index,
+    uint32_t* out_argument_offset, uint32_t* out_argument_schema_index) {
   *out_argument_offset = 0;
-  *out_argument_count = 0;
+  *out_argument_schema_index = 0;
   IREE_ASSERT_LE(argument_start, operands.count);
-  const uint32_t argument_count = operands.count - argument_start;
-  if (argument_count == 0) return iree_ok_status();
-  if (build->arguments.count > UINT32_MAX - argument_count) {
-    return iree_make_status(
-        IREE_STATUS_OUT_OF_RANGE,
-        "command program exceeds the flattened argument table limit");
+  IREE_ASSERT_LT(entry_index, build->requirements.entry_count);
+
+  uint32_t schema_index = build->entry_schema_indices[entry_index];
+  const bool is_new_schema = schema_index == UINT32_MAX;
+  if (is_new_schema) {
+    if (build->entry_schemas.count >= UINT32_MAX) {
+      return iree_make_status(
+          IREE_STATUS_OUT_OF_RANGE,
+          "command program exceeds the entry-schema table limit");
+    }
+    IREE_RETURN_IF_ERROR(loom_cmd_serialize_reserve_entry_schemas(build, 1));
+    schema_index = (uint32_t)build->entry_schemas.count++;
+    build->entry_schema_indices[entry_index] = schema_index;
+    build->entry_schemas.values[schema_index] =
+        (loom_cmd_program_entry_schema_t){
+            .entry_index = entry_index,
+        };
   }
-  IREE_RETURN_IF_ERROR(
-      loom_cmd_serialize_reserve_arguments(build, argument_count));
-  const uint32_t argument_offset = (uint32_t)build->arguments.count;
-  build->arguments.count += argument_count;
-  for (uint32_t i = 0; i < argument_count; ++i) {
-    loom_cmd_serialize_argument(build, operands.values[argument_start + i],
-                                &build->arguments.values[argument_offset + i]);
+  loom_cmd_program_entry_schema_t* schema =
+      &build->entry_schemas.values[schema_index];
+  if (is_new_schema && argument_start < operands.count) {
+    schema->kind_offset = (uint32_t)build->entry_schema_kinds.count;
+  }
+
+  const uint32_t argument_offset = argument_start == operands.count
+                                       ? 0
+                                       : (uint32_t)build->argument_data.count;
+  uint32_t logical_index = 0;
+  uint32_t argument_byte_length = 0;
+  uint16_t operand_index = argument_start;
+  while (operand_index < operands.count) {
+    const loom_cmd_serialize_value_t* value =
+        loom_cmd_serialize_operand(build, operands.values[operand_index]);
+    loom_cmd_program_argument_kind_t kind = 0;
+    uint32_t byte_length = 0;
+    switch (value->kind) {
+      case LOOM_CMD_SERIALIZE_VALUE_KIND_B8:
+        kind = LOOM_CMD_PROGRAM_ARGUMENT_KIND_B8;
+        break;
+      case LOOM_CMD_SERIALIZE_VALUE_KIND_B16:
+        kind = LOOM_CMD_PROGRAM_ARGUMENT_KIND_B16;
+        break;
+      case LOOM_CMD_SERIALIZE_VALUE_KIND_B32:
+        kind = LOOM_CMD_PROGRAM_ARGUMENT_KIND_B32;
+        break;
+      case LOOM_CMD_SERIALIZE_VALUE_KIND_B64:
+        kind = LOOM_CMD_PROGRAM_ARGUMENT_KIND_B64;
+        break;
+      case LOOM_CMD_SERIALIZE_VALUE_KIND_FIXED_BUFFER:
+      case LOOM_CMD_SERIALIZE_VALUE_KIND_BINDING: {
+        if ((iree_host_size_t)operand_index + 3 > operands.count) {
+          return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                                  "command buffer argument %" PRIu32
+                                  " is missing its byte offset or byte length",
+                                  logical_index);
+        }
+        const loom_cmd_serialize_value_t* byte_offset =
+            loom_cmd_serialize_operand(build,
+                                       operands.values[operand_index + 1]);
+        const loom_cmd_serialize_value_t* byte_length_value =
+            loom_cmd_serialize_operand(build,
+                                       operands.values[operand_index + 2]);
+        if (byte_offset->kind != LOOM_CMD_SERIALIZE_VALUE_KIND_U64 ||
+            byte_length_value->kind != LOOM_CMD_SERIALIZE_VALUE_KIND_U64) {
+          return iree_make_status(
+              IREE_STATUS_INVALID_ARGUMENT,
+              "command buffer argument %" PRIu32
+              " requires u64 byte offset and byte length values",
+              logical_index);
+        }
+        kind = LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER;
+        IREE_RETURN_IF_ERROR(loom_cmd_serialize_append_buffer_argument(
+            build,
+            value->kind == LOOM_CMD_SERIALIZE_VALUE_KIND_FIXED_BUFFER
+                ? LOOM_CMD_PROGRAM_BUFFER_ROLE_FIXED
+                : LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE,
+            value, byte_offset, byte_length_value));
+        byte_length = LOOM_CMD_PROGRAM_BUFFER_REF_SIZE;
+        operand_index += 3;
+        break;
+      }
+      default:
+        return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                                "command argument %" PRIu32
+                                " has no portable payload encoding",
+                                logical_index);
+    }
+    if (kind != LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER) {
+      IREE_RETURN_IF_ERROR(loom_cmd_serialize_append_scalar_argument(
+          build, kind, value->payload.scalar, &byte_length));
+      ++operand_index;
+    }
+
+    if (is_new_schema) {
+      IREE_RETURN_IF_ERROR(loom_cmd_serialize_append_schema_kind(build, kind));
+    } else if (logical_index >= schema->argument_count ||
+               build->entry_schema_kinds
+                       .values[schema->kind_offset + logical_index] != kind) {
+      return iree_make_status(
+          IREE_STATUS_INVALID_ARGUMENT,
+          "command entry %" PRIu32
+          " is dispatched with inconsistent logical argument kinds",
+          entry_index);
+    }
+    argument_byte_length += byte_length;
+    ++logical_index;
+  }
+
+  if (is_new_schema) {
+    schema->argument_count = logical_index;
+    schema->argument_byte_length = argument_byte_length;
+  } else if (logical_index != schema->argument_count ||
+             argument_byte_length != schema->argument_byte_length) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "command entry %" PRIu32
+        " is dispatched with an inconsistent logical argument shape",
+        entry_index);
   }
   *out_argument_offset = argument_offset;
-  *out_argument_count = argument_count;
+  *out_argument_schema_index = schema_index;
   return iree_ok_status();
 }
 
@@ -496,8 +699,8 @@ static iree_status_t loom_cmd_serialize_dispatch(
     argument_start = 3;
   }
   IREE_RETURN_IF_ERROR(loom_cmd_serialize_flatten_arguments(
-      build, operands, argument_start, &command.argument_offset,
-      &command.argument_count));
+      build, operands, argument_start, entry->payload.index,
+      &command.argument_offset, &command.argument_schema_index));
   return loom_cmd_serialize_append_command(build, command);
 }
 
@@ -513,6 +716,26 @@ static iree_status_t loom_cmd_serialize_packet(
   if (loom_cmd_serialize_packet_is(build, packet,
                                    CMD_CORE_DESCRIPTOR_REF_CONSTANT_U64)) {
     loom_cmd_serialize_constant(build, op, LOOM_CMD_SERIALIZE_VALUE_KIND_U64);
+    return iree_ok_status();
+  }
+  if (loom_cmd_serialize_packet_is(build, packet,
+                                   CMD_CORE_DESCRIPTOR_REF_CONSTANT_B8)) {
+    loom_cmd_serialize_constant(build, op, LOOM_CMD_SERIALIZE_VALUE_KIND_B8);
+    return iree_ok_status();
+  }
+  if (loom_cmd_serialize_packet_is(build, packet,
+                                   CMD_CORE_DESCRIPTOR_REF_CONSTANT_B16)) {
+    loom_cmd_serialize_constant(build, op, LOOM_CMD_SERIALIZE_VALUE_KIND_B16);
+    return iree_ok_status();
+  }
+  if (loom_cmd_serialize_packet_is(build, packet,
+                                   CMD_CORE_DESCRIPTOR_REF_CONSTANT_B32)) {
+    loom_cmd_serialize_constant(build, op, LOOM_CMD_SERIALIZE_VALUE_KIND_B32);
+    return iree_ok_status();
+  }
+  if (loom_cmd_serialize_packet_is(build, packet,
+                                   CMD_CORE_DESCRIPTOR_REF_CONSTANT_B64)) {
+    loom_cmd_serialize_constant(build, op, LOOM_CMD_SERIALIZE_VALUE_KIND_B64);
     return iree_ok_status();
   }
   if (loom_cmd_serialize_packet_is(build, packet,
@@ -620,8 +843,8 @@ static void loom_cmd_serialize_write_header(
       data.data + LOOM_CMD_PROGRAM_HEADER_BUFFER_REF_COUNT_OFFSET,
       (uint32_t)build->buffer_refs.count);
   iree_unaligned_store_le_u32(
-      data.data + LOOM_CMD_PROGRAM_HEADER_ARGUMENT_COUNT_OFFSET,
-      (uint32_t)build->arguments.count);
+      data.data + LOOM_CMD_PROGRAM_HEADER_ARGUMENT_DATA_LENGTH_OFFSET,
+      (uint32_t)build->argument_data.count);
   iree_unaligned_store_le_u32(
       data.data + LOOM_CMD_PROGRAM_HEADER_COMMAND_COUNT_OFFSET,
       (uint32_t)build->commands.count);
@@ -639,11 +862,23 @@ static void loom_cmd_serialize_write_header(
       data.data + LOOM_CMD_PROGRAM_HEADER_PARAMETER_KEY_LENGTH_OFFSET,
       build->parameter_key_length);
   iree_unaligned_store_le_u32(
+      data.data + LOOM_CMD_PROGRAM_HEADER_ENTRY_SCHEMA_COUNT_OFFSET,
+      (uint32_t)build->entry_schemas.count);
+  iree_unaligned_store_le_u32(
+      data.data + LOOM_CMD_PROGRAM_HEADER_ENTRY_SCHEMA_KIND_COUNT_OFFSET,
+      (uint32_t)build->entry_schema_kinds.count);
+  iree_unaligned_store_le_u32(
       data.data + LOOM_CMD_PROGRAM_HEADER_BUFFER_REF_TABLE_OFFSET,
       layout->buffer_ref_offset);
   iree_unaligned_store_le_u32(
-      data.data + LOOM_CMD_PROGRAM_HEADER_ARGUMENT_TABLE_OFFSET,
-      layout->argument_offset);
+      data.data + LOOM_CMD_PROGRAM_HEADER_ENTRY_SCHEMA_TABLE_OFFSET,
+      layout->entry_schema_offset);
+  iree_unaligned_store_le_u32(
+      data.data + LOOM_CMD_PROGRAM_HEADER_ENTRY_SCHEMA_KIND_TABLE_OFFSET,
+      layout->entry_schema_kind_offset);
+  iree_unaligned_store_le_u32(
+      data.data + LOOM_CMD_PROGRAM_HEADER_ARGUMENT_DATA_OFFSET,
+      layout->argument_data_offset);
   iree_unaligned_store_le_u32(
       data.data + LOOM_CMD_PROGRAM_HEADER_COMMAND_TABLE_OFFSET,
       layout->command_offset);
@@ -703,17 +938,34 @@ static void loom_cmd_serialize_write_buffer_refs(
   }
 }
 
-static void loom_cmd_serialize_write_arguments(
+static void loom_cmd_serialize_write_entry_schemas(
     const loom_cmd_serialize_build_t* build,
     const loom_cmd_program_format_layout_t* layout, iree_byte_span_t data) {
-  for (uint32_t i = 0; i < build->arguments.count; ++i) {
-    uint8_t* record = data.data + layout->argument_offset +
-                      i * LOOM_CMD_PROGRAM_ARGUMENT_SIZE;
-    const loom_cmd_program_argument_t argument = build->arguments.values[i];
-    iree_unaligned_store_le_u32(record + LOOM_CMD_PROGRAM_ARGUMENT_KIND_OFFSET,
-                                argument.kind);
-    iree_unaligned_store_le_u64(
-        record + LOOM_CMD_PROGRAM_ARGUMENT_PAYLOAD_OFFSET, argument.payload);
+  for (uint32_t i = 0; i < build->entry_schemas.count; ++i) {
+    uint8_t* record = data.data + layout->entry_schema_offset +
+                      i * LOOM_CMD_PROGRAM_ENTRY_SCHEMA_SIZE;
+    const loom_cmd_program_entry_schema_t schema =
+        build->entry_schemas.values[i];
+    iree_unaligned_store_le_u32(
+        record + LOOM_CMD_PROGRAM_ENTRY_SCHEMA_ENTRY_INDEX_OFFSET,
+        schema.entry_index);
+    iree_unaligned_store_le_u32(
+        record + LOOM_CMD_PROGRAM_ENTRY_SCHEMA_KIND_OFFSET_OFFSET,
+        schema.kind_offset);
+    iree_unaligned_store_le_u32(
+        record + LOOM_CMD_PROGRAM_ENTRY_SCHEMA_ARGUMENT_COUNT_OFFSET,
+        schema.argument_count);
+    iree_unaligned_store_le_u32(
+        record + LOOM_CMD_PROGRAM_ENTRY_SCHEMA_ARGUMENT_BYTE_LENGTH_OFFSET,
+        schema.argument_byte_length);
+  }
+  if (build->entry_schema_kinds.count != 0) {
+    memcpy(data.data + layout->entry_schema_kind_offset,
+           build->entry_schema_kinds.values, build->entry_schema_kinds.count);
+  }
+  if (build->argument_data.count != 0) {
+    memcpy(data.data + layout->argument_data_offset,
+           build->argument_data.values, build->argument_data.count);
   }
 }
 
@@ -730,8 +982,8 @@ static void loom_cmd_serialize_write_commands(
         record + LOOM_CMD_PROGRAM_COMMAND_ARGUMENT_OFFSET_OFFSET,
         command.argument_offset);
     iree_unaligned_store_le_u32(
-        record + LOOM_CMD_PROGRAM_COMMAND_ARGUMENT_COUNT_OFFSET,
-        command.argument_count);
+        record + LOOM_CMD_PROGRAM_COMMAND_ARGUMENT_SCHEMA_INDEX_OFFSET,
+        command.argument_schema_index);
     uint32_t operands[5] = {0};
     switch (command.kind) {
       case LOOM_CMD_PROGRAM_COMMAND_KIND_FILL:
@@ -827,7 +1079,7 @@ static void loom_cmd_serialize_write_program(
   memset(data.data, 0, data.data_length);
   loom_cmd_serialize_write_header(build, layout, data);
   loom_cmd_serialize_write_buffer_refs(build, layout, data);
-  loom_cmd_serialize_write_arguments(build, layout, data);
+  loom_cmd_serialize_write_entry_schemas(build, layout, data);
   loom_cmd_serialize_write_commands(build, layout, data);
   loom_cmd_serialize_write_parameters(build, layout, data);
 }
@@ -904,6 +1156,16 @@ iree_status_t loom_cmd_program_serialize_low(
   if (iree_status_is_ok(status) && build.value_count != 0) {
     memset(build.values, 0, build.value_count * sizeof(*build.values));
   }
+  if (iree_status_is_ok(status) && build.requirements.entry_count != 0) {
+    status = iree_arena_allocate_array(&arena, build.requirements.entry_count,
+                                       sizeof(*build.entry_schema_indices),
+                                       (void**)&build.entry_schema_indices);
+  }
+  if (iree_status_is_ok(status) && build.requirements.entry_count != 0) {
+    for (uint32_t i = 0; i < build.requirements.entry_count; ++i) {
+      build.entry_schema_indices[i] = UINT32_MAX;
+    }
+  }
   if (iree_status_is_ok(status)) {
     status = loom_cmd_serialize_function_body(&build, body);
   }
@@ -932,8 +1194,9 @@ iree_status_t loom_cmd_program_serialize_low(
   loom_cmd_program_format_layout_t layout = {0};
   if (iree_status_is_ok(status)) {
     status = loom_cmd_program_format_calculate_layout(
-        (uint32_t)build.buffer_refs.count, (uint32_t)build.arguments.count,
-        (uint32_t)build.commands.count,
+        (uint32_t)build.buffer_refs.count, (uint32_t)build.entry_schemas.count,
+        (uint32_t)build.entry_schema_kinds.count,
+        (uint32_t)build.argument_data.count, (uint32_t)build.commands.count,
         parameter_requirements ? (uint32_t)parameter_requirements->root_count
                                : 0,
         parameter_requirements ? (uint32_t)parameter_requirements->count : 0,

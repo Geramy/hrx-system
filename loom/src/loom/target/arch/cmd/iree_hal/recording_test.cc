@@ -378,17 +378,12 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 3, 
   %workgroup_count_x = low.const<cmd.constant.u32> {value = 32} : reg<cmd.u32>
   %zero_u64 = low.const<cmd.constant.u64> {value = 0} : reg<cmd.u64>
   %buffer_length = low.const<cmd.constant.u64> {value = 4096} : reg<cmd.u64>
-  %parameters_ref = low.op<cmd.buffer.ref.direct>(%parameters, %zero_u64, %buffer_length) : (reg<cmd.buffer>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
-  %input_ref = low.op<cmd.buffer.ref.binding>(%input, %zero_u64, %buffer_length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
   %scratch_ref = low.op<cmd.buffer.ref.binding>(%scratch, %zero_u64, %buffer_length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
-  %query_output_ref = low.op<cmd.buffer.ref.binding>(%query_output, %zero_u64, %buffer_length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
-  %key_output_ref = low.op<cmd.buffer.ref.binding>(%key_output, %zero_u64, %buffer_length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
-  %value_output_ref = low.op<cmd.buffer.ref.binding>(%value_output, %zero_u64, %buffer_length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
   low.op<cmd.fill>(%scratch_ref, %zero_u32, %one_u32) : (reg<cmd.buffer_ref>, reg<cmd.u32>, reg<cmd.u32>)
   low.op<cmd.barrier.execution>() : ()
-  low.op<cmd.dispatch.direct>(%query_executable, %query_entry, %workgroup_count_x, %one_u32, %one_u32, %parameters_ref, %input_ref, %query_output_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>)
-  low.op<cmd.dispatch.direct>(%key_executable, %key_entry, %workgroup_count_x, %one_u32, %one_u32, %parameters_ref, %input_ref, %key_output_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>)
-  low.op<cmd.dispatch.direct>(%value_executable, %value_entry, %workgroup_count_x, %one_u32, %one_u32, %parameters_ref, %input_ref, %value_output_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>)
+  low.op<cmd.dispatch.direct>(%query_executable, %query_entry, %workgroup_count_x, %one_u32, %one_u32, %parameters, %zero_u64, %buffer_length, %input, %zero_u64, %buffer_length, %query_output, %zero_u64, %buffer_length) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>)
+  low.op<cmd.dispatch.direct>(%key_executable, %key_entry, %workgroup_count_x, %one_u32, %one_u32, %parameters, %zero_u64, %buffer_length, %input, %zero_u64, %buffer_length, %key_output, %zero_u64, %buffer_length) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>)
+  low.op<cmd.dispatch.direct>(%value_executable, %value_entry, %workgroup_count_x, %one_u32, %one_u32, %parameters, %zero_u64, %buffer_length, %input, %zero_u64, %buffer_length, %value_output, %zero_u64, %buffer_length) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>)
   low.op<cmd.barrier.execution>() : ()
   low.return
 }
@@ -469,32 +464,41 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 3, 
   }
 }
 
-TEST_F(CmdIreeHalRecordingTest, PacksLogicalArgumentsByEntryMetadata) {
+TEST_F(CmdIreeHalRecordingTest, PacksMixedLogicalArgumentsByEntryMetadata) {
   ModulePtr module = ParseAndVerify(R"(
-low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, executable_count = 1, fixed_buffer_count = 0, rebindable_binding_count = 1}) @packing() {
-  %buffer = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
+low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, executable_count = 1, fixed_buffer_count = 0, rebindable_binding_count = 3}) @packing() {
+  %input = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
+  %scratch = low.resource<command_input> {index = 1, source_type = buffer} : reg<cmd.binding>
+  %output = low.resource<command_input> {index = 2, source_type = buffer} : reg<cmd.binding>
   %executable = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.executable>
   %entry = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.entry>
-  %u32 = low.const<cmd.constant.u32> {value = 287454020} : reg<cmd.u32>
-  %u64 = low.const<cmd.constant.u64> {value = 72623859790382856} : reg<cmd.u64>
+  %b8 = low.const<cmd.constant.b8> {value = 127} : reg<cmd.b8>
+  %b16 = low.const<cmd.constant.b16> {value = 4660} : reg<cmd.b16>
+  %b64 = low.const<cmd.constant.b64> {value = 72623859790382856} : reg<cmd.b64>
   %one = low.const<cmd.constant.u32> {value = 1} : reg<cmd.u32>
   %zero = low.const<cmd.constant.u64> {value = 0} : reg<cmd.u64>
   %length = low.const<cmd.constant.u64> {value = 64} : reg<cmd.u64>
-  %buffer_ref = low.op<cmd.buffer.ref.binding>(%buffer, %zero, %length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
-  low.op<cmd.dispatch.direct>(%executable, %entry, %one, %one, %one, %u32, %buffer_ref, %u64) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer_ref>, reg<cmd.u64>)
+  low.op<cmd.dispatch.direct>(%executable, %entry, %one, %one, %one, %input, %zero, %length, %b8, %scratch, %zero, %length, %b16, %output, %zero, %length, %b64) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.b8>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.b16>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.b64>)
   low.return
 }
 )");
 
-  std::array<iree_hal_executable_function_parameter_t, 3> parameters = {};
-  parameters[0].type = IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_CONSTANT;
-  parameters[0].size = sizeof(uint32_t);
+  std::array<iree_hal_executable_function_parameter_t, 6> parameters = {};
+  parameters[0].type = IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_BINDING;
   parameters[0].offset = 0;
-  parameters[1].type = IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_BINDING;
+  parameters[1].type = IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_CONSTANT;
+  parameters[1].size = sizeof(uint8_t);
   parameters[1].offset = 0;
-  parameters[2].type = IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_CONSTANT;
-  parameters[2].size = sizeof(uint64_t);
-  parameters[2].offset = 8;
+  parameters[2].type = IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_BINDING;
+  parameters[2].offset = 1;
+  parameters[3].type = IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_CONSTANT;
+  parameters[3].size = sizeof(uint16_t);
+  parameters[3].offset = 2;
+  parameters[4].type = IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_BINDING;
+  parameters[4].offset = 2;
+  parameters[5].type = IREE_HAL_EXECUTABLE_FUNCTION_PARAMETER_TYPE_CONSTANT;
+  parameters[5].size = sizeof(uint64_t);
+  parameters[5].offset = 8;
   iree_hal_resource_t executable_storage = {};
   iree_hal_executable_t* executable =
       reinterpret_cast<iree_hal_executable_t*>(&executable_storage);
@@ -502,11 +506,11 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, 
   entry.executable_index = 0;
   entry.function = iree_hal_executable_function_from_index(0);
   entry.info.constant_byte_length = 16;
-  entry.info.binding_count = 1;
-  entry.info.parameter_count = 3;
+  entry.info.binding_count = 3;
+  entry.info.parameter_count = 6;
   entry.parameters = parameters.data();
   loom_cmd_iree_hal_inputs_t inputs = {};
-  inputs.binding_count = 1;
+  inputs.binding_count = 3;
   inputs.executable_count = 1;
   inputs.executables = &executable;
   inputs.entry_count = 1;
@@ -534,18 +538,88 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, 
   const CapturedCommand& dispatch = command_buffer.commands[0];
   ASSERT_EQ(dispatch.kind, CapturedCommandKind::kDispatch);
   ASSERT_EQ(dispatch.constants.size(), 16u);
-  uint32_t u32 = 0;
+  uint16_t u16 = 0;
   uint64_t u64 = 0;
-  std::memcpy(&u32, dispatch.constants.data(), sizeof(u32));
+  std::memcpy(&u16, dispatch.constants.data() + 2, sizeof(u16));
   std::memcpy(&u64, dispatch.constants.data() + 8, sizeof(u64));
-  EXPECT_EQ(u32, UINT32_C(0x11223344));
+  EXPECT_EQ(dispatch.constants[0], UINT8_C(0x7F));
+  EXPECT_EQ(dispatch.constants[1], 0u);
+  EXPECT_EQ(u16, UINT16_C(0x1234));
+  for (iree_host_size_t i = 4; i < 8; ++i) {
+    EXPECT_EQ(dispatch.constants[i], 0u);
+  }
   EXPECT_EQ(u64, UINT64_C(0x0102030405060708));
-  EXPECT_EQ(dispatch.constants[4], 0u);
-  ASSERT_EQ(dispatch.bindings.size(), 1u);
-  EXPECT_EQ(dispatch.bindings[0].buffer, nullptr);
-  EXPECT_EQ(dispatch.bindings[0].buffer_slot, 0u);
-  EXPECT_EQ(dispatch.bindings[0].length, 64u);
+  ASSERT_EQ(dispatch.bindings.size(), 3u);
+  for (iree_host_size_t i = 0; i < dispatch.bindings.size(); ++i) {
+    EXPECT_EQ(dispatch.bindings[i].buffer, nullptr);
+    EXPECT_EQ(dispatch.bindings[i].buffer_slot, i);
+    EXPECT_EQ(dispatch.bindings[i].length, 64u);
+  }
+
+  parameters[3].size = sizeof(uint32_t);
+  CaptureCommandBuffer incompatible_command_buffer = {};
+  InitializeCommandBuffer(inputs.binding_count, &incompatible_command_buffer);
+  IREE_ASSERT_OK(
+      iree_hal_command_buffer_begin(&incompatible_command_buffer.base));
+  IREE_EXPECT_STATUS_IS(
+      IREE_STATUS_INVALID_ARGUMENT,
+      loom_cmd_iree_hal_record_program(&program, &inputs,
+                                       &incompatible_command_buffer.base,
+                                       iree_allocator_system()));
+  EXPECT_TRUE(incompatible_command_buffer.commands.empty());
+  IREE_ASSERT_OK(
+      iree_hal_command_buffer_end(&incompatible_command_buffer.base));
   iree_allocator_free(iree_allocator_system(), program_data.data);
+}
+
+TEST_F(CmdIreeHalRecordingTest, RejectsIncompleteBufferArgument) {
+  ModulePtr module = ParseAndVerify(R"(
+low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, executable_count = 1, fixed_buffer_count = 0, rebindable_binding_count = 1}) @incomplete_buffer() {
+  %buffer = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
+  %executable = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.executable>
+  %entry = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.entry>
+  %one = low.const<cmd.constant.u32> {value = 1} : reg<cmd.u32>
+  low.op<cmd.dispatch.direct>(%executable, %entry, %one, %one, %one, %buffer) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.binding>)
+  low.return
+}
+)");
+
+  iree_byte_span_t program_data = iree_byte_span_empty();
+  IREE_EXPECT_STATUS_IS(
+      IREE_STATUS_INVALID_ARGUMENT,
+      loom_cmd_program_serialize_low(
+          module.get(),
+          FindFunction(module.get(), IREE_SV("incomplete_buffer")),
+          /*parameter_requirements=*/nullptr,
+          /*transient_requirement=*/nullptr, &program_data,
+          iree_allocator_system()));
+  EXPECT_EQ(program_data.data, nullptr);
+}
+
+TEST_F(CmdIreeHalRecordingTest, RejectsInconsistentEntryArgumentSchemas) {
+  ModulePtr module = ParseAndVerify(R"(
+low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, executable_count = 1, fixed_buffer_count = 0, rebindable_binding_count = 0}) @inconsistent_schema() {
+  %executable = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.executable>
+  %entry = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.entry>
+  %one = low.const<cmd.constant.u32> {value = 1} : reg<cmd.u32>
+  %b8 = low.const<cmd.constant.b8> {value = 1} : reg<cmd.b8>
+  %b16 = low.const<cmd.constant.b16> {value = 1} : reg<cmd.b16>
+  low.op<cmd.dispatch.direct>(%executable, %entry, %one, %one, %one, %b8) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.b8>)
+  low.op<cmd.dispatch.direct>(%executable, %entry, %one, %one, %one, %b16) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.b16>)
+  low.return
+}
+)");
+
+  iree_byte_span_t program_data = iree_byte_span_empty();
+  IREE_EXPECT_STATUS_IS(
+      IREE_STATUS_INVALID_ARGUMENT,
+      loom_cmd_program_serialize_low(
+          module.get(),
+          FindFunction(module.get(), IREE_SV("inconsistent_schema")),
+          /*parameter_requirements=*/nullptr,
+          /*transient_requirement=*/nullptr, &program_data,
+          iree_allocator_system()));
+  EXPECT_EQ(program_data.data, nullptr);
 }
 
 TEST_F(CmdIreeHalRecordingTest, DispatchesWithReflectedEntryAbi) {
@@ -555,14 +629,12 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, 
   %target = low.resource<command_input> {index = 1, source_type = buffer} : reg<cmd.binding>
   %executable = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.executable>
   %entry = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.entry>
-  %addend = low.const<cmd.constant.u32> {value = 7} : reg<cmd.u32>
+  %addend = low.const<cmd.constant.b32> {value = 7} : reg<cmd.b32>
   %workgroup_count = low.const<cmd.constant.u32> {value = 4} : reg<cmd.u32>
   %one = low.const<cmd.constant.u32> {value = 1} : reg<cmd.u32>
   %zero = low.const<cmd.constant.u64> {value = 0} : reg<cmd.u64>
   %length = low.const<cmd.constant.u64> {value = 16} : reg<cmd.u64>
-  %source_ref = low.op<cmd.buffer.ref.binding>(%source, %zero, %length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
-  %target_ref = low.op<cmd.buffer.ref.binding>(%target, %zero, %length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
-  low.op<cmd.dispatch.direct>(%executable, %entry, %workgroup_count, %one, %one, %addend, %source_ref, %target_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.buffer_ref>, reg<cmd.buffer_ref>)
+  low.op<cmd.dispatch.direct>(%executable, %entry, %workgroup_count, %one, %one, %addend, %source, %zero, %length, %target, %zero, %length) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.b32>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>)
   low.return
 }
 )");

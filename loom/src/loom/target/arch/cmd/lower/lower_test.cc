@@ -23,6 +23,7 @@
 #include "loom/ops/low/ops.h"
 #include "loom/ops/op_registry.h"
 #include "loom/target/arch/cmd/descriptors/low_registry.h"
+#include "loom/target/arch/cmd/format.h"
 #include "loom/target/arch/cmd/iree_hal/recording.h"
 #include "loom/target/arch/cmd/lower/launch_artifact.h"
 #include "loom/target/arch/cmd/lower/schedule.h"
@@ -523,11 +524,14 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
       kLaunchCountOffset + LOOM_CMD_PROGRAM_LAUNCH_COUNT_TUPLE_BYTE_LENGTH);
   EXPECT_EQ(program.requirements.launch_counts.minimum_alignment,
             alignof(uint32_t));
-  ASSERT_EQ(program.buffer_refs.count, 8u);
-  EXPECT_EQ(program.arguments.count, 9u);
+  ASSERT_EQ(program.buffer_refs.count, 1u);
+  EXPECT_EQ(program.entry_schemas.count, 4u);
+  EXPECT_EQ(program.entry_schema_kinds.count, 9u);
+  EXPECT_EQ(program.argument_data.data_length,
+            9u * LOOM_CMD_PROGRAM_BUFFER_REF_SIZE);
   ASSERT_EQ(program.commands.count, 5u);
   const loom_cmd_program_buffer_ref_t launch_count_ref =
-      loom_cmd_program_buffer_ref_at(&program, 7);
+      loom_cmd_program_buffer_ref_at(&program, 0);
   EXPECT_EQ(launch_count_ref.role, LOOM_CMD_PROGRAM_BUFFER_ROLE_REBINDABLE);
   EXPECT_EQ(launch_count_ref.root_index, 5u);
   EXPECT_EQ(launch_count_ref.byte_offset, kLaunchCountOffset);
@@ -537,12 +541,28 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
             LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_DIRECT);
   const loom_cmd_program_command_t prepare_command =
       loom_cmd_program_command_at(&program, 0);
-  const loom_cmd_program_argument_t parameter_argument =
-      loom_cmd_program_argument_at(&program, prepare_command.argument_offset);
-  ASSERT_EQ(parameter_argument.kind, LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF);
-  EXPECT_EQ(parameter_argument.payload, 6u);
-  const loom_cmd_program_buffer_ref_t parameter_ref =
-      loom_cmd_program_buffer_ref_at(&program, parameter_argument.payload);
+  const loom_cmd_program_entry_schema_t prepare_schema =
+      loom_cmd_program_entry_schema_at(&program,
+                                       prepare_command.argument_schema_index);
+  ASSERT_EQ(loom_cmd_program_entry_schema_kind_at(&program, &prepare_schema, 0),
+            LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER);
+  const iree_const_byte_span_t prepare_arguments =
+      loom_cmd_program_command_argument_data(&program, &prepare_command);
+  const loom_cmd_program_buffer_ref_t parameter_ref = {
+      /*.role=*/(loom_cmd_program_buffer_role_t)iree_unaligned_load_le_u32(
+          prepare_arguments.data + LOOM_CMD_PROGRAM_BUFFER_REF_ROLE_OFFSET),
+      /*.root_index=*/
+      iree_unaligned_load_le_u32(prepare_arguments.data +
+                                 LOOM_CMD_PROGRAM_BUFFER_REF_ROOT_INDEX_OFFSET),
+      /*.byte_offset=*/
+      iree_unaligned_load_le_u64(
+          prepare_arguments.data +
+          LOOM_CMD_PROGRAM_BUFFER_REF_BYTE_OFFSET_OFFSET),
+      /*.byte_length=*/
+      iree_unaligned_load_le_u64(
+          prepare_arguments.data +
+          LOOM_CMD_PROGRAM_BUFFER_REF_BYTE_LENGTH_OFFSET),
+  };
   EXPECT_EQ(parameter_ref.role, LOOM_CMD_PROGRAM_BUFFER_ROLE_FIXED);
   EXPECT_EQ(parameter_ref.root_index, 0u);
   EXPECT_EQ(parameter_ref.byte_offset, 256u);
@@ -552,7 +572,7 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
         loom_cmd_program_command_at(&program, i);
     EXPECT_EQ(command.kind,
               LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC);
-    EXPECT_EQ(command.payload.dispatch_indirect.workgroup_count_buffer_ref, 7u);
+    EXPECT_EQ(command.payload.dispatch_indirect.workgroup_count_buffer_ref, 0u);
   }
 
   module.reset();

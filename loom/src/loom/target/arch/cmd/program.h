@@ -45,27 +45,36 @@ typedef struct loom_cmd_program_buffer_ref_t {
   uint64_t byte_length;
 } loom_cmd_program_buffer_ref_t;
 
-// Kind of one flattened logical kernel argument. Kinds preserve source-level
-// type identity and do not encode a target-native argument layout.
+// Kind of one logical kernel argument in an executable-entry schema.
 typedef enum loom_cmd_program_argument_kind_e {
-  // An unsigned 32-bit scalar stored in the low bits of |payload|.
-  LOOM_CMD_PROGRAM_ARGUMENT_KIND_U32 = 1,
-  // An unsigned 64-bit scalar stored directly in |payload|.
-  LOOM_CMD_PROGRAM_ARGUMENT_KIND_U64 = 2,
-  // An index into the program buffer-reference table.
-  LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER_REF = 3,
+  // A direct fixed or rebindable root, byte offset, and byte length tuple.
+  LOOM_CMD_PROGRAM_ARGUMENT_KIND_BUFFER = 1,
+  // An exact 8-bit scalar payload.
+  LOOM_CMD_PROGRAM_ARGUMENT_KIND_B8 = 2,
+  // An exact 16-bit scalar payload.
+  LOOM_CMD_PROGRAM_ARGUMENT_KIND_B16 = 3,
+  // An exact 32-bit scalar payload.
+  LOOM_CMD_PROGRAM_ARGUMENT_KIND_B32 = 4,
+  // An exact 64-bit scalar payload.
+  LOOM_CMD_PROGRAM_ARGUMENT_KIND_B64 = 5,
 } loom_cmd_program_argument_kind_t;
 
-// One flattened logical kernel argument in kernel ABI order. A command-program
-// materializer combines this logical stream with executable entry reflection
-// to populate its native constants, bindings, or argument storage. The
-// serialized program never fixes native offsets, alignment, or padding.
-typedef struct loom_cmd_program_argument_t {
-  // Interpretation of |payload|.
-  loom_cmd_program_argument_kind_t kind;
-  // Immediate scalar value or buffer-reference table index.
-  uint64_t payload;
-} loom_cmd_program_argument_t;
+// Logical parameter schema for one executable-entry requirement.
+//
+// The schema identifies a program-local entry and describes every tagless
+// dispatch payload targeting it. It does not encode native offsets, alignment,
+// or padding. Materializers combine the logical kinds with implementation
+// reflection when recording each dispatch.
+typedef struct loom_cmd_program_entry_schema_t {
+  // Dense program-local executable entry requirement index.
+  uint32_t entry_index;
+  // First kind byte in the flattened schema-kind table.
+  uint32_t kind_offset;
+  // Number of logical arguments in the schema.
+  uint32_t argument_count;
+  // Exact bytes consumed by one payload matching the schema.
+  uint32_t argument_byte_length;
+} loom_cmd_program_entry_schema_t;
 
 // Kind of one command recorded by a portable command program.
 typedef enum loom_cmd_program_command_kind_e {
@@ -87,10 +96,10 @@ typedef enum loom_cmd_program_command_kind_e {
 typedef struct loom_cmd_program_command_t {
   // Command payload selector.
   loom_cmd_program_command_kind_t kind;
-  // First logical argument in the flattened program argument table.
+  // First byte in the flattened tagless argument payload storage.
   uint32_t argument_offset;
-  // Number of logical arguments consumed by the command.
-  uint32_t argument_count;
+  // Executable-entry schema describing the tagless argument payload.
+  uint32_t argument_schema_index;
   // Command-specific payload.
   union {
     // Payload for LOOM_CMD_PROGRAM_COMMAND_KIND_FILL.
@@ -211,10 +220,14 @@ typedef struct loom_cmd_program_t {
   iree_const_byte_span_t storage;
   // External resources required by the program.
   loom_cmd_program_requirements_t requirements;
-  // Resolved buffer-range table.
+  // Buffer ranges used by fills, copies, and indirect launch counts.
   loom_cmd_program_table_t buffer_refs;
-  // Flattened logical kernel argument table.
-  loom_cmd_program_table_t arguments;
+  // Executable-entry logical parameter schemas.
+  loom_cmd_program_table_t entry_schemas;
+  // Flattened one-byte logical parameter kinds referenced by entry schemas.
+  loom_cmd_program_table_t entry_schema_kinds;
+  // Tagless dispatch argument payloads in command traversal order.
+  iree_const_byte_span_t argument_data;
   // Ordered command table.
   loom_cmd_program_table_t commands;
   // Fixed parameter-buffer roots in canonical ascending root order.
@@ -253,9 +266,19 @@ iree_status_t loom_cmd_program_parse(iree_const_byte_span_t data,
 loom_cmd_program_buffer_ref_t loom_cmd_program_buffer_ref_at(
     const loom_cmd_program_t* program, uint32_t index);
 
-// Returns one validated flattened logical argument.
-loom_cmd_program_argument_t loom_cmd_program_argument_at(
+// Returns one validated executable-entry logical parameter schema.
+loom_cmd_program_entry_schema_t loom_cmd_program_entry_schema_at(
     const loom_cmd_program_t* program, uint32_t index);
+
+// Returns one logical argument kind from a validated entry schema.
+loom_cmd_program_argument_kind_t loom_cmd_program_entry_schema_kind_at(
+    const loom_cmd_program_t* program,
+    const loom_cmd_program_entry_schema_t* schema, uint32_t argument_index);
+
+// Returns the validated tagless argument payload for |command|.
+iree_const_byte_span_t loom_cmd_program_command_argument_data(
+    const loom_cmd_program_t* program,
+    const loom_cmd_program_command_t* command);
 
 // Returns one validated command table entry.
 loom_cmd_program_command_t loom_cmd_program_command_at(
