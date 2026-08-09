@@ -950,6 +950,16 @@ static iree_status_t loom_cmd_iree_hal_record_program_command(
   return status;
 }
 
+static uint32_t loom_cmd_iree_hal_program_first_barrier_wave_ordinal(
+    const loom_cmd_program_t* program) {
+  if (program->commands.count == 0) return 0;
+  const loom_cmd_program_command_t first_command =
+      loom_cmd_program_command_at(program, 0);
+  return loom_cmd_program_command_kind_begins_barrier_wave(first_command.kind)
+             ? 1
+             : 0;
+}
+
 iree_status_t loom_cmd_iree_hal_record_function(
     const loom_module_t* module, const loom_op_t* function_op,
     const loom_cmd_iree_hal_inputs_t* inputs,
@@ -1100,14 +1110,18 @@ iree_status_t loom_cmd_iree_hal_materialize_function(
   return status;
 }
 
-iree_status_t loom_cmd_iree_hal_record_program(
-    const loom_cmd_program_t* program, const loom_cmd_iree_hal_inputs_t* inputs,
+iree_status_t loom_cmd_iree_hal_record_program_range(
+    const loom_cmd_program_t* program, loom_cmd_program_command_range_t range,
+    uint32_t barrier_wave_ordinal, const loom_cmd_iree_hal_inputs_t* inputs,
     iree_hal_command_buffer_t* command_buffer,
     loom_cmd_iree_hal_operation_map_t* operation_map,
     iree_allocator_t host_allocator) {
   IREE_ASSERT_ARGUMENT(program);
   IREE_ASSERT_ARGUMENT(inputs);
   IREE_ASSERT_ARGUMENT(command_buffer);
+  IREE_ASSERT_LE(range.first_command, program->commands.count);
+  IREE_ASSERT_LE(range.command_count,
+                 program->commands.count - range.first_command);
   if (operation_map != NULL) operation_map->count = 0;
 
   iree_host_size_t max_constant_byte_length = 0;
@@ -1143,6 +1157,7 @@ iree_status_t loom_cmd_iree_hal_record_program(
       .inputs = inputs,
       .command_buffer = command_buffer,
       .operation_map = operation_map,
+      .barrier_wave_ordinal = barrier_wave_ordinal,
       .buffer_refs =
           storage ? (iree_hal_buffer_ref_t*)(storage + buffer_refs_offset)
                   : NULL,
@@ -1153,8 +1168,17 @@ iree_status_t loom_cmd_iree_hal_record_program(
   if (iree_status_is_ok(status)) {
     status = loom_cmd_iree_hal_resolve_program_buffer_refs(&workspace);
   }
-  for (uint32_t i = 0; i < program->commands.count && iree_status_is_ok(status);
-       ++i) {
+  if (range.command_count != 0) {
+    const loom_cmd_program_command_t first_command =
+        loom_cmd_program_command_at(program, range.first_command);
+    if (loom_cmd_program_command_kind_begins_barrier_wave(first_command.kind)) {
+      IREE_ASSERT_GT(workspace.barrier_wave_ordinal, 0u);
+      --workspace.barrier_wave_ordinal;
+    }
+  }
+  const uint32_t end_command = range.first_command + range.command_count;
+  for (uint32_t i = range.first_command;
+       i < end_command && iree_status_is_ok(status); ++i) {
     const loom_cmd_program_command_t command =
         loom_cmd_program_command_at(program, i);
     status = loom_cmd_iree_hal_record_program_command(&workspace, i, &command);
@@ -1164,8 +1188,23 @@ iree_status_t loom_cmd_iree_hal_record_program(
   return status;
 }
 
-iree_status_t loom_cmd_iree_hal_materialize_program(
+iree_status_t loom_cmd_iree_hal_record_program(
     const loom_cmd_program_t* program, const loom_cmd_iree_hal_inputs_t* inputs,
+    iree_hal_command_buffer_t* command_buffer,
+    loom_cmd_iree_hal_operation_map_t* operation_map,
+    iree_allocator_t host_allocator) {
+  const loom_cmd_program_command_range_t range =
+      loom_cmd_program_command_range_all(program);
+  const uint32_t first_wave_ordinal =
+      loom_cmd_iree_hal_program_first_barrier_wave_ordinal(program);
+  return loom_cmd_iree_hal_record_program_range(
+      program, range, first_wave_ordinal, inputs, command_buffer, operation_map,
+      host_allocator);
+}
+
+iree_status_t loom_cmd_iree_hal_materialize_program_range(
+    const loom_cmd_program_t* program, loom_cmd_program_command_range_t range,
+    uint32_t barrier_wave_ordinal, const loom_cmd_iree_hal_inputs_t* inputs,
     iree_hal_device_t* device, iree_hal_command_buffer_mode_t mode,
     iree_hal_queue_affinity_t queue_affinity,
     loom_cmd_iree_hal_operation_map_t* operation_map,
@@ -1185,8 +1224,9 @@ iree_status_t loom_cmd_iree_hal_materialize_program(
     status = iree_hal_command_buffer_begin(command_buffer);
   }
   if (iree_status_is_ok(status)) {
-    status = loom_cmd_iree_hal_record_program(program, inputs, command_buffer,
-                                              operation_map, host_allocator);
+    status = loom_cmd_iree_hal_record_program_range(
+        program, range, barrier_wave_ordinal, inputs, command_buffer,
+        operation_map, host_allocator);
   }
   if (iree_status_is_ok(status)) {
     status = iree_hal_command_buffer_end(command_buffer);
@@ -1197,4 +1237,20 @@ iree_status_t loom_cmd_iree_hal_materialize_program(
     iree_hal_command_buffer_release(command_buffer);
   }
   return status;
+}
+
+iree_status_t loom_cmd_iree_hal_materialize_program(
+    const loom_cmd_program_t* program, const loom_cmd_iree_hal_inputs_t* inputs,
+    iree_hal_device_t* device, iree_hal_command_buffer_mode_t mode,
+    iree_hal_queue_affinity_t queue_affinity,
+    loom_cmd_iree_hal_operation_map_t* operation_map,
+    iree_hal_command_buffer_t** out_command_buffer,
+    iree_allocator_t host_allocator) {
+  const loom_cmd_program_command_range_t range =
+      loom_cmd_program_command_range_all(program);
+  const uint32_t first_wave_ordinal =
+      loom_cmd_iree_hal_program_first_barrier_wave_ordinal(program);
+  return loom_cmd_iree_hal_materialize_program_range(
+      program, range, first_wave_ordinal, inputs, device, mode, queue_affinity,
+      operation_map, out_command_buffer, host_allocator);
 }

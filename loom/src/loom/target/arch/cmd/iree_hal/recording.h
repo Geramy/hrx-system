@@ -133,6 +133,21 @@ iree_status_t loom_cmd_iree_hal_record_program(
     loom_cmd_iree_hal_operation_map_t* operation_map,
     iree_allocator_t host_allocator);
 
+// Records a trusted canonical command range into a begun command buffer.
+//
+// |barrier_wave_ordinal| is the canonical wave containing the first command.
+// The range may begin at a folded or standalone barrier, in which case the
+// recorder emits that barrier before entering the supplied wave. A range may
+// continue across later barriers. |range| must be within the parsed program;
+// use loom_cmd_program_barrier_wave_iterator_t to produce barrier-aligned
+// ranges without reconstructing schedule semantics.
+iree_status_t loom_cmd_iree_hal_record_program_range(
+    const loom_cmd_program_t* program, loom_cmd_program_command_range_t range,
+    uint32_t barrier_wave_ordinal, const loom_cmd_iree_hal_inputs_t* inputs,
+    iree_hal_command_buffer_t* command_buffer,
+    loom_cmd_iree_hal_operation_map_t* operation_map,
+    iree_allocator_t host_allocator);
+
 // Creates and records a reusable command buffer for one parsed program.
 //
 // The returned command buffer has the rebindable slot count declared by the
@@ -141,6 +156,20 @@ iree_status_t loom_cmd_iree_hal_record_program(
 // fixed buffers supplied during materialization.
 iree_status_t loom_cmd_iree_hal_materialize_program(
     const loom_cmd_program_t* program, const loom_cmd_iree_hal_inputs_t* inputs,
+    iree_hal_device_t* device, iree_hal_command_buffer_mode_t mode,
+    iree_hal_queue_affinity_t queue_affinity,
+    loom_cmd_iree_hal_operation_map_t* operation_map,
+    iree_hal_command_buffer_t** out_command_buffer,
+    iree_allocator_t host_allocator);
+
+// Creates and records a reusable command buffer for a trusted command range.
+//
+// The range and |barrier_wave_ordinal| follow the recording contract above.
+// Fixed resources and rebindable binding ordinals remain those of the complete
+// program so separately materialized ranges share one issue-time binding ABI.
+iree_status_t loom_cmd_iree_hal_materialize_program_range(
+    const loom_cmd_program_t* program, loom_cmd_program_command_range_t range,
+    uint32_t barrier_wave_ordinal, const loom_cmd_iree_hal_inputs_t* inputs,
     iree_hal_device_t* device, iree_hal_command_buffer_mode_t mode,
     iree_hal_queue_affinity_t queue_affinity,
     loom_cmd_iree_hal_operation_map_t* operation_map,

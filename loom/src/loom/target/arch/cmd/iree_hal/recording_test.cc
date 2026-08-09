@@ -555,6 +555,68 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, 
     EXPECT_EQ(operation_map.entries[i].phase, expected[i].phase);
   }
 
+  CaptureCommandBuffer segmented_command_buffer = {};
+  InitializeCommandBuffer(inputs.binding_count, &segmented_command_buffer);
+  IREE_ASSERT_OK(iree_hal_command_buffer_begin(&segmented_command_buffer.base));
+  std::vector<loom_cmd_iree_hal_operation_map_entry_t> segmented_operations;
+  loom_cmd_program_barrier_wave_iterator_t iterator;
+  loom_cmd_program_barrier_wave_iterator_initialize(&program, &iterator);
+  loom_cmd_program_barrier_wave_t wave = {};
+  while (loom_cmd_program_barrier_wave_iterator_next(&iterator, &wave)) {
+    std::array<loom_cmd_iree_hal_operation_map_entry_t, 12> wave_map_entries =
+        {};
+    loom_cmd_iree_hal_operation_map_t wave_operation_map = {
+        /*.entries=*/wave_map_entries.data(),
+        /*.capacity=*/wave_map_entries.size(),
+    };
+    IREE_ASSERT_OK(loom_cmd_iree_hal_record_program_range(
+        &program, wave.commands, wave.ordinal, &inputs,
+        &segmented_command_buffer.base, &wave_operation_map,
+        iree_allocator_system()));
+    segmented_operations.insert(
+        segmented_operations.end(), wave_map_entries.begin(),
+        wave_map_entries.begin() + wave_operation_map.count);
+  }
+  IREE_ASSERT_OK(iree_hal_command_buffer_end(&segmented_command_buffer.base));
+
+  ASSERT_EQ(segmented_command_buffer.commands.size(),
+            command_buffer.commands.size());
+  for (iree_host_size_t i = 0; i < command_buffer.commands.size(); ++i) {
+    EXPECT_EQ(segmented_command_buffer.commands[i].kind,
+              command_buffer.commands[i].kind);
+  }
+  ASSERT_EQ(segmented_operations.size(), operation_map.count);
+  for (iree_host_size_t i = 0; i < operation_map.count; ++i) {
+    EXPECT_EQ(segmented_operations[i].command_ordinal,
+              operation_map.entries[i].command_ordinal);
+    EXPECT_EQ(segmented_operations[i].barrier_wave_ordinal,
+              operation_map.entries[i].barrier_wave_ordinal);
+    EXPECT_EQ(segmented_operations[i].phase, operation_map.entries[i].phase);
+  }
+
+  CaptureCommandBuffer subset_command_buffer = {};
+  InitializeCommandBuffer(inputs.binding_count, &subset_command_buffer);
+  IREE_ASSERT_OK(iree_hal_command_buffer_begin(&subset_command_buffer.base));
+  std::array<loom_cmd_iree_hal_operation_map_entry_t, 2> subset_map_entries =
+      {};
+  loom_cmd_iree_hal_operation_map_t subset_operation_map = {
+      /*.entries=*/subset_map_entries.data(),
+      /*.capacity=*/subset_map_entries.size(),
+  };
+  IREE_ASSERT_OK(loom_cmd_iree_hal_record_program_range(
+      &program, {/*.first_command=*/2, /*.command_count=*/1},
+      /*barrier_wave_ordinal=*/1, &inputs, &subset_command_buffer.base,
+      &subset_operation_map, iree_allocator_system()));
+  IREE_ASSERT_OK(iree_hal_command_buffer_end(&subset_command_buffer.base));
+  ASSERT_EQ(subset_command_buffer.commands.size(), 1u);
+  EXPECT_EQ(subset_command_buffer.commands[0].kind,
+            CapturedCommandKind::kDispatch);
+  ASSERT_EQ(subset_operation_map.count, 1u);
+  EXPECT_EQ(subset_operation_map.entries[0].command_ordinal, 2u);
+  EXPECT_EQ(subset_operation_map.entries[0].barrier_wave_ordinal, 1u);
+  EXPECT_EQ(subset_operation_map.entries[0].phase,
+            LOOM_CMD_IREE_HAL_OPERATION_PHASE_PAYLOAD);
+
   iree_allocator_free(iree_allocator_system(), program_data.data);
 }
 
