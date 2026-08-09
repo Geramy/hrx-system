@@ -382,6 +382,7 @@ static loomc_status_t loomc_cmd_program_compile_root_unit(
 static loomc_status_t loomc_cmd_program_compile_dependency_unit(
     const loomc_cmd_program_plan_storage_t* storage,
     loomc_workspace_t* workspace, uint32_t dependency_index,
+    const loomc_program_plan_unit_compile_options_t* options,
     loomc_allocator_t allocator, loomc_program_t** out_program,
     loomc_result_t** out_result) {
   loomc_module_t* module = NULL;
@@ -436,6 +437,7 @@ static loomc_status_t loomc_cmd_program_compile_dependency_unit(
   const loomc_emit_options_t emit_options = {
       .type = LOOMC_STRUCTURE_TYPE_EMIT_OPTIONS,
       .structure_size = sizeof(emit_options),
+      .next = options != NULL ? options->next : NULL,
       .artifact_format = storage->dependency_artifact_format,
       .identifier = identifier,
       .artifact_flags = LOOMC_EMIT_ARTIFACT_FLAG_PRIMARY,
@@ -479,17 +481,13 @@ static loomc_status_t loomc_cmd_program_compile_unit(
   const loomc_cmd_program_plan_storage_t* storage =
       (const loomc_cmd_program_plan_storage_t*)storage_ptr;
   IREE_ASSERT_LT(unit_index, storage->plan.dependency_count + 1);
-  if (options != NULL && options->next != NULL) {
-    return loomc_make_status(
-        LOOMC_STATUS_UNIMPLEMENTED,
-        "command program unit compile extensions are not supported");
-  }
   if (unit_index == 0) {
     return loomc_cmd_program_compile_root_unit(storage, workspace, allocator,
                                                out_program, out_result);
   }
   return loomc_cmd_program_compile_dependency_unit(
-      storage, workspace, unit_index - 1, allocator, out_program, out_result);
+      storage, workspace, unit_index - 1, options, allocator, out_program,
+      out_result);
 }
 
 static loomc_status_t loomc_cmd_program_validate_root_artifacts(

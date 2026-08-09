@@ -16,6 +16,7 @@
 #include "iree/testing/status_matchers.h"
 #include "loom/target/arch/cmd/program.h"
 #include "loomc/artifact.h"
+#include "loomc/compile_report.h"
 #include "loomc/context.h"
 #include "loomc/launch_config_module.h"
 #include "loomc/program.h"
@@ -397,6 +398,18 @@ command.program.def public target(@command_target) @add_eleven_once(%element_cou
   EXPECT_EQ(eleven_dependency.slot, 0u);
   ASSERT_NE(seven_dependency.unit.value, eleven_dependency.unit.value);
 
+  const loomc_compile_report_options_t report_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_COMPILE_REPORT_OPTIONS,
+      /*.structure_size=*/sizeof(report_options),
+      /*.next=*/nullptr,
+      /*.mode=*/LOOMC_COMPILE_REPORT_MODE_SUMMARY,
+      /*.identifier=*/loomc_string_view_empty(),
+  };
+  const loomc_program_plan_unit_compile_options_t unit_compile_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_UNIT_COMPILE_OPTIONS,
+      /*.structure_size=*/sizeof(unit_compile_options),
+      /*.next=*/&report_options,
+  };
   std::array<ProgramPtr, 3> unit_programs;
   for (uint32_t i = 0; i < unit_programs.size(); ++i) {
     WorkspacePtr worker_workspace = CreateWorkspace();
@@ -404,7 +417,7 @@ command.program.def public target(@command_target) @add_eleven_once(%element_cou
     loomc_result_t* raw_result = nullptr;
     LOOMC_ASSERT_OK(loomc_program_plan_compile_unit(
         plan.get(), worker_workspace.get(),
-        loomc_program_plan_unit_from_index(i), /*options=*/nullptr,
+        loomc_program_plan_unit_from_index(i), &unit_compile_options,
         loomc_allocator_system(), &raw_program, &raw_result));
     unit_programs[i].reset(raw_program);
     ResultPtr result(raw_result);
@@ -422,6 +435,18 @@ command.program.def public target(@command_target) @add_eleven_once(%element_cou
       }
     }
     ASSERT_TRUE(loomc_result_succeeded(result.get()));
+  }
+  EXPECT_EQ(FindArtifact(unit_programs[0].get(), LOOMC_ARTIFACT_KIND_REPORT,
+                         LOOMC_ARTIFACT_FORMAT_COMPILE_REPORT_JSON,
+                         "command-programs.compile-report.json"),
+            nullptr);
+  for (uint32_t i = 1; i < unit_programs.size(); ++i) {
+    const loomc_artifact_t* report = FindArtifact(
+        unit_programs[i].get(), LOOMC_ARTIFACT_KIND_REPORT,
+        LOOMC_ARTIFACT_FORMAT_COMPILE_REPORT_JSON,
+        i == seven_dependency.unit.value ? "add_seven.compile-report.json"
+                                         : "add_eleven.compile-report.json");
+    ASSERT_NE(report, nullptr);
   }
 
   std::vector<OwnedArtifact> cached_root_artifacts =
@@ -445,11 +470,9 @@ command.program.def public target(@command_target) @add_eleven_once(%element_cou
 
   const uint32_t reloaded_unit_index =
       static_cast<uint32_t>(seven_dependency.unit.value);
-  ASSERT_EQ(
-      loomc_program_artifact_count(unit_programs[reloaded_unit_index].get()),
-      1u);
-  const loomc_artifact_t* compiled_artifact =
-      loomc_program_artifact_at(unit_programs[reloaded_unit_index].get(), 0);
+  const loomc_artifact_t* compiled_artifact = FindArtifact(
+      unit_programs[reloaded_unit_index].get(), LOOMC_ARTIFACT_KIND_EXECUTABLE,
+      LOOMC_ARTIFACT_FORMAT_SPIRV, "add_seven");
   ASSERT_NE(compiled_artifact, nullptr);
   EXPECT_EQ(compiled_artifact->kind, LOOMC_ARTIFACT_KIND_EXECUTABLE);
   EXPECT_TRUE(loomc_string_view_equal(
