@@ -77,18 +77,24 @@ command.program.def public @qwen3_30b_decode_576() launch(%parameters: buffer, %
   // The host may bind this as a subrange of its existing model allocation.
   %rope_inverse_frequencies = command.parameter %auxiliary_parameters, "rope.inverse_frequencies"[] : view<64xf32, #dense>
 
-  // Request-local persistent state has token capacity one and context
-  // capacity 576. The source describes field extents and alignment while
-  // buffer.pack owns their physical placement. K/V planes remain independent
-  // issue-time roots.
-  %hidden_bytes = index.constant 8192 : offset
-  %token_ids_bytes = index.constant 4 : offset
+  // Request-local persistent state retains the allocation shape selected by
+  // the host even though decode consumes only its first row. The source
+  // describes field extents and alignment while buffer.pack owns their
+  // physical placement. K/V planes remain independent issue-time roots.
+  %token_capacity = config.get @qwen3_moe.workload.token_capacity : index
+  %hidden_row_bytes = index.constant 8192 : offset
+  %token_id_row_bytes = index.constant 4 : offset
   %control_bytes = index.constant 4 : offset
-  %positions_bytes = index.constant 4 : offset
-  %key_indices_bytes = index.constant 8 : offset
-  %value_indices_bytes = index.constant 8 : offset
-  %mask_bytes = index.constant 1152 : offset
-  %request_bytes, %hidden_offset, %token_ids_offset, %control_offset, %positions_offset, %key_indices_offset, %value_indices_offset, %mask_offset = buffer.pack %hidden_bytes, %token_ids_bytes, %control_bytes, %positions_bytes, %key_indices_bytes, %value_indices_bytes, %mask_bytes {minimum_alignments = [256, 4, 4, 4, 8, 8, 2]} : offset, offset, offset, offset, offset, offset, offset, offset
+  %position_row_bytes = index.constant 4 : offset
+  %cache_index_row_bytes = index.constant 8 : offset
+  %mask_row_bytes = index.constant 1152 : offset
+  %hidden_bytes = index.scale %token_capacity, %hidden_row_bytes : index, offset -> offset
+  %token_ids_bytes = index.scale %token_capacity, %token_id_row_bytes : index, offset -> offset
+  %positions_bytes = index.scale %token_capacity, %position_row_bytes : index, offset -> offset
+  %key_indices_bytes = index.scale %token_capacity, %cache_index_row_bytes : index, offset -> offset
+  %value_indices_bytes = index.scale %token_capacity, %cache_index_row_bytes : index, offset -> offset
+  %mask_bytes = index.scale %token_capacity, %mask_row_bytes : index, offset -> offset
+  %request_bytes, %hidden_offset, %token_ids_offset, %control_offset, %positions_offset, %key_indices_offset, %value_indices_offset, %mask_offset = buffer.pack %hidden_bytes, %token_ids_bytes, %control_bytes, %positions_bytes, %key_indices_bytes, %value_indices_bytes, %mask_bytes {minimum_alignments = [256, 4, 4, 4, 8, 8, 16]} : offset, offset, offset, offset, offset, offset, offset, offset
   %hidden_state = buffer.view %request_state[%hidden_offset] : buffer -> view<2048xf32, #dense>
   %token_ids = buffer.view %request_state[%token_ids_offset] : buffer -> view<1xi32, #dense>
   %control = buffer.view %request_state[%control_offset] : buffer -> view<1xi32, #dense>

@@ -225,10 +225,23 @@ TEST(QwenDecodeCommandProgramTest, CompilesCompleteProductionPlan) {
       /*.dependency_artifact_format=*/
       loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_AMDGPU_HSACO),
   };
+  const loomc_config_binding_t config_bindings[] = {
+      {
+          /*.key=*/loomc_make_cstring_view("qwen3_moe.workload.token_capacity"),
+          /*.value=*/loomc_make_cstring_view("512"),
+      },
+  };
   const loomc_program_plan_options_t plan_options = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_OPTIONS,
       /*.structure_size=*/sizeof(plan_options),
       /*.next=*/&command_options,
+      /*.config=*/
+      {
+          /*.bindings=*/config_bindings,
+          /*.binding_count=*/std::size(config_bindings),
+          /*.json_object=*/loomc_string_view_empty(),
+          /*.flags=*/LOOMC_CONFIG_POLICY_FLAG_REQUIRE_RESOLVED,
+      },
   };
   loomc_program_plan_t* raw_plan = nullptr;
   loomc_result_t* raw_result = nullptr;
