@@ -72,13 +72,11 @@ pass.pipeline<module> @__loom_check_source_low pipeline {
   }
   source-to-low
   for func {
-    where target {
-      cfg-simplify
-      low-decompose-cfg-tuples
-      canonicalize
-      cse
-      low-dce
-    }
+    cfg-simplify
+    low-decompose-cfg-tuples
+    canonicalize
+    cse
+    low-dce
   }
 }
 
@@ -162,13 +160,11 @@ pass.pipeline<module> @__loom_check_source_low pipeline {
   }
   source-to-low
   for func {
-    where target {
-      cfg-simplify
-      low-decompose-cfg-tuples
-      canonicalize
-      cse
-      low-dce
-    }
+    cfg-simplify
+    low-decompose-cfg-tuples
+    canonicalize
+    cse
+    low-dce
   }
 }
 
@@ -288,25 +284,31 @@ pass.pipeline<module> @__loom_check_prepared_low pipeline {
   }
   source-to-low
   for func {
-    where target {
-      cfg-simplify
-      low-decompose-cfg-tuples
-      canonicalize
-      cse
-      low-dce
-    }
+    cfg-simplify
+    low-decompose-cfg-tuples
+    canonicalize
+    cse
+    low-dce
   }
   for func {
     where target {
       where target(abi = "hal_kernel", codegen = "low_native", family = "amdgpu") {
         amdgpu-materialize-hal-kernel-abi
       }
-      canonicalize
-      cse
-      cse
-      low-select-operand-forms
-      low-dce
     }
+  }
+  for func {
+    canonicalize
+    cse
+  }
+  for func {
+    where target {
+    }
+  }
+  for func {
+    cse
+    low-select-operand-forms
+    low-dce
   }
 }
 

@@ -258,18 +258,63 @@ static loomc_status_t loomc_cmd_program_append_result(
   return status;
 }
 
+static loomc_status_t loomc_cmd_program_find_root_function(
+    const loom_module_t* module, loomc_string_view_t root_name,
+    loom_op_t** out_function_op) {
+  *out_function_op = NULL;
+  const iree_string_view_t name = iree_string_view_from_loomc(root_name);
+  const loom_string_id_t name_id = loom_module_lookup_string(module, name);
+  const loom_symbol_id_t symbol_id =
+      name_id != LOOM_STRING_ID_INVALID
+          ? loom_module_find_symbol(module, name_id)
+          : LOOM_SYMBOL_ID_INVALID;
+  if (symbol_id == LOOM_SYMBOL_ID_INVALID) {
+    return loomc_status_from_iree(iree_make_status(
+        IREE_STATUS_NOT_FOUND, "compiled command root '@%.*s' was not found",
+        (int)root_name.size, root_name.data));
+  }
+  loom_op_t* function_op = module->symbols.entries[symbol_id].defining_op;
+  if (function_op == NULL) {
+    return loomc_status_from_iree(
+        iree_make_status(IREE_STATUS_FAILED_PRECONDITION,
+                         "compiled command root '@%.*s' has no definition",
+                         (int)root_name.size, root_name.data));
+  }
+  *out_function_op = function_op;
+  return loomc_ok_status();
+}
+
 static loomc_status_t loomc_cmd_program_compile_root_unit(
     const loomc_cmd_program_plan_storage_t* storage,
     loomc_workspace_t* workspace, loomc_allocator_t allocator,
     loomc_program_t** out_program, loomc_result_t** out_result) {
-  loomc_result_t* result = NULL;
+  loomc_module_t* module = NULL;
   LOOMC_RETURN_IF_ERROR(
-      loomc_result_create(LOOMC_RESULT_STATE_SUCCEEDED, allocator, &result));
+      loomc_module_clone(storage->root_module, workspace, allocator, &module));
+
+  const loomc_compile_options_t compile_options = {
+      .type = LOOMC_STRUCTURE_TYPE_COMPILE_OPTIONS,
+      .structure_size = sizeof(compile_options),
+      .module_name = loomc_make_cstring_view("command-program-roots"),
+  };
+  loomc_result_t* result = NULL;
+  loomc_status_t status = loomc_compile_module(
+      storage->compiler, workspace, storage->unit_pass_program, module,
+      &compile_options, allocator, &result);
+  if (!loomc_status_is_ok(status)) {
+    loomc_module_release(module);
+    return status;
+  }
+  if (!loomc_result_succeeded(result)) {
+    loomc_module_release(module);
+    *out_result = result;
+    return loomc_ok_status();
+  }
 
   iree_arena_allocator_t scratch_arena;
   iree_arena_initialize(loomc_workspace_block_pool(workspace), &scratch_arena);
   loomc_string_view_t* export_names = NULL;
-  loomc_status_t status = loomc_status_from_iree(
+  status = loomc_status_from_iree(
       iree_arena_allocate_array(&scratch_arena, storage->plan.root_count,
                                 sizeof(*export_names), (void**)&export_names));
 
@@ -277,11 +322,15 @@ static loomc_status_t loomc_cmd_program_compile_root_unit(
   for (uint32_t i = 0;
        i < storage->plan.root_count && loomc_status_is_ok(status); ++i) {
     export_names[i] = loomc_cmd_program_plan_root_name(storage, i);
-    status = loomc_status_from_iree(loom_cmd_program_serialize_low(
-        loomc_module_loom_module(storage->root_module),
-        storage->plan.roots[i].function_op, &storage->plan.roots[i].parameters,
-        &storage->plan.roots[i].transient, &artifact_data,
-        iree_allocator_from_loomc(allocator)));
+    loom_op_t* function_op = NULL;
+    status = loomc_cmd_program_find_root_function(
+        loomc_module_const_loom_module(module), export_names[i], &function_op);
+    if (loomc_status_is_ok(status)) {
+      status = loomc_status_from_iree(loom_cmd_program_serialize_low(
+          loomc_module_loom_module(module), function_op,
+          &storage->plan.roots[i].parameters, &storage->plan.roots[i].transient,
+          &artifact_data, iree_allocator_from_loomc(allocator)));
+    }
     if (loomc_status_is_ok(status)) {
       status = loomc_result_add_artifact_take_contents(
           result, LOOMC_ARTIFACT_KIND_EXECUTABLE,
@@ -320,6 +369,7 @@ static loomc_status_t loomc_cmd_program_compile_root_unit(
 
   iree_allocator_free(iree_allocator_from_loomc(allocator), artifact_data.data);
   iree_arena_deinitialize(&scratch_arena);
+  loomc_module_release(module);
   if (loomc_status_is_ok(status)) {
     *out_result = result;
     return loomc_ok_status();

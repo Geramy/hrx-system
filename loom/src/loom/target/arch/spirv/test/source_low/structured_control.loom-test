@@ -50,12 +50,10 @@ pass.pipeline<module> @__loom_check_source_low pipeline {
   target-legalize(mode = "eager")
   source-to-low(control-flow = "structured-low")
   for func {
-    where target {
-      low-decompose-cfg-tuples
-      canonicalize
-      cse
-      low-dce
-    }
+    low-decompose-cfg-tuples
+    canonicalize
+    cse
+    low-dce
   }
 }
 
