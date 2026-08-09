@@ -1,0 +1,45 @@
+# Copyright 2026 The IREE Authors
+#
+# Licensed under the Apache License v2.0 with LLVM Exceptions.
+# See https://llvm.org/LICENSE.txt for license information.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+load("//build_tools/embed_data:build_defs.bzl", "iree_c_embed_data")
+load("//loom/build_tools/bazel:loom_link.bzl", "loom_link_module")
+
+package(
+    default_visibility = ["//experimental/qwen:__subpackages__"],
+    licenses = ["notice"],  # Apache 2.0
+)
+
+loom_link_module(
+    name = "decode_linked",
+    srcs = ["decode.loom"],
+    libraries = [
+        "//experimental/qwen/kernels:attention_metadata_runtime_module",
+        "//experimental/qwen/kernels:attention_prepare_quantized_runtime_module",
+        "//experimental/qwen/kernels:attention_qkv_postprocess_fused_runtime_module",
+        "//experimental/qwen/kernels:dense_linear_quantized_f16_runtime_module",
+        "//experimental/qwen/kernels:flash_attention_decode_split_f32_f16_runtime_module",
+        "//experimental/qwen/kernels:greedy_argmax_partials_runtime_module",
+        "//experimental/qwen/kernels:routed_down_q4_q8_runtime_module",
+        "//experimental/qwen/kernels:routed_down_q6_f32_runtime_module",
+        "//experimental/qwen/kernels:routed_gate_up_q8_runtime_module",
+        "//experimental/qwen/kernels:router_projection_top8_fused_f32_runtime_module",
+        "//experimental/qwen/kernels:token_embedding_q4k_runtime_module",
+        "//experimental/qwen/kernels:vocabulary_projection_q6_runtime_module",
+    ],
+    mode = "selective",
+    roots = ["@qwen3_30b_decode_576"],
+    strip_check = True,
+)
+
+iree_c_embed_data(
+    name = "decode_source",
+    testonly = True,
+    srcs = [":decode_linked"],
+    c_file_output = "decode_source.c",
+    flatten = True,
+    h_file_output = "decode_source.h",
+    identifier = "qwen_loom_decode_program_source",
+)

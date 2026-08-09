@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-#include "experimental/qwen/kernels/decode_program_source.h"
+#include "experimental/qwen/programs/decode_source.h"
 #include "iree/testing/gtest.h"
 #include "loomc/artifact.h"
 #include "loomc/context.h"

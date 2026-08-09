@@ -41,7 +41,7 @@ program describes portable command semantics, while each referenced kernel is
 specialized and compiled for the selected hardware independently.
 
 The complete Qwen3-30B decode witness is
-[`kernels/decode_program.loom`](kernels/decode_program.loom). Its outer shape is
+[`programs/decode.loom`](programs/decode.loom). Its outer shape is
 roughly:
 
 ```loom
