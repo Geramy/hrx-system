@@ -29,7 +29,10 @@ extern "C" {
 // The resulting source module retains kernel launch regions and device bodies
 // while selecting the same target providers consumed by later source-to-low
 // lowering. This boundary is suitable for target-specific source inspection
-// and launch configuration evaluation.
+// and launch configuration evaluation. Authored unroll loops are finalized in
+// every function-like source symbol, including portable functions without a
+// target witness; target-specific normalization remains scoped to functions
+// with an effective target.
 //
 // |pass_environment| must contain exact function versions when target provider
 // predicates depend on invocation-selected target profiles.

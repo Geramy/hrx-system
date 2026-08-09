@@ -30,11 +30,9 @@ pass.pipeline<module> @__loom_check_source_low pipeline {
   select-templates(mode = "final")
   specialize-target-callgraph
   for func {
-    where target {
-      unroll-scf-for
-      canonicalize
-      cse
-    }
+    unroll-scf-for
+    canonicalize
+    cse
   }
   for func {
     where target {
@@ -117,11 +115,9 @@ pass.pipeline<module> @__loom_check_source_low pipeline {
   select-templates(mode = "final")
   specialize-target-callgraph
   for func {
-    where target {
-      unroll-scf-for
-      canonicalize
-      cse
-    }
+    unroll-scf-for
+    canonicalize
+    cse
   }
   for func {
     where target {
@@ -250,11 +246,9 @@ pass.pipeline<module> @__loom_check_prepared_low pipeline {
   select-templates(mode = "final")
   specialize-target-callgraph
   for func {
-    where target {
-      unroll-scf-for
-      canonicalize
-      cse
-    }
+    unroll-scf-for
+    canonicalize
+    cse
   }
   for func {
     where target {

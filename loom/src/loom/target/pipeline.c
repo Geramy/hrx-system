@@ -428,9 +428,10 @@ static iree_status_t loom_target_pipeline_build_expanded_source_body(
       loom_target_pipeline_build_source_normalization_before_authoring_expansion,
       user_data, &for_op));
   IREE_RETURN_IF_ERROR(loom_target_pipeline_build_authoring_expansion(builder));
-  return loom_target_pipeline_build_for_target_functions(
-      builder, loom_target_pipeline_build_expanded_source_finalization,
-      user_data, &for_op);
+  return loom_pass_ir_build_for(
+      builder, LOOM_PASS_ANCHOR_FUNC,
+      loom_target_pipeline_build_expanded_source_finalization, user_data,
+      &for_op);
 }
 
 static iree_status_t loom_target_pipeline_build_source_low_body(

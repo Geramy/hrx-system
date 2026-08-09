@@ -30,10 +30,8 @@ pass.pipeline<module> @__loom_check_source_low pipeline {
   select-templates(mode = "final")
   specialize-target-callgraph
   for func {
-    where target {
-      canonicalize
-      cse
-    }
+    canonicalize
+    cse
   }
   for func {
     where target {

@@ -287,3 +287,53 @@ low.func.def public retain target<cmd.core> abi(command_program) @increment_twic
   cmd.dispatch.indirect.static %25, %26, %33, %39
   return
 }
+
+// ====
+
+// RUN: emit command-program @unrolled_targetless
+
+kernel.def @copy_element() {
+  %c1 = index.constant 1 : index
+  kernel.launch.config workgroups(%c1, %c1, %c1) workgroup_size(%c1, %c1, %c1) : index
+} launch(%source: buffer, %target: buffer) {
+  %base = index.constant 0 : offset
+  %element = index.constant 0 : index
+  %source_view = buffer.view %source[%base] : buffer -> view<1xi32, #dense>
+  %target_view = buffer.view %target[%base] : buffer -> view<1xi32, #dense>
+  %value = view.load %source_view[%element] : view<1xi32, #dense> -> i32
+  view.store %value, %target_view[%element] : i32, view<1xi32, #dense>
+  kernel.return
+}
+
+command.program.def public @unrolled_targetless() launch(%source: buffer, %target: buffer) {
+  %loop_begin = index.constant 0 : index
+  %loop_end = index.constant 2 : index
+  %loop_step = index.constant 1 : index
+  scf.for %iteration = [%loop_begin to %loop_end step %loop_step] unroll {
+    kernel.launch @copy_element[](%source, %target) : [](buffer, buffer)
+  }
+  command.return
+}
+
+// ----
+low.func.def public retain target<cmd.core> abi(command_program) @unrolled_targetless() asm {
+  %0 = resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
+  %1 = resource<command_input> {index = 1, source_type = buffer} : reg<cmd.binding>
+  %2 = resource<command_input> {index = 0, source_type = index} : reg<cmd.executable>
+  %3 = resource<command_input> {index = 0, source_type = index} : reg<cmd.entry>
+  %4 = cmd.constant.u64 0
+  %5 = cmd.constant.u64 -1
+  %source = cmd.buffer.ref.binding %0, %4, %5
+  %target = cmd.buffer.ref.binding %1, %4, %5
+  %8 = cmd.arguments.empty
+  %9 = cmd.arguments.append.buffer_ref %8, %source
+  %10 = cmd.arguments.append.buffer_ref %9, %target
+  %11 = cmd.constant.u32 1
+  cmd.dispatch.direct %2, %3, %11, %11, %11, %10
+  cmd.execution.barrier
+  %12 = cmd.arguments.empty
+  %13 = cmd.arguments.append.buffer_ref %12, %source
+  %14 = cmd.arguments.append.buffer_ref %13, %target
+  cmd.dispatch.direct %2, %3, %11, %11, %11, %14
+  return
+}
