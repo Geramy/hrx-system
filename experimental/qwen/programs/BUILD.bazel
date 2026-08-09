@@ -42,3 +42,24 @@ iree_c_embed_data(
     h_file_output = "decode_source.h",
     identifier = "qwen_loom_decode_program_source",
 )
+
+loom_link_module(
+    name = "dense_projection_specialization_test_linked",
+    srcs = ["dense_projection_specialization_test.loom"],
+    libraries = [
+        "//experimental/qwen/kernels:dense_linear_quantized_f16_runtime_module",
+    ],
+    mode = "selective",
+    roots = ["@qwen3_moe_dense_projection_specialization"],
+    strip_check = True,
+)
+
+iree_c_embed_data(
+    name = "dense_projection_specialization_test_source",
+    testonly = True,
+    srcs = [":dense_projection_specialization_test_linked"],
+    c_file_output = "dense_projection_specialization_test_source.c",
+    flatten = True,
+    h_file_output = "dense_projection_specialization_test_source.h",
+    identifier = "qwen_loom_dense_projection_specialization_test_source",
+)

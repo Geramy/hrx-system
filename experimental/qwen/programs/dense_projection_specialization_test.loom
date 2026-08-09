@@ -1,0 +1,25 @@
+// Exact mixed-quantization specialization witness for the F16 attention
+// projection kernels. Q, K, and V may issue concurrently; attention output
+// follows after the projection wave. The shared Q4 kernel must specialize for
+// the distinct Q, K, and O shapes while V retains its Q6 decoder.
+
+kernel.decl @qwen3_moe_dense_linear_q4k_f16_wmma_parameterized(%token_count: index, %input_size: index, %output_size: index, %output_accumulation: index) launch(%token_count: index, %input_size: index, %output_size: index, %output_accumulation: index, %input: buffer, %weight: buffer, %output: buffer)
+kernel.decl @qwen3_moe_dense_linear_q6k_f16_wmma_parameterized(%token_count: index, %input_size: index, %output_size: index, %output_accumulation: index) launch(%token_count: index, %input_size: index, %output_size: index, %output_accumulation: index, %input: buffer, %weight: buffer, %output: buffer)
+
+command.program.def public @qwen3_moe_dense_projection_specialization() launch(%hidden_state: buffer, %attention_output: buffer, %query_weight: buffer, %key_weight: buffer, %value_weight: buffer, %output_weight: buffer, %query: buffer, %key: buffer, %value: buffer, %residual: buffer) {
+  %token_count = index.constant 512 : index
+  %hidden_size = index.constant 2048 : index
+  %query_size = index.constant 4096 : index
+  %key_value_size = index.constant 512 : index
+  %overwrite = index.constant 0 : index
+  %accumulate = index.constant 1 : index
+  kernel.launch.serial {
+    kernel.launch.concurrent {
+      kernel.launch @qwen3_moe_dense_linear_q4k_f16_wmma_parameterized[%token_count, %hidden_size, %query_size, %overwrite](%token_count, %hidden_size, %query_size, %overwrite, %hidden_state, %query_weight, %query) : [index, index, index, index](index, index, index, index, buffer, buffer, buffer)
+      kernel.launch @qwen3_moe_dense_linear_q4k_f16_wmma_parameterized[%token_count, %hidden_size, %key_value_size, %overwrite](%token_count, %hidden_size, %key_value_size, %overwrite, %hidden_state, %key_weight, %key) : [index, index, index, index](index, index, index, index, buffer, buffer, buffer)
+      kernel.launch @qwen3_moe_dense_linear_q6k_f16_wmma_parameterized[%token_count, %hidden_size, %key_value_size, %overwrite](%token_count, %hidden_size, %key_value_size, %overwrite, %hidden_state, %value_weight, %value) : [index, index, index, index](index, index, index, index, buffer, buffer, buffer)
+    }
+    kernel.launch @qwen3_moe_dense_linear_q4k_f16_wmma_parameterized[%token_count, %query_size, %hidden_size, %accumulate](%token_count, %query_size, %hidden_size, %accumulate, %attention_output, %output_weight, %residual) : [index, index, index, index](index, index, index, index, buffer, buffer, buffer)
+  }
+  command.return
+}

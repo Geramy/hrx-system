@@ -4,12 +4,14 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "experimental/qwen/programs/decode_source.h"
+#include "experimental/qwen/programs/dense_projection_specialization_test_source.h"
 #include "iree/testing/gtest.h"
 #include "loomc/artifact.h"
 #include "loomc/context.h"
@@ -98,9 +100,9 @@ static WorkspacePtr CreateWorkspace() {
   return WorkspacePtr(workspace);
 }
 
-static SourcePtr CreateDecodeSource() {
-  EXPECT_EQ(qwen_loom_decode_program_source_size(), 1u);
-  const iree_file_toc_t* files = qwen_loom_decode_program_source_create();
+static SourcePtr CreateEmbeddedSource(const iree_file_toc_t* files,
+                                      size_t file_count) {
+  EXPECT_EQ(file_count, 1u);
   const loomc_source_options_t options = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_SOURCE_OPTIONS,
       /*.structure_size=*/sizeof(options),
@@ -114,6 +116,17 @@ static SourcePtr CreateDecodeSource() {
   LOOMC_EXPECT_OK(
       loomc_source_create(&options, loomc_allocator_system(), &source));
   return SourcePtr(source);
+}
+
+static SourcePtr CreateDecodeSource() {
+  return CreateEmbeddedSource(qwen_loom_decode_program_source_create(),
+                              qwen_loom_decode_program_source_size());
+}
+
+static SourcePtr CreateDenseProjectionSpecializationSource() {
+  return CreateEmbeddedSource(
+      qwen_loom_dense_projection_specialization_test_source_create(),
+      qwen_loom_dense_projection_specialization_test_source_size());
 }
 
 static ModulePtr DeserializeModule(loomc_context_t* context,
@@ -204,6 +217,93 @@ static const loomc_artifact_t* FindCommandArtifact(
     }
   }
   return nullptr;
+}
+
+TEST(QwenDecodeCommandProgramTest, SpecializesExactDenseProjectionShapes) {
+  TargetEnvironmentPtr target_environment = CreateTargetEnvironment();
+  ContextPtr context = CreateContext(target_environment.get());
+  WorkspacePtr coordinator_workspace = CreateWorkspace();
+  SourcePtr source = CreateDenseProjectionSpecializationSource();
+  ModulePtr module = DeserializeModule(
+      context.get(), coordinator_workspace.get(), source.get());
+  CompilerPtr compiler = CreateCompiler(context.get());
+  PassProgramPtr preparation_pass_program =
+      CreatePreparationPassProgram(context.get());
+  PassProgramPtr unit_pass_program = CreateUnitPassProgram(context.get());
+
+  const loomc_cmd_program_plan_options_t command_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PLAN_OPTIONS,
+      /*.structure_size=*/sizeof(command_options),
+      /*.next=*/nullptr,
+      /*.dependency_artifact_format=*/
+      loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_AMDGPU_HSACO),
+  };
+  const loomc_program_plan_options_t plan_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_OPTIONS,
+      /*.structure_size=*/sizeof(plan_options),
+      /*.next=*/&command_options,
+      /*.config=*/
+      {
+          /*.bindings=*/nullptr,
+          /*.binding_count=*/0,
+          /*.json_object=*/loomc_string_view_empty(),
+          /*.flags=*/LOOMC_CONFIG_POLICY_FLAG_REQUIRE_RESOLVED,
+      },
+  };
+  loomc_program_plan_t* raw_plan = nullptr;
+  loomc_result_t* raw_result = nullptr;
+  LOOMC_ASSERT_OK(loomc_prepare_programs(
+      compiler.get(), coordinator_workspace.get(),
+      preparation_pass_program.get(), unit_pass_program.get(), module.get(),
+      &plan_options, loomc_allocator_system(), &raw_plan, &raw_result));
+  PlanPtr plan(raw_plan);
+  ResultPtr prepare_result(raw_result);
+  ASSERT_TRUE(ResultSucceeded(prepare_result.get(),
+                              "dense projection plan preparation"));
+
+  ASSERT_EQ(loomc_program_plan_root_count(plan.get()), 1u);
+  ASSERT_EQ(loomc_program_plan_unit_count(plan.get()), 5u);
+  loomc_program_plan_root_t root = loomc_program_plan_root_invalid();
+  LOOMC_ASSERT_OK(loomc_program_plan_lookup_root(
+      plan.get(),
+      loomc_make_cstring_view("qwen3_moe_dense_projection_specialization"),
+      &root));
+  loomc_program_plan_root_info_t root_info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_ROOT_INFO,
+      /*.structure_size=*/sizeof(root_info),
+  };
+  LOOMC_ASSERT_OK(loomc_program_plan_root_info(plan.get(), root, &root_info));
+  EXPECT_EQ(root_info.dependency_count, 4u);
+
+  std::vector<uint32_t> dependency_units;
+  for (loomc_host_size_t i = 0; i < root_info.dependency_count; ++i) {
+    loomc_program_plan_dependency_info_t dependency_info = {
+        /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_DEPENDENCY_INFO,
+        /*.structure_size=*/sizeof(dependency_info),
+    };
+    LOOMC_ASSERT_OK(loomc_program_plan_root_dependency_info(plan.get(), root, i,
+                                                            &dependency_info));
+    dependency_units.push_back(dependency_info.unit.value);
+  }
+  std::sort(dependency_units.begin(), dependency_units.end());
+  EXPECT_EQ(std::unique(dependency_units.begin(), dependency_units.end()),
+            dependency_units.end());
+
+  for (loomc_host_size_t i = 0; i < loomc_program_plan_unit_count(plan.get());
+       ++i) {
+    WorkspacePtr worker_workspace = CreateWorkspace();
+    loomc_program_t* raw_program = nullptr;
+    raw_result = nullptr;
+    LOOMC_ASSERT_OK(loomc_program_plan_compile_unit(
+        plan.get(), worker_workspace.get(),
+        loomc_program_plan_unit_from_index(static_cast<uint32_t>(i)),
+        /*options=*/nullptr, loomc_allocator_system(), &raw_program,
+        &raw_result));
+    ProgramPtr program(raw_program);
+    ResultPtr result(raw_result);
+    ASSERT_TRUE(ResultSucceeded(result.get(),
+                                "dense projection unit " + std::to_string(i)));
+  }
 }
 
 TEST(QwenDecodeCommandProgramTest, CompilesCompleteProductionPlan) {
