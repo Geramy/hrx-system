@@ -95,13 +95,26 @@ class CmdKernelUnitTest : public ::testing::Test {
     return defining_op;
   }
 
-  loom_op_t* FindLaunch(loom_func_like_t function) {
-    loom_block_t* body = loom_region_entry_block(loom_func_like_body(function));
-    loom_op_t* op = nullptr;
-    loom_block_for_each_op(body, op) {
-      if (loom_kernel_launch_isa(op)) return op;
+  loom_op_t* FindLaunchInRegion(loom_region_t* region) {
+    if (!region) return nullptr;
+    loom_block_t* block = nullptr;
+    loom_region_for_each_block(region, block) {
+      loom_op_t* op = nullptr;
+      loom_block_for_each_op(block, op) {
+        if (loom_kernel_launch_isa(op)) return op;
+        loom_region_t** regions = loom_op_regions(op);
+        for (uint8_t i = 0; i < op->region_count; ++i) {
+          if (loom_op_t* launch = FindLaunchInRegion(regions[i])) {
+            return launch;
+          }
+        }
+      }
     }
     return nullptr;
+  }
+
+  loom_op_t* FindLaunch(loom_func_like_t function) {
+    return FindLaunchInRegion(loom_func_like_body(function));
   }
 
   iree_host_size_t CountOpKind(const loom_op_t* op, loom_op_kind_t kind) {
@@ -178,7 +191,11 @@ kernel.def @project(%row_count: index, %column_count: index) {
 
 command.program.def @decode(%column_count: index) launch(%input: buffer, %scratch: buffer, %output: buffer) where [range(%column_count, 8, 4096), mul(%column_count, 8), pow2(%column_count)] {
   %one = index.constant 1 : index
-  kernel.launch @project[%one, %column_count](%one, %column_count, %input, %scratch, %output) : [index, index](index, index, buffer, buffer, buffer)
+  kernel.launch.serial {
+    kernel.launch.concurrent {
+      kernel.launch @project[%one, %column_count](%one, %column_count, %input, %scratch, %output) : [index, index](index, index, buffer, buffer, buffer)
+    }
+  }
   command.return
 }
 
@@ -239,12 +256,15 @@ command.program.def @prefill(%token_count: index, %column_count: index) launch(%
   EXPECT_EQ(unit.source_workload_ordinals[0], 0u);
   EXPECT_EQ(unit.source_workload_ordinals[1], 1u);
   EXPECT_EQ(unit.source_argument_count, 5u);
-  ASSERT_EQ(unit.argument_count, 4u);
+  ASSERT_EQ(unit.argument_count, 3u);
   ASSERT_NE(unit.source_argument_ordinals, nullptr);
-  EXPECT_EQ(unit.source_argument_ordinals[0], 0u);
-  EXPECT_EQ(unit.source_argument_ordinals[1], 1u);
-  EXPECT_EQ(unit.source_argument_ordinals[2], 2u);
-  EXPECT_EQ(unit.source_argument_ordinals[3], 4u);
+  EXPECT_EQ(unit.source_argument_ordinals[0], 1u);
+  EXPECT_EQ(unit.source_argument_ordinals[1], 2u);
+  EXPECT_EQ(unit.source_argument_ordinals[2], 4u);
+  uint16_t unit_predicate_count = 0;
+  loom_func_like_predicates(loom_func_like_cast(unit.module, unit.kernel_op),
+                            &unit_predicate_count);
+  EXPECT_EQ(unit_predicate_count, 1u);
   EXPECT_EQ(CountOpKind(unit.kernel_op, LOOM_OP_SCF_IF), 0u);
   EXPECT_EQ(CountOpKind(unit.kernel_op, LOOM_OP_BUFFER_VIEW), 2u);
   EXPECT_EQ(CountOpKind(unit.kernel_op, LOOM_OP_INDEX_ASSUME), 1u);

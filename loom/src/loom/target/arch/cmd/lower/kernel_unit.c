@@ -112,6 +112,72 @@ static void loom_cmd_kernel_unit_clear_explicit_export(
   }
 }
 
+// Returns true when every SSA value referenced by |predicate| is exact at the
+// source launch boundary. Such a predicate has been fully consumed by unit
+// specialization and carries no remaining dynamic contract information.
+static bool loom_cmd_kernel_unit_predicate_is_exact(
+    const loom_predicate_t* predicate,
+    const loom_value_fact_table_t* seed_facts) {
+  bool has_value = false;
+  for (uint8_t i = 0; i < predicate->arg_count; ++i) {
+    if (predicate->arg_tags[i] != LOOM_PRED_ARG_VALUE) continue;
+    has_value = true;
+    const int64_t raw_value = predicate->args[i];
+    IREE_ASSERT_GE(raw_value, 0);
+    IREE_ASSERT_LE(raw_value, UINT32_MAX);
+    if (!loom_value_facts_is_exact(loom_value_fact_table_lookup(
+            seed_facts, (loom_value_id_t)raw_value))) {
+      return false;
+    }
+  }
+  return has_value;
+}
+
+// Removes source contract predicates fully discharged by exact unit facts.
+// Predicates involving any dynamic value remain attached, preserving
+// relational contracts that cannot be represented by per-value assumes.
+static iree_status_t loom_cmd_kernel_unit_consume_exact_predicates(
+    loom_module_t* module, loom_func_like_t kernel,
+    const loom_value_fact_table_t* seed_facts) {
+  if (kernel.vtable->predicates_attr_index == LOOM_ATTR_INDEX_NONE) {
+    return iree_ok_status();
+  }
+  uint16_t predicate_count = 0;
+  const loom_predicate_t* predicates =
+      loom_func_like_predicates(kernel, &predicate_count);
+  if (predicate_count == 0) return iree_ok_status();
+
+  uint16_t consumed_count = 0;
+  for (uint16_t i = 0; i < predicate_count; ++i) {
+    if (loom_cmd_kernel_unit_predicate_is_exact(&predicates[i], seed_facts)) {
+      ++consumed_count;
+    }
+  }
+  if (consumed_count == 0) return iree_ok_status();
+
+  const uint16_t retained_count = predicate_count - consumed_count;
+  loom_predicate_t* retained_predicates = NULL;
+  if (retained_count > 0) {
+    IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+        &module->arena, retained_count, sizeof(*retained_predicates),
+        (void**)&retained_predicates));
+    uint16_t retained_ordinal = 0;
+    for (uint16_t i = 0; i < predicate_count; ++i) {
+      if (loom_cmd_kernel_unit_predicate_is_exact(&predicates[i], seed_facts)) {
+        continue;
+      }
+      retained_predicates[retained_ordinal++] = predicates[i];
+    }
+    IREE_ASSERT_EQ(retained_ordinal, retained_count);
+  }
+
+  loom_op_attrs(kernel.op)[kernel.vtable->predicates_attr_index] =
+      retained_count > 0
+          ? loom_attr_predicate_list(retained_predicates, retained_count)
+          : loom_attr_absent();
+  return iree_ok_status();
+}
+
 static iree_status_t loom_cmd_kernel_unit_seed_argument_group(
     const loom_value_fact_table_t* source_facts,
     loom_value_slice_t source_values, loom_module_t* unit_module,
@@ -528,6 +594,10 @@ iree_status_t loom_cmd_kernel_unit_materialize(
     status = loom_cmd_kernel_unit_materialize_abstract_arguments(
         unit_module, unit_kernel, unit_arguments, unit_argument_count,
         &seed_facts);
+  }
+  if (iree_status_is_ok(status)) {
+    status = loom_cmd_kernel_unit_consume_exact_predicates(
+        unit_module, unit_kernel, &seed_facts);
   }
   if (iree_status_is_ok(status)) {
     loom_canonicalizer_result_t result = {0};
