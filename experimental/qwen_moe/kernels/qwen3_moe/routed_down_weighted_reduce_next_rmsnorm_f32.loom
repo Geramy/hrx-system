@@ -15,24 +15,19 @@ config.decl @qwen3_moe.routed_down.route_count : %value: index where [range(%val
 
 config.decl @qwen3_moe.routed_down.output_size : %value: index where [range(%value, 1, 4096)]
 
-config.decl @qwen3_moe.workload.token_capacity : %value: index where [range(%value, 1, 2048)]
-
 kernel.decl @qwen3_moe_routed_down_weighted_reduce_f16_f32(%token_count: index) launch(%token_count: index, %route_weights: buffer, %routed_output: buffer, %hidden_state: buffer)
 
 kernel.decl @qwen3_moe_rmsnorm_f32(%token_count: index) launch(%token_count: index, %input: buffer, %weight: buffer, %output: buffer)
 
 kernel.def target(@qwen3_moe_routed_down_next_norm_gfx11_wave32) @qwen3_moe_routed_down_weighted_reduce_next_rmsnorm_f32(%token_count: index) {
-  %token_capacity = config.get @qwen3_moe.workload.token_capacity : index
   %c1 = index.constant 1 : index
   %c256 = index.constant 256 : index
-  kernel.launch.config workgroups(%token_capacity, %c1, %c1) workgroup_size(%c256, %c1, %c1) : index
-} launch(%token_count: index, %route_weights: buffer, %routed_output: buffer, %hidden_state: buffer, %next_norm_weight: buffer, %next_projection_input: buffer) {
+  kernel.launch.config workgroups(%token_count, %c1, %c1) workgroup_size(%c256, %c1, %c1) : index
+} launch(%token_count: index, %route_weights: buffer, %routed_output: buffer, %hidden_state: buffer, %next_norm_weight: buffer, %next_projection_input: buffer) where [range(%token_count, 1, 2048)] {
   %route_count0 = config.get @qwen3_moe.routed_down.route_count : index
   %output_size0 = config.get @qwen3_moe.routed_down.output_size : index
   %hidden_size0 = config.get @qwen3_moe.model.hidden_size : index
   %epsilon = config.get @qwen3_moe.model.rms_epsilon : f32
-  %token_capacity = config.get @qwen3_moe.workload.token_capacity : index
-  %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048), le(%token_count, %token_capacity)] : index
   %route_count = index.assume %route_count0 [range(%route_count0, 8, 8)] : index
   %output_size, %hidden_size = index.assume %output_size0, %hidden_size0 [range(%output_size0, 2048, 2048), range(%hidden_size0, 2048, 2048), eq(%output_size0, %hidden_size0)] : index, index
   %token0 = kernel.workgroup.id<x> : index
@@ -49,9 +44,9 @@ kernel.def target(@qwen3_moe_routed_down_next_norm_gfx11_wave32) @qwen3_moe_rout
   %c0_offset = index.constant 0 : offset
   %c0_f32 = scalar.constant 0.0 : f32
   %c0_f32x8 = vector.constant 0.0 : vector<8xf32>
-  %active_token = index.cmp ult, %token0, %bounded_token_count : index
+  %active_token = index.cmp ult, %token0, %token_count : index
   %safe_token0 = scf.select %active_token, %token0, %c0 : index
-  %token, %launch_token_count = index.assume %safe_token0, %bounded_token_count [lt(%safe_token0, %bounded_token_count)] : index, index
+  %token, %launch_token_count = index.assume %safe_token0, %token_count [lt(%safe_token0, %token_count)] : index, index
   %hidden_size_i32 = index.cast %hidden_size : index to i32
   %hidden_size_f32 = scalar.sitofp %hidden_size_i32 : i32 to f32
   %assignment_count = index.mul %launch_token_count, %route_count : index
