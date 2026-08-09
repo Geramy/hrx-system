@@ -14,6 +14,7 @@
 #include "loom/ir/context.h"
 #include "loom/ir/module.h"
 #include "loom/ops/low/ops.h"
+#include "loom/target/arch/cmd/abi_layout.h"
 #include "loom/target/arch/cmd/descriptors/descriptors.h"
 #include "loom/target/registers.h"
 
@@ -174,6 +175,26 @@ static iree_status_t loom_cmd_iree_hal_validate_inputs(
                  (iree_host_size_t)info->constant_byte_length);
     *out_max_binding_count =
         iree_max(*out_max_binding_count, (iree_host_size_t)info->binding_count);
+  }
+  return iree_ok_status();
+}
+
+static iree_status_t loom_cmd_iree_hal_validate_input_counts(
+    uint32_t fixed_buffer_count, uint32_t binding_count,
+    uint32_t executable_count, uint32_t entry_count,
+    const loom_cmd_iree_hal_inputs_t* inputs) {
+  if (inputs->fixed_buffer_count != fixed_buffer_count ||
+      inputs->binding_count != binding_count ||
+      inputs->executable_count != executable_count ||
+      inputs->entry_count != entry_count) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "command program requires fixed/binding/executable/entry counts "
+        "(%" PRIu32 ", %" PRIu32 ", %" PRIu32 ", %" PRIu32
+        ") but received (%" PRIhsz ", %" PRIhsz ", %" PRIhsz ", %" PRIhsz ")",
+        fixed_buffer_count, binding_count, executable_count, entry_count,
+        inputs->fixed_buffer_count, inputs->binding_count,
+        inputs->executable_count, inputs->entry_count);
   }
   return iree_ok_status();
 }
@@ -562,22 +583,11 @@ static iree_status_t loom_cmd_iree_hal_validate_program_inputs(
   IREE_RETURN_IF_ERROR(loom_cmd_iree_hal_validate_inputs(
       inputs, &max_parameter_count, out_max_constant_byte_length,
       out_max_binding_count));
-  if (inputs->fixed_buffer_count != program->requirements.fixed_buffer_count ||
-      inputs->binding_count != program->requirements.rebindable_binding_count ||
-      inputs->executable_count != program->requirements.executable_count ||
-      inputs->entry_count != program->requirements.entry_count) {
-    return iree_make_status(
-        IREE_STATUS_INVALID_ARGUMENT,
-        "command program requires fixed/binding/executable/entry counts "
-        "(%" PRIu32 ", %" PRIu32 ", %" PRIu32 ", %" PRIu32
-        ") but received (%" PRIhsz ", %" PRIhsz ", %" PRIhsz ", %" PRIhsz ")",
-        program->requirements.fixed_buffer_count,
-        program->requirements.rebindable_binding_count,
-        program->requirements.executable_count,
-        program->requirements.entry_count, inputs->fixed_buffer_count,
-        inputs->binding_count, inputs->executable_count, inputs->entry_count);
-  }
-  return iree_ok_status();
+  return loom_cmd_iree_hal_validate_input_counts(
+      program->requirements.fixed_buffer_count,
+      program->requirements.rebindable_binding_count,
+      program->requirements.executable_count, program->requirements.entry_count,
+      inputs);
 }
 
 static iree_status_t loom_cmd_iree_hal_resolve_program_buffer_refs(
@@ -792,12 +802,19 @@ iree_status_t loom_cmd_iree_hal_record_function(
         "single-block cmd low function");
   }
 
+  loom_cmd_abi_layout_t abi_layout = {0};
+  IREE_RETURN_IF_ERROR(
+      loom_cmd_abi_layout_from_low(module, function_op, &abi_layout));
+
   iree_host_size_t max_parameter_count = 0;
   iree_host_size_t max_constant_byte_length = 0;
   iree_host_size_t max_binding_count = 0;
   IREE_RETURN_IF_ERROR(loom_cmd_iree_hal_validate_inputs(
       inputs, &max_parameter_count, &max_constant_byte_length,
       &max_binding_count));
+  IREE_RETURN_IF_ERROR(loom_cmd_iree_hal_validate_input_counts(
+      abi_layout.fixed_buffer_count, abi_layout.rebindable_binding_count,
+      abi_layout.executable_count, abi_layout.entry_count, inputs));
 
   iree_host_size_t total_size = 0;
   iree_host_size_t values_offset = 0;

@@ -17,6 +17,7 @@
 #include "loom/ops/command/ops.h"
 #include "loom/ops/kernel/ops.h"
 #include "loom/ops/low/ops.h"
+#include "loom/target/arch/cmd/abi_layout.h"
 #include "loom/target/arch/cmd/descriptors/descriptors.h"
 #include "loom/target/types.h"
 
@@ -581,7 +582,8 @@ static iree_status_t loom_cmd_lower_create_function(
       &descriptor_set_key));
 
   loom_low_func_def_build_flags_t build_flags =
-      LOOM_LOW_FUNC_DEF_BUILD_FLAG_HAS_ABI;
+      LOOM_LOW_FUNC_DEF_BUILD_FLAG_HAS_ABI |
+      LOOM_LOW_FUNC_DEF_BUILD_FLAG_HAS_ABI_LAYOUT;
   uint8_t visibility = 0;
   if (loom_func_like_visibility(state->source_program) != 0) {
     build_flags |= LOOM_LOW_FUNC_DEF_BUILD_FLAG_HAS_VISIBILITY;
@@ -597,12 +599,21 @@ static iree_status_t loom_cmd_lower_create_function(
   loom_builder_initialize(state->module, &state->module->arena,
                           loom_module_block(state->module), &state->builder);
   loom_builder_set_before(&state->builder, state->source_program.op);
+  const loom_cmd_abi_layout_t abi_layout = {
+      .fixed_buffer_count = state->plan->fixed_buffer_count,
+      .rebindable_binding_count = state->plan->rebindable_binding_count,
+      .executable_count = state->plan->executable_count,
+      .entry_count = state->plan->entry_count,
+  };
+  loom_attribute_t abi_layout_attr = loom_attr_absent();
+  IREE_RETURN_IF_ERROR(loom_cmd_abi_layout_make_attr(state->module, &abi_layout,
+                                                     &abi_layout_attr));
   IREE_RETURN_IF_ERROR(loom_low_func_def_build(
       &state->builder, build_flags, visibility, retain,
       /*cc=*/0, /*purity=*/0, /*allocation=*/0, /*schedule=*/0,
       descriptor_set_key, loom_symbol_ref_null(),
       LOOM_TARGET_ABI_COMMAND_PROGRAM, loom_named_attr_slice_empty(),
-      loom_named_attr_slice_empty(), LOOM_STRING_ID_INVALID,
+      loom_attr_as_dict(abi_layout_attr), LOOM_STRING_ID_INVALID,
       loom_named_attr_slice_empty(), callee,
       /*arg_types=*/NULL, /*arg_types_count=*/0,
       /*result_types=*/NULL, /*result_count=*/0,

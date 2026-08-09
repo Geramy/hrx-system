@@ -21,6 +21,19 @@ package(
 )
 
 loom_cc_library(
+    name = "abi_layout",
+    srcs = ["abi_layout.c"],
+    hdrs = ["abi_layout.h"],
+    visibility = ["//loom/src/loom/target/arch/cmd:__subpackages__"],
+    deps = [
+        "//loom/src/loom/ir",
+        "//loom/src/loom/ops/low",
+        "//loom/src/loom/target:types",
+        "//runtime/src/iree/base",
+    ],
+)
+
+loom_cc_library(
     name = "program",
     srcs = ["program.c"],
     hdrs = [

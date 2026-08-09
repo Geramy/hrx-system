@@ -23,6 +23,7 @@ loom_cc_library(
     loom::codegen::low::target_binding
     loom::ir
     loom::ops::low
+    loom::target::arch::cmd::abi_layout
     loom::target::arch::cmd::descriptors
     loom::target::arch::cmd::program
     loom::target::registers

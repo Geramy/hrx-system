@@ -360,7 +360,7 @@ class CmdIreeHalRecordingTest : public ::testing::Test {
 
 TEST_F(CmdIreeHalRecordingTest, RecordsQkvAsTwoExplicitWaves) {
   ModulePtr module = ParseAndVerify(R"(
-low.func.def target<cmd.core> abi(command_program) @qkv_two_wave() {
+low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 3, executable_count = 3, fixed_buffer_count = 1, rebindable_binding_count = 5}) @qkv_two_wave() {
   %parameters = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.buffer>
   %input = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
   %scratch = low.resource<command_input> {index = 1, source_type = buffer} : reg<cmd.binding>
@@ -483,7 +483,7 @@ low.func.def target<cmd.core> abi(command_program) @qkv_two_wave() {
 
 TEST_F(CmdIreeHalRecordingTest, PacksLogicalArgumentsByEntryMetadata) {
   ModulePtr module = ParseAndVerify(R"(
-low.func.def target<cmd.core> abi(command_program) @packing() {
+low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, executable_count = 1, fixed_buffer_count = 0, rebindable_binding_count = 1}) @packing() {
   %buffer = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
   %executable = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.executable>
   %entry = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.entry>
@@ -566,7 +566,7 @@ low.func.def target<cmd.core> abi(command_program) @packing() {
 
 TEST_F(CmdIreeHalRecordingTest, DispatchesWithReflectedEntryAbi) {
   ModulePtr module = ParseAndVerify(R"(
-low.func.def target<cmd.core> abi(command_program) @add_u32() {
+low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, executable_count = 1, fixed_buffer_count = 0, rebindable_binding_count = 2}) @add_u32() {
   %source = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
   %target = low.resource<command_input> {index = 1, source_type = buffer} : reg<cmd.binding>
   %executable = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.executable>
@@ -666,7 +666,7 @@ low.func.def target<cmd.core> abi(command_program) @add_u32() {
 
 TEST_F(CmdIreeHalRecordingTest, PreservesStaticAndDynamicIndirectModes) {
   ModulePtr module = ParseAndVerify(R"(
-low.func.def target<cmd.core> abi(command_program) @indirect_modes() {
+low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, executable_count = 1, fixed_buffer_count = 0, rebindable_binding_count = 1}) @indirect_modes() {
   %launch_counts = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
   %executable = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.executable>
   %entry = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.entry>
@@ -734,7 +734,7 @@ low.func.def target<cmd.core> abi(command_program) @indirect_modes() {
 
 TEST_F(CmdIreeHalRecordingTest, ReplaysWithDifferentBindingTables) {
   ModulePtr module = ParseAndVerify(R"(
-low.func.def target<cmd.core> abi(command_program) @rebindable_copy() {
+low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 0, executable_count = 0, fixed_buffer_count = 1, rebindable_binding_count = 2}) @rebindable_copy() {
   %fixed = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.buffer>
   %source = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
   %target = low.resource<command_input> {index = 1, source_type = buffer} : reg<cmd.binding>

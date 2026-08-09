@@ -11,6 +11,21 @@ iree_add_all_subdirs()
 
 loom_cc_library(
   NAME
+    abi_layout
+  HDRS
+    "abi_layout.h"
+  SRCS
+    "abi_layout.c"
+  DEPS
+    iree::base
+    loom::ir
+    loom::ops::low
+    loom::target::types
+  PUBLIC
+)
+
+loom_cc_library(
+  NAME
     program
   HDRS
     "format.h"

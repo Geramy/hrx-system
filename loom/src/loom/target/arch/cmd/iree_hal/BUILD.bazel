@@ -36,6 +36,7 @@ loom_cc_library(
         "//loom/src/loom/ir",
         "//loom/src/loom/ops/low",
         "//loom/src/loom/target:registers",
+        "//loom/src/loom/target/arch/cmd:abi_layout",
         "//loom/src/loom/target/arch/cmd:program",
         "//loom/src/loom/target/arch/cmd/descriptors",
         "//runtime/src/iree/base",

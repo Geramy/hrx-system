@@ -17,6 +17,7 @@
 #include "loom/ir/local_value_domain.h"
 #include "loom/ir/module.h"
 #include "loom/ops/low/ops.h"
+#include "loom/target/arch/cmd/abi_layout.h"
 #include "loom/target/arch/cmd/descriptors/descriptors.h"
 #include "loom/target/arch/cmd/format.h"
 #include "loom/target/arch/cmd/program.h"
@@ -110,7 +111,7 @@ typedef struct loom_cmd_serialize_build_t {
   loom_cmd_serialize_value_t* values;
   // Number of entries in |values|.
   iree_host_size_t value_count;
-  // External resource counts derived from command_input imports.
+  // Immutable external resource counts declared by the function ABI.
   loom_cmd_program_requirements_t requirements;
   // Resolved buffer-reference rows.
   loom_cmd_serialize_buffer_ref_table_t buffer_refs;
@@ -233,15 +234,17 @@ static iree_status_t loom_cmd_serialize_append_command(
   return iree_ok_status();
 }
 
-static iree_status_t loom_cmd_serialize_update_requirement_count(
-    uint64_t resource_index, uint32_t* inout_count) {
-  if (resource_index >= UINT32_MAX) {
+static iree_status_t loom_cmd_serialize_validate_resource_index(
+    uint64_t resource_index, uint32_t resource_count,
+    iree_string_view_t resource_kind) {
+  if (resource_index >= resource_count) {
     return iree_make_status(IREE_STATUS_OUT_OF_RANGE,
-                            "command resource index %" PRIu64
-                            " exceeds the serialized table limit",
-                            resource_index);
+                            "command %.*s resource index %" PRIu64
+                            " is outside the declared ABI table of %" PRIu32
+                            " entries",
+                            (int)resource_kind.size, resource_kind.data,
+                            resource_index, resource_count);
   }
-  *inout_count = iree_max(*inout_count, (uint32_t)resource_index + 1);
   return iree_ok_status();
 }
 
@@ -259,26 +262,29 @@ static iree_status_t loom_cmd_serialize_import_resource(
       loom_cmd_serialize_result(build, result_id);
   switch (register_class_id) {
     case CMD_CORE_REG_CLASS_ID_BUFFER: {
-      IREE_RETURN_IF_ERROR(loom_cmd_serialize_update_requirement_count(
-          resource_index, &build->requirements.fixed_buffer_count));
+      IREE_RETURN_IF_ERROR(loom_cmd_serialize_validate_resource_index(
+          resource_index, build->requirements.fixed_buffer_count,
+          IREE_SV("fixed-buffer")));
       result->kind = LOOM_CMD_SERIALIZE_VALUE_KIND_FIXED_BUFFER;
       break;
     }
     case CMD_CORE_REG_CLASS_ID_BINDING: {
-      IREE_RETURN_IF_ERROR(loom_cmd_serialize_update_requirement_count(
-          resource_index, &build->requirements.rebindable_binding_count));
+      IREE_RETURN_IF_ERROR(loom_cmd_serialize_validate_resource_index(
+          resource_index, build->requirements.rebindable_binding_count,
+          IREE_SV("binding")));
       result->kind = LOOM_CMD_SERIALIZE_VALUE_KIND_BINDING;
       break;
     }
     case CMD_CORE_REG_CLASS_ID_EXECUTABLE: {
-      IREE_RETURN_IF_ERROR(loom_cmd_serialize_update_requirement_count(
-          resource_index, &build->requirements.executable_count));
+      IREE_RETURN_IF_ERROR(loom_cmd_serialize_validate_resource_index(
+          resource_index, build->requirements.executable_count,
+          IREE_SV("executable")));
       result->kind = LOOM_CMD_SERIALIZE_VALUE_KIND_EXECUTABLE;
       break;
     }
     case CMD_CORE_REG_CLASS_ID_ENTRY: {
-      IREE_RETURN_IF_ERROR(loom_cmd_serialize_update_requirement_count(
-          resource_index, &build->requirements.entry_count));
+      IREE_RETURN_IF_ERROR(loom_cmd_serialize_validate_resource_index(
+          resource_index, build->requirements.entry_count, IREE_SV("entry")));
       result->kind = LOOM_CMD_SERIALIZE_VALUE_KIND_ENTRY;
       break;
     }
@@ -912,6 +918,10 @@ iree_status_t loom_cmd_program_serialize_low(
                             "expected a command_program low.func.def");
   }
 
+  loom_cmd_abi_layout_t abi_layout = {0};
+  IREE_RETURN_IF_ERROR(
+      loom_cmd_abi_layout_from_low(module, function_op, &abi_layout));
+
   const loom_low_descriptor_set_t* descriptor_set =
       loom_cmd_core_descriptor_set();
   const iree_string_view_t descriptor_set_key =
@@ -946,6 +956,13 @@ iree_status_t loom_cmd_program_serialize_low(
       .arena = &arena,
       .value_domain = &value_domain,
       .value_count = value_domain.value_count,
+      .requirements =
+          {
+              .fixed_buffer_count = abi_layout.fixed_buffer_count,
+              .rebindable_binding_count = abi_layout.rebindable_binding_count,
+              .executable_count = abi_layout.executable_count,
+              .entry_count = abi_layout.entry_count,
+          },
       .parameter_requirements = parameter_requirements,
       .transient_requirement = transient_requirement,
   };

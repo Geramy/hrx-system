@@ -58,7 +58,7 @@ command.program.def public @waves(%element_count: index) launch(%source: buffer,
 }
 
 // ----
-low.func.def public retain target<cmd.core> abi(command_program) @waves() asm {
+low.func.def public retain target<cmd.core> abi(command_program) abi_layout({entry_count = 1, executable_count = 1, fixed_buffer_count = 0, rebindable_binding_count = 5}) @waves() asm {
   %0 = resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
   %1 = resource<command_input> {index = 1, source_type = buffer} : reg<cmd.binding>
   %2 = resource<command_input> {index = 2, source_type = buffer} : reg<cmd.binding>
@@ -163,7 +163,7 @@ command.program.def public @copy_twice() launch(%source: buffer, %scratch: buffe
 }
 
 // ----
-low.func.def public retain target<cmd.core> abi(command_program) @copy_twice() asm {
+low.func.def public retain target<cmd.core> abi(command_program) abi_layout({entry_count = 1, executable_count = 1, fixed_buffer_count = 0, rebindable_binding_count = 3}) @copy_twice() asm {
   %0 = resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
   %1 = resource<command_input> {index = 1, source_type = buffer} : reg<cmd.binding>
   %2 = resource<command_input> {index = 2, source_type = buffer} : reg<cmd.binding>
@@ -234,7 +234,7 @@ command.program.def public @increment_twice(%element_count: index) launch(%sourc
 }
 
 // ----
-low.func.def public retain target<cmd.core> abi(command_program) @increment_then_double() asm {
+low.func.def public retain target<cmd.core> abi(command_program) abi_layout({entry_count = 2, executable_count = 2, fixed_buffer_count = 0, rebindable_binding_count = 4}) @increment_then_double() asm {
   %0 = resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
   %1 = resource<command_input> {index = 1, source_type = buffer} : reg<cmd.binding>
   %2 = resource<command_input> {index = 2, source_type = buffer} : reg<cmd.binding>
@@ -262,7 +262,7 @@ low.func.def public retain target<cmd.core> abi(command_program) @increment_then
   return
 }
 
-low.func.def public retain target<cmd.core> abi(command_program) @increment_twice() asm {
+low.func.def public retain target<cmd.core> abi(command_program) abi_layout({entry_count = 1, executable_count = 1, fixed_buffer_count = 0, rebindable_binding_count = 4}) @increment_twice() asm {
   %21 = resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
   %22 = resource<command_input> {index = 1, source_type = buffer} : reg<cmd.binding>
   %23 = resource<command_input> {index = 2, source_type = buffer} : reg<cmd.binding>
@@ -316,7 +316,7 @@ command.program.def public @unrolled_targetless() launch(%source: buffer, %targe
 }
 
 // ----
-low.func.def public retain target<cmd.core> abi(command_program) @unrolled_targetless() asm {
+low.func.def public retain target<cmd.core> abi(command_program) abi_layout({entry_count = 1, executable_count = 1, fixed_buffer_count = 0, rebindable_binding_count = 2}) @unrolled_targetless() asm {
   %0 = resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
   %1 = resource<command_input> {index = 1, source_type = buffer} : reg<cmd.binding>
   %2 = resource<command_input> {index = 0, source_type = index} : reg<cmd.executable>
