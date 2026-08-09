@@ -613,6 +613,16 @@ loom_link_module(
 )
 
 iree_c_embed_data(
+    name = "decode_program_source",
+    testonly = True,
+    srcs = [":decode_program_linked"],
+    c_file_output = "decode_program_source.c",
+    flatten = True,
+    h_file_output = "decode_program_source.h",
+    identifier = "qwen_loom_decode_program_source",
+)
+
+iree_c_embed_data(
     name = "runtime_modules",
     srcs = [
         ":attention_metadata_runtime_module",
