@@ -555,12 +555,28 @@ TEST(CommandAmdgpuLifecycleTest,
       /*.queue_affinity=*/IREE_HAL_QUEUE_AFFINITY_ANY,
       /*.fixed_buffers=*/&once_fixed_source,
       /*.fixed_buffer_count=*/1,
+      /*.flags=*/
+      LOOMC_CMD_IREE_HAL_PROGRAM_FLAG_RETAIN_RECORDED_OPERATIONS,
   };
   loomc_cmd_iree_hal_program_t* raw_once_hal_program = nullptr;
   LOOMC_ASSERT_OK(loomc_cmd_iree_hal_program_create(
       hal_package.get(), once_command_program.get(), &once_program_options,
       loomc_allocator_system(), &raw_once_hal_program));
   CmdHalProgramPtr once_hal_program(raw_once_hal_program);
+  ASSERT_EQ(loomc_cmd_iree_hal_program_recorded_operation_count(
+                once_hal_program.get()),
+            1u);
+  loomc_cmd_iree_hal_recorded_operation_info_t once_recorded_operation = {
+      /*.type=*/
+      LOOMC_STRUCTURE_TYPE_CMD_IREE_HAL_RECORDED_OPERATION_INFO,
+      /*.structure_size=*/sizeof(once_recorded_operation),
+  };
+  LOOMC_ASSERT_OK(loomc_cmd_iree_hal_program_recorded_operation_info(
+      once_hal_program.get(), 0, &once_recorded_operation));
+  EXPECT_EQ(once_recorded_operation.command_ordinal, 0u);
+  EXPECT_EQ(once_recorded_operation.barrier_wave_ordinal, 0u);
+  EXPECT_EQ(once_recorded_operation.phase,
+            LOOMC_CMD_IREE_HAL_RECORDED_OPERATION_PHASE_PAYLOAD);
 
   const loomc_cmd_iree_hal_program_options_t twice_program_options = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_IREE_HAL_PROGRAM_OPTIONS,
@@ -576,6 +592,9 @@ TEST(CommandAmdgpuLifecycleTest,
       hal_package.get(), twice_command_program.get(), &twice_program_options,
       loomc_allocator_system(), &raw_twice_hal_program));
   CmdHalProgramPtr twice_hal_program(raw_twice_hal_program);
+  EXPECT_EQ(loomc_cmd_iree_hal_program_recorded_operation_count(
+                twice_hal_program.get()),
+            0u);
 
   loomc_launch_config_module_t* launch_module =
       loomc_cmd_iree_hal_program_launch_module(once_hal_program.get());

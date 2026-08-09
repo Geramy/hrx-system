@@ -60,7 +60,20 @@ struct loomc_cmd_iree_hal_program_t {
 
   // Package launch function matching the selected root.
   loomc_launch_config_function_t launch_function;
+
+  // Optional recorder-produced HAL-operation identity table.
+  loom_cmd_iree_hal_operation_map_entry_t* recorded_operations;
+
+  // Number of entries in |recorded_operations|.
+  iree_host_size_t recorded_operation_count;
 };
+
+static_assert((uint32_t)LOOM_CMD_IREE_HAL_OPERATION_PHASE_BARRIER ==
+                  (uint32_t)LOOMC_CMD_IREE_HAL_RECORDED_OPERATION_PHASE_BARRIER,
+              "internal and public barrier operation phases must match");
+static_assert((uint32_t)LOOM_CMD_IREE_HAL_OPERATION_PHASE_PAYLOAD ==
+                  (uint32_t)LOOMC_CMD_IREE_HAL_RECORDED_OPERATION_PHASE_PAYLOAD,
+              "internal and public payload operation phases must match");
 
 static bool loomc_cmd_iree_hal_string_view_is_well_formed(
     loomc_string_view_t value) {
@@ -136,6 +149,12 @@ static loomc_status_t loomc_cmd_iree_hal_validate_program_options(
     return loomc_make_status(
         LOOMC_STATUS_UNIMPLEMENTED,
         "IREE HAL program option extensions are not supported");
+  }
+  const loomc_cmd_iree_hal_program_flags_t known_flags =
+      LOOMC_CMD_IREE_HAL_PROGRAM_FLAG_RETAIN_RECORDED_OPERATIONS;
+  if ((options->flags & ~known_flags) != 0) {
+    return loomc_make_status(LOOMC_STATUS_INVALID_ARGUMENT,
+                             "IREE HAL program options contain unknown flags");
   }
   if (options->fixed_buffer_count != 0 && options->fixed_buffers == NULL) {
     return loomc_make_status(
@@ -409,6 +428,7 @@ static void loomc_cmd_iree_hal_program_destroy(
   iree_hal_command_buffer_release(hal_program->command_buffer);
   loomc_cmd_program_release(hal_program->command_program);
   loomc_cmd_iree_hal_package_release(hal_program->package);
+  loomc_allocator_free(allocator, hal_program->recorded_operations);
   loomc_allocator_free(allocator, hal_program);
 }
 
@@ -478,31 +498,62 @@ loomc_status_t loomc_cmd_iree_hal_program_create(
       .entry_count = package->executable_count,
       .entries = package->entries,
   };
-  iree_hal_command_buffer_t* command_buffer = NULL;
-  loomc_status_t status =
-      loomc_status_from_iree(loom_cmd_iree_hal_materialize_program(
-          parsed, &inputs, package->device, options->command_buffer_mode,
-          options->queue_affinity, /*operation_map=*/NULL, &command_buffer,
-          iree_allocator_from_loomc(allocator)));
 
   loomc_cmd_iree_hal_program_t* hal_program = NULL;
-  if (loomc_status_is_ok(status)) {
-    status = loomc_allocator_malloc(allocator, sizeof(*hal_program),
-                                    (void**)&hal_program);
-  }
+  loomc_status_t status = loomc_allocator_malloc(
+      allocator, sizeof(*hal_program), (void**)&hal_program);
   if (loomc_status_is_ok(status)) {
     memset(hal_program, 0, sizeof(*hal_program));
-    iree_atomic_ref_count_init(&hal_program->ref_count);
     hal_program->allocator = allocator;
+  }
+
+  loom_cmd_iree_hal_operation_map_t operation_map = {0};
+  loom_cmd_iree_hal_operation_map_t* operation_map_ptr = NULL;
+  if (loomc_status_is_ok(status) &&
+      (options->flags &
+       LOOMC_CMD_IREE_HAL_PROGRAM_FLAG_RETAIN_RECORDED_OPERATIONS) != 0) {
+    const loomc_host_size_t command_count = parsed->commands.count;
+    if (command_count >
+        LOOMC_HOST_SIZE_MAX / 2 / sizeof(*hal_program->recorded_operations)) {
+      status = loomc_make_status(
+          LOOMC_STATUS_RESOURCE_EXHAUSTED,
+          "recorded command operation map exceeds the host address domain");
+    } else {
+      operation_map.capacity = command_count * 2;
+      if (operation_map.capacity != 0) {
+        status = loomc_allocator_malloc(
+            allocator,
+            operation_map.capacity * sizeof(*hal_program->recorded_operations),
+            (void**)&hal_program->recorded_operations);
+        operation_map.entries = hal_program->recorded_operations;
+      }
+      if (loomc_status_is_ok(status)) operation_map_ptr = &operation_map;
+    }
+  }
+
+  iree_hal_command_buffer_t* command_buffer = NULL;
+  if (loomc_status_is_ok(status)) {
+    status = loomc_status_from_iree(loom_cmd_iree_hal_materialize_program(
+        parsed, &inputs, package->device, options->command_buffer_mode,
+        options->queue_affinity, operation_map_ptr, &command_buffer,
+        iree_allocator_from_loomc(allocator)));
+  }
+  if (loomc_status_is_ok(status)) {
+    iree_atomic_ref_count_init(&hal_program->ref_count);
     hal_program->package = package;
     loomc_cmd_iree_hal_package_retain(package);
     hal_program->command_program = command_program;
     loomc_cmd_program_retain(command_program);
     hal_program->command_buffer = command_buffer;
     hal_program->launch_function = launch_function;
+    hal_program->recorded_operation_count = operation_map.count;
     *out_hal_program = hal_program;
   } else {
     iree_hal_command_buffer_release(command_buffer);
+    if (hal_program != NULL) {
+      loomc_allocator_free(allocator, hal_program->recorded_operations);
+      loomc_allocator_free(allocator, hal_program);
+    }
   }
   return status;
 }
@@ -535,4 +586,56 @@ loomc_launch_config_function_t loomc_cmd_iree_hal_program_launch_function(
     const loomc_cmd_iree_hal_program_t* hal_program) {
   return hal_program ? hal_program->launch_function
                      : loomc_launch_config_function_invalid();
+}
+
+loomc_host_size_t loomc_cmd_iree_hal_program_recorded_operation_count(
+    const loomc_cmd_iree_hal_program_t* hal_program) {
+  return hal_program ? hal_program->recorded_operation_count : 0;
+}
+
+loomc_status_t loomc_cmd_iree_hal_program_recorded_operation_info(
+    const loomc_cmd_iree_hal_program_t* hal_program,
+    loomc_host_size_t operation_index,
+    loomc_cmd_iree_hal_recorded_operation_info_t* out_info) {
+  if (out_info == NULL) {
+    return loomc_make_status(LOOMC_STATUS_INVALID_ARGUMENT,
+                             "out_info must not be NULL");
+  }
+  if (out_info->type != LOOMC_STRUCTURE_TYPE_NONE &&
+      out_info->type !=
+          LOOMC_STRUCTURE_TYPE_CMD_IREE_HAL_RECORDED_OPERATION_INFO) {
+    return loomc_make_status(
+        LOOMC_STATUS_INVALID_ARGUMENT,
+        "IREE HAL recorded operation output has an unknown structure type");
+  }
+  if (out_info->structure_size != 0 &&
+      out_info->structure_size < sizeof(*out_info)) {
+    return loomc_make_status(
+        LOOMC_STATUS_INVALID_ARGUMENT,
+        "IREE HAL recorded operation output structure_size is too small");
+  }
+  if (out_info->next != NULL) {
+    return loomc_make_status(
+        LOOMC_STATUS_UNIMPLEMENTED,
+        "IREE HAL recorded operation output extensions are not supported");
+  }
+  if (hal_program == NULL) {
+    return loomc_make_status(LOOMC_STATUS_INVALID_ARGUMENT,
+                             "hal_program must not be NULL");
+  }
+  if (operation_index >= hal_program->recorded_operation_count) {
+    return loomc_make_status(LOOMC_STATUS_OUT_OF_RANGE,
+                             "recorded operation index is out of range");
+  }
+
+  const loom_cmd_iree_hal_operation_map_entry_t* operation =
+      &hal_program->recorded_operations[operation_index];
+  *out_info = (loomc_cmd_iree_hal_recorded_operation_info_t){
+      .type = LOOMC_STRUCTURE_TYPE_CMD_IREE_HAL_RECORDED_OPERATION_INFO,
+      .structure_size = sizeof(*out_info),
+      .command_ordinal = operation->command_ordinal,
+      .barrier_wave_ordinal = operation->barrier_wave_ordinal,
+      .phase = (loomc_cmd_iree_hal_recorded_operation_phase_t)operation->phase,
+  };
+  return loomc_ok_status();
 }

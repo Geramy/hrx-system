@@ -37,6 +37,56 @@ typedef struct loomc_cmd_iree_hal_package_t loomc_cmd_iree_hal_package_t;
 /// buffer mode; issue-time bindings remain supplied by each queue execution.
 typedef struct loomc_cmd_iree_hal_program_t loomc_cmd_iree_hal_program_t;
 
+/// Materialized command-program behavior flag bits.
+typedef enum loomc_cmd_iree_hal_program_flag_bits_e {
+  /// Retains the exact relation between recorded HAL operations and portable
+  /// command ordinals for diagnostics and profile correlation.
+  ///
+  /// This adds one compact host record per HAL command-buffer operation during
+  /// materialization. Programs without this flag allocate no map storage.
+  LOOMC_CMD_IREE_HAL_PROGRAM_FLAG_RETAIN_RECORDED_OPERATIONS = 1u << 0,
+} loomc_cmd_iree_hal_program_flag_bits_t;
+
+/// Bitmask of `loomc_cmd_iree_hal_program_flag_bits_t` values.
+typedef uint32_t loomc_cmd_iree_hal_program_flags_t;
+
+/// Relationship between a recorded HAL operation and its portable command.
+typedef enum loomc_cmd_iree_hal_recorded_operation_phase_e {
+  /// Full execution barrier preceding a payload or emitted by a standalone
+  /// barrier command.
+  LOOMC_CMD_IREE_HAL_RECORDED_OPERATION_PHASE_BARRIER = 0,
+
+  /// Fill, copy, or dispatch payload emitted for a portable command.
+  LOOMC_CMD_IREE_HAL_RECORDED_OPERATION_PHASE_PAYLOAD = 1,
+} loomc_cmd_iree_hal_recorded_operation_phase_t;
+
+/// Immutable identity of one HAL operation in a materialized command buffer.
+///
+/// Records are indexed by the zero-based command index reported by retained
+/// HAL command-buffer metadata and dispatch profiling. A portable command with
+/// a folded leading barrier has one barrier record followed by one payload
+/// record; a standalone barrier has only a barrier record.
+typedef struct loomc_cmd_iree_hal_recorded_operation_info_t {
+  /// Structure type. Must be
+  /// `LOOMC_STRUCTURE_TYPE_CMD_IREE_HAL_RECORDED_OPERATION_INFO` when nonzero.
+  loomc_structure_type_t type;
+
+  /// Size of this structure in bytes.
+  loomc_host_size_t structure_size;
+
+  /// Reserved extension chain. Must be `NULL`.
+  void* next;
+
+  /// Zero-based ordinal in the canonical portable command table.
+  uint32_t command_ordinal;
+
+  /// Zero-based barrier wave containing this operation.
+  uint32_t barrier_wave_ordinal;
+
+  /// Relationship between this HAL operation and its portable command.
+  loomc_cmd_iree_hal_recorded_operation_phase_t phase;
+} loomc_cmd_iree_hal_recorded_operation_info_t;
+
 /// Device-loading options for a compiled command-program package.
 typedef struct loomc_cmd_iree_hal_package_options_t {
   /// Structure type. Must be
@@ -88,6 +138,9 @@ typedef struct loomc_cmd_iree_hal_program_options_t {
 
   /// Number of entries in `fixed_buffers`.
   loomc_host_size_t fixed_buffer_count;
+
+  /// Flags controlling materialized-program behavior and retained metadata.
+  loomc_cmd_iree_hal_program_flags_t flags;
 } loomc_cmd_iree_hal_program_options_t;
 
 /// Loads the shared device and host resources in a compiled program package.
@@ -155,6 +208,25 @@ loomc_cmd_iree_hal_program_launch_module(
 LOOMC_API_EXPORT loomc_launch_config_function_t
 loomc_cmd_iree_hal_program_launch_function(
     const loomc_cmd_iree_hal_program_t* hal_program);
+
+/// Returns the number of retained recorded-operation records.
+///
+/// Returns zero when
+/// `LOOMC_CMD_IREE_HAL_PROGRAM_FLAG_RETAIN_RECORDED_OPERATIONS` was not set
+/// during materialization.
+LOOMC_API_EXPORT loomc_host_size_t
+loomc_cmd_iree_hal_program_recorded_operation_count(
+    const loomc_cmd_iree_hal_program_t* hal_program);
+
+/// Returns one retained recorded-operation identity by HAL command index.
+///
+/// Fails with `LOOMC_STATUS_OUT_OF_RANGE` when `operation_index` is not less
+/// than `loomc_cmd_iree_hal_program_recorded_operation_count`.
+LOOMC_API_EXPORT loomc_status_t
+loomc_cmd_iree_hal_program_recorded_operation_info(
+    const loomc_cmd_iree_hal_program_t* hal_program,
+    loomc_host_size_t operation_index,
+    loomc_cmd_iree_hal_recorded_operation_info_t* out_info);
 
 #ifdef __cplusplus
 }  // extern "C"
