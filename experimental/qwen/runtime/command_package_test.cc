@@ -232,7 +232,7 @@ static const loomc_artifact_t* FindCommandArtifact(
   return nullptr;
 }
 
-TEST(QwenDecodeCommandProgramTest, SpecializesExactDenseProjectionShapes) {
+TEST(QwenCommandPackageTest, SpecializesExactDenseProjectionShapes) {
   TargetEnvironmentPtr target_environment = CreateTargetEnvironment();
   ContextPtr context = CreateContext(target_environment.get());
   WorkspacePtr coordinator_workspace = CreateWorkspace();
@@ -319,7 +319,7 @@ TEST(QwenDecodeCommandProgramTest, SpecializesExactDenseProjectionShapes) {
   }
 }
 
-TEST(QwenDecodeCommandProgramTest, CompilesCompleteProductionPlan) {
+TEST(QwenCommandPackageTest, CompilesCompleteProductionPlan) {
   TargetEnvironmentPtr target_environment = CreateTargetEnvironment();
   ContextPtr context = CreateContext(target_environment.get());
   WorkspacePtr coordinator_workspace = CreateWorkspace();
@@ -472,7 +472,7 @@ TEST(QwenDecodeCommandProgramTest, CompilesCompleteProductionPlan) {
   EXPECT_GT(command_artifact->contents.data_length, 0u);
 }
 
-TEST(QwenDecodeCommandProgramTest, CompilesExactPrefill512Plan) {
+TEST(QwenCommandPackageTest, CompilesExactPrefill512Plan) {
   TargetEnvironmentPtr target_environment = CreateTargetEnvironment();
   ContextPtr context = CreateContext(target_environment.get());
   WorkspacePtr coordinator_workspace = CreateWorkspace();
@@ -596,7 +596,7 @@ TEST(QwenDecodeCommandProgramTest, CompilesExactPrefill512Plan) {
   EXPECT_GT(command_artifact->contents.data_length, 0u);
 }
 
-TEST(QwenDecodeCommandProgramTest, CompilesSharedPrefillAndDecodePlan) {
+TEST(QwenCommandPackageTest, CompilesSharedPrefillAndDecodePlan) {
   TargetEnvironmentPtr target_environment = CreateTargetEnvironment();
   ContextPtr context = CreateContext(target_environment.get());
   WorkspacePtr coordinator_workspace = CreateWorkspace();
@@ -693,23 +693,34 @@ TEST(QwenDecodeCommandProgramTest, CompilesSharedPrefillAndDecodePlan) {
 
   const loomc_host_size_t unit_count =
       loomc_program_plan_unit_count(plan.get());
+  const loomc_program_plan_unit_compile_options_t unit_compile_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_UNIT_COMPILE_OPTIONS,
+      /*.structure_size=*/sizeof(unit_compile_options),
+      /*.next=*/nullptr,
+  };
   std::vector<ProgramPtr> unit_programs;
   std::vector<loomc_program_t*> unit_table_values;
   unit_programs.reserve(unit_count);
   unit_table_values.reserve(unit_count);
   for (loomc_host_size_t i = 0; i < unit_count; ++i) {
+    const loomc_program_plan_unit_t unit =
+        loomc_program_plan_unit_from_index(static_cast<uint32_t>(i));
+    loomc_program_plan_unit_info_t unit_info = {
+        /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_UNIT_INFO,
+        /*.structure_size=*/sizeof(unit_info),
+    };
+    LOOMC_ASSERT_OK(loomc_program_plan_unit_info(plan.get(), unit, &unit_info));
     WorkspacePtr worker_workspace = CreateWorkspace();
     loomc_program_t* raw_program = nullptr;
     raw_result = nullptr;
     LOOMC_ASSERT_OK(loomc_program_plan_compile_unit(
-        plan.get(), worker_workspace.get(),
-        loomc_program_plan_unit_from_index(static_cast<uint32_t>(i)),
-        /*options=*/nullptr, loomc_allocator_system(), &raw_program,
-        &raw_result));
+        plan.get(), worker_workspace.get(), unit, &unit_compile_options,
+        loomc_allocator_system(), &raw_program, &raw_result));
     ProgramPtr program(raw_program);
     ResultPtr result(raw_result);
     ASSERT_TRUE(ResultSucceeded(
-        result.get(), "shared command-package unit " + std::to_string(i)));
+        result.get(), "shared command-package unit " + std::to_string(i) +
+                          " (" + ToString(unit_info.identifier) + ")"));
     unit_table_values.push_back(program.get());
     unit_programs.push_back(std::move(program));
   }

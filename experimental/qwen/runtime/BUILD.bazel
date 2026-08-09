@@ -40,8 +40,8 @@ iree_runtime_cc_test(
 )
 
 iree_runtime_cc_test(
-    name = "decode_command_program_test",
-    srcs = ["decode_command_program_test.cc"],
+    name = "command_package_test",
+    srcs = ["command_package_test.cc"],
     target_compatible_with = loom_config_compatible_with([
         "//loom/config/target:amdgpu_artifacts",
     ]),
@@ -61,16 +61,16 @@ iree_runtime_cc_test(
 )
 
 iree_runtime_cc_library(
-    name = "decode_command_program",
-    srcs = ["decode_command_program.c"],
-    hdrs = ["decode_command_program.h"],
+    name = "command_package",
+    srcs = ["command_package.c"],
+    hdrs = ["command_package.h"],
     deps = [
         ":loom_compile_pool",
         ":loom_jit",
         ":model",
         ":parameters",
         ":request",
-        "//experimental/qwen/programs:decode_source",
+        "//experimental/qwen/programs:command_package_source",
         "//loom/binding/c:loomc",
         "//loom/binding/c/target/amdgpu",
         "//loom/binding/c/target/amdgpu/iree_hal",
