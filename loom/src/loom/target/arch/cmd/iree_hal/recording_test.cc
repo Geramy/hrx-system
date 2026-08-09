@@ -874,6 +874,197 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, 
   iree_hal_device_group_release(device_group);
 }
 
+TEST_F(CmdIreeHalRecordingTest, LocalizesFailureByWaveAndCommandRange) {
+  ModulePtr module = ParseAndVerify(R"(
+low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, executable_count = 1, fixed_buffer_count = 0, rebindable_binding_count = 2}) @failing_wave() {
+  %source = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
+  %target = low.resource<command_input> {index = 1, source_type = buffer} : reg<cmd.binding>
+  %executable = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.executable>
+  %entry = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.entry>
+  %addend = low.const<cmd.constant.b32> {value = 7} : reg<cmd.b32>
+  %one = low.const<cmd.constant.u32> {value = 1} : reg<cmd.u32>
+  %four = low.const<cmd.constant.u32> {value = 4} : reg<cmd.u32>
+  %zero = low.const<cmd.constant.u64> {value = 0} : reg<cmd.u64>
+  %full_length = low.const<cmd.constant.u64> {value = 16} : reg<cmd.u64>
+  %short_length = low.const<cmd.constant.u64> {value = 4} : reg<cmd.u64>
+  low.op<cmd.dispatch.direct>(%executable, %entry, %one, %one, %one, %addend, %source, %zero, %full_length, %target, %zero, %full_length) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.b32>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>)
+  low.op<cmd.dispatch.direct.barrier>(%executable, %entry, %one, %one, %one, %addend, %source, %zero, %full_length, %target, %zero, %full_length) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.b32>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>)
+  low.op<cmd.dispatch.direct>(%executable, %entry, %four, %one, %one, %addend, %source, %zero, %short_length, %target, %zero, %short_length) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.b32>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>)
+  low.op<cmd.dispatch.direct.barrier>(%executable, %entry, %one, %one, %one, %addend, %source, %zero, %full_length, %target, %zero, %full_length) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.b32>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>, reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>)
+  low.return
+}
+)");
+
+  iree_byte_span_t program_data = iree_byte_span_empty();
+  IREE_ASSERT_OK(loom_cmd_program_serialize_low(
+      module.get(), FindFunction(module.get(), IREE_SV("failing_wave")),
+      /*parameter_requirements=*/nullptr, /*transient_requirement=*/nullptr,
+      &program_data, iree_allocator_system()));
+  loom_cmd_program_t program = {};
+  IREE_ASSERT_OK(loom_cmd_program_parse(
+      iree_make_const_byte_span(program_data.data, program_data.data_length),
+      &program));
+  module.reset();
+  ASSERT_EQ(program.commands.count, 4u);
+
+  static constexpr iree_device_size_t kByteLength = 4 * sizeof(uint32_t);
+  const std::array<uint32_t, 4> source_values = {{1, 2, 3, 4}};
+
+  iree_hal_device_group_t* wave_device_group = CreateSyncDeviceGroup();
+  iree_hal_device_t* wave_device =
+      iree_hal_device_group_device_at(wave_device_group, 0);
+  iree_hal_executable_t* wave_executable = nullptr;
+  IREE_ASSERT_OK(LoadTestExecutable(wave_device, &wave_executable));
+  loom_cmd_iree_hal_entry_t wave_entry = {};
+  wave_entry.executable_index = 0;
+  wave_entry.function = iree_hal_executable_function_from_index(0);
+  IREE_ASSERT_OK(iree_hal_executable_function_info(
+      wave_executable, wave_entry.function, &wave_entry.info));
+  std::vector<iree_hal_executable_function_parameter_t> wave_parameters(
+      wave_entry.info.parameter_count);
+  IREE_ASSERT_OK(iree_hal_executable_function_parameters(
+      wave_executable, wave_entry.function, wave_parameters.size(),
+      wave_parameters.data()));
+  wave_entry.parameters = wave_parameters.data();
+  const loom_cmd_iree_hal_inputs_t wave_inputs = {
+      /*.binding_count=*/2,
+      /*.fixed_buffer_count=*/0,
+      /*.fixed_buffers=*/nullptr,
+      /*.executable_count=*/1,
+      /*.executables=*/&wave_executable,
+      /*.entry_count=*/1,
+      /*.entries=*/&wave_entry,
+  };
+
+  std::vector<iree_hal_command_buffer_t*> wave_command_buffers;
+  std::vector<uint32_t> wave_ordinals;
+  loom_cmd_program_barrier_wave_iterator_t wave_iterator;
+  loom_cmd_program_barrier_wave_iterator_initialize(&program, &wave_iterator);
+  loom_cmd_program_barrier_wave_t wave = {};
+  while (loom_cmd_program_barrier_wave_iterator_next(&wave_iterator, &wave)) {
+    iree_hal_command_buffer_t* command_buffer = nullptr;
+    IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program_range(
+        &program, wave.commands, wave.ordinal, &wave_inputs, wave_device,
+        IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT, IREE_HAL_QUEUE_AFFINITY_ANY,
+        /*operation_map=*/nullptr, &command_buffer, iree_allocator_system()));
+    wave_command_buffers.push_back(command_buffer);
+    wave_ordinals.push_back(wave.ordinal);
+  }
+  ASSERT_EQ(wave_ordinals, (std::vector<uint32_t>{0, 1, 2}));
+
+  iree_hal_buffer_t* wave_source_buffer =
+      CreateTransferBuffer(wave_device, kByteLength);
+  iree_hal_buffer_t* wave_target_buffer =
+      CreateTransferBuffer(wave_device, kByteLength);
+  IREE_ASSERT_OK(iree_hal_device_transfer_h2d(
+      wave_device, source_values.data(), wave_source_buffer, 0, kByteLength,
+      IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT, iree_infinite_timeout()));
+  const iree_hal_buffer_binding_t wave_bindings[] = {
+      /*source=*/{wave_source_buffer, 0, kByteLength},
+      /*target=*/{wave_target_buffer, 0, kByteLength},
+  };
+  IREE_ASSERT_OK(SubmitAndWait(wave_device, wave_command_buffers[0],
+                               {/*.count=*/IREE_ARRAYSIZE(wave_bindings),
+                                /*.bindings=*/wave_bindings}));
+  IREE_EXPECT_STATUS_IS(IREE_STATUS_INTERNAL,
+                        SubmitAndWait(wave_device, wave_command_buffers[1],
+                                      {/*.count=*/IREE_ARRAYSIZE(wave_bindings),
+                                       /*.bindings=*/wave_bindings}));
+
+  iree_hal_buffer_release(wave_target_buffer);
+  iree_hal_buffer_release(wave_source_buffer);
+  for (iree_hal_command_buffer_t* command_buffer : wave_command_buffers) {
+    iree_hal_command_buffer_release(command_buffer);
+  }
+  iree_hal_executable_release(wave_executable);
+  iree_hal_device_group_release(wave_device_group);
+
+  iree_hal_device_group_t* command_device_group = CreateSyncDeviceGroup();
+  iree_hal_device_t* command_device =
+      iree_hal_device_group_device_at(command_device_group, 0);
+  iree_hal_executable_t* command_executable = nullptr;
+  IREE_ASSERT_OK(LoadTestExecutable(command_device, &command_executable));
+  loom_cmd_iree_hal_entry_t command_entry = {};
+  command_entry.executable_index = 0;
+  command_entry.function = iree_hal_executable_function_from_index(0);
+  IREE_ASSERT_OK(iree_hal_executable_function_info(
+      command_executable, command_entry.function, &command_entry.info));
+  std::vector<iree_hal_executable_function_parameter_t> command_parameters(
+      command_entry.info.parameter_count);
+  IREE_ASSERT_OK(iree_hal_executable_function_parameters(
+      command_executable, command_entry.function, command_parameters.size(),
+      command_parameters.data()));
+  command_entry.parameters = command_parameters.data();
+  const loom_cmd_iree_hal_inputs_t command_inputs = {
+      /*.binding_count=*/2,
+      /*.fixed_buffer_count=*/0,
+      /*.fixed_buffers=*/nullptr,
+      /*.executable_count=*/1,
+      /*.executables=*/&command_executable,
+      /*.entry_count=*/1,
+      /*.entries=*/&command_entry,
+  };
+
+  const loom_cmd_program_command_range_t good_range = {
+      /*.first_command=*/1,
+      /*.command_count=*/1,
+  };
+  const loom_cmd_program_command_range_t failing_range = {
+      /*.first_command=*/2,
+      /*.command_count=*/1,
+  };
+  iree_hal_command_buffer_t* good_command_buffer = nullptr;
+  IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program_range(
+      &program, good_range, /*barrier_wave_ordinal=*/1, &command_inputs,
+      command_device, IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT,
+      IREE_HAL_QUEUE_AFFINITY_ANY, /*operation_map=*/nullptr,
+      &good_command_buffer, iree_allocator_system()));
+  std::array<loom_cmd_iree_hal_operation_map_entry_t, 2>
+      failing_operation_entries = {};
+  loom_cmd_iree_hal_operation_map_t failing_operation_map = {
+      /*.entries=*/failing_operation_entries.data(),
+      /*.capacity=*/failing_operation_entries.size(),
+  };
+  iree_hal_command_buffer_t* failing_command_buffer = nullptr;
+  IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program_range(
+      &program, failing_range, /*barrier_wave_ordinal=*/1, &command_inputs,
+      command_device, IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT,
+      IREE_HAL_QUEUE_AFFINITY_ANY, &failing_operation_map,
+      &failing_command_buffer, iree_allocator_system()));
+  ASSERT_EQ(failing_operation_map.count, 1u);
+  EXPECT_EQ(failing_operation_map.entries[0].command_ordinal, 2u);
+  EXPECT_EQ(failing_operation_map.entries[0].barrier_wave_ordinal, 1u);
+
+  iree_hal_buffer_t* command_source_buffer =
+      CreateTransferBuffer(command_device, kByteLength);
+  iree_hal_buffer_t* command_target_buffer =
+      CreateTransferBuffer(command_device, kByteLength);
+  IREE_ASSERT_OK(iree_hal_device_transfer_h2d(
+      command_device, source_values.data(), command_source_buffer, 0,
+      kByteLength, IREE_HAL_TRANSFER_BUFFER_FLAG_DEFAULT,
+      iree_infinite_timeout()));
+  const iree_hal_buffer_binding_t command_bindings[] = {
+      /*source=*/{command_source_buffer, 0, kByteLength},
+      /*target=*/{command_target_buffer, 0, kByteLength},
+  };
+  IREE_ASSERT_OK(SubmitAndWait(command_device, good_command_buffer,
+                               {/*.count=*/IREE_ARRAYSIZE(command_bindings),
+                                /*.bindings=*/command_bindings}));
+  IREE_EXPECT_STATUS_IS(
+      IREE_STATUS_INTERNAL,
+      SubmitAndWait(command_device, failing_command_buffer,
+                    {/*.count=*/IREE_ARRAYSIZE(command_bindings),
+                     /*.bindings=*/command_bindings}));
+
+  iree_hal_buffer_release(command_target_buffer);
+  iree_hal_buffer_release(command_source_buffer);
+  iree_hal_command_buffer_release(failing_command_buffer);
+  iree_hal_command_buffer_release(good_command_buffer);
+  iree_hal_executable_release(command_executable);
+  iree_hal_device_group_release(command_device_group);
+  iree_allocator_free(iree_allocator_system(), program_data.data);
+}
+
 TEST_F(CmdIreeHalRecordingTest, PreservesStaticAndDynamicIndirectModes) {
   ModulePtr module = ParseAndVerify(R"(
 low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, executable_count = 1, fixed_buffer_count = 0, rebindable_binding_count = 1}) @indirect_modes() {
