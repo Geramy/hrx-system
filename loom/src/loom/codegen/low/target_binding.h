@@ -161,9 +161,9 @@ static inline iree_string_view_t loom_low_descriptor_packet_diagnostic_key(
 // status. |low_func_op| must be a target-low function definition or
 // declaration. |effective_target_facts| supplies invocation-refined facts that
 // already include the function contract when non-NULL; otherwise facts are
-// resolved from the authored target witness. A portable command-program ABI
-// may instead resolve only its explicit representation descriptor set and
-// leave the target facts unset. The arena backing |symbol_facts| and
+// resolved from the authored target witness. A targetless function resolves
+// only its explicit representation descriptor set and leaves the target facts
+// unset, independent of its ABI. The arena backing |symbol_facts| and
 // |effective_target_facts| must outlive |out_target|.
 iree_status_t loom_low_resolve_function_target(
     const loom_module_t* module, loom_symbol_fact_table_t* symbol_facts,
