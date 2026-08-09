@@ -132,6 +132,17 @@ loom_cmd_program_command_kind_base(loom_cmd_program_command_kind_t kind) {
   return (loom_cmd_program_command_kind_t)base_kind;
 }
 
+// Returns true when |kind| opens a new full-execution barrier wave.
+//
+// This includes both standalone barriers and payload commands carrying a
+// folded leading barrier.
+static inline bool loom_cmd_program_command_kind_begins_barrier_wave(
+    loom_cmd_program_command_kind_t kind) {
+  return loom_cmd_program_command_kind_has_barrier(kind) ||
+         loom_cmd_program_command_kind_base(kind) ==
+             LOOM_CMD_PROGRAM_COMMAND_KIND_BARRIER_EXECUTION;
+}
+
 // One decoded portable command.
 typedef struct loom_cmd_program_command_t {
   // Command payload selector.
@@ -278,6 +289,32 @@ typedef struct loom_cmd_program_t {
   iree_const_byte_span_t parameter_keys;
 } loom_cmd_program_t;
 
+// Half-open range within the canonical command table.
+typedef struct loom_cmd_program_command_range_t {
+  // Zero-based first command ordinal.
+  uint32_t first_command;
+  // Number of commands in the range.
+  uint32_t command_count;
+} loom_cmd_program_command_range_t;
+
+// One non-empty command range bounded by full execution barriers.
+typedef struct loom_cmd_program_barrier_wave_t {
+  // Canonical barrier-wave ordinal used by recorded operation metadata.
+  uint32_t ordinal;
+  // Contiguous canonical commands belonging to the wave.
+  loom_cmd_program_command_range_t commands;
+} loom_cmd_program_barrier_wave_t;
+
+// Single-pass cursor over the barrier waves in one parsed program.
+typedef struct loom_cmd_program_barrier_wave_iterator_t {
+  // Parsed program borrowed for the complete iteration.
+  const loom_cmd_program_t* program;
+  // First canonical command not yet returned.
+  uint32_t next_command;
+  // Barrier-wave ordinal active before |next_command| is inspected.
+  uint32_t barrier_wave_ordinal;
+} loom_cmd_program_barrier_wave_iterator_t;
+
 // Dependency relocation applied while assembling command program roots.
 //
 // Each map has one entry for every corresponding requirement in the source
@@ -323,6 +360,24 @@ iree_const_byte_span_t loom_cmd_program_command_argument_data(
 // Returns one validated command table entry.
 loom_cmd_program_command_t loom_cmd_program_command_at(
     const loom_cmd_program_t* program, uint32_t index);
+
+// Returns the complete canonical command range in |program|.
+loom_cmd_program_command_range_t loom_cmd_program_command_range_all(
+    const loom_cmd_program_t* program);
+
+// Initializes |iterator| before a single forward traversal of |program|.
+void loom_cmd_program_barrier_wave_iterator_initialize(
+    const loom_cmd_program_t* program,
+    loom_cmd_program_barrier_wave_iterator_t* iterator);
+
+// Returns the next non-empty barrier wave and advances |iterator|.
+//
+// Returns false after every canonical command has been returned. Each command
+// appears in exactly one range, and concatenating the returned ranges restores
+// the original command traversal.
+bool loom_cmd_program_barrier_wave_iterator_next(
+    loom_cmd_program_barrier_wave_iterator_t* iterator,
+    loom_cmd_program_barrier_wave_t* out_wave);
 
 // Returns one validated fixed parameter-buffer root requirement.
 loom_cmd_program_parameter_root_t loom_cmd_program_parameter_root_at(

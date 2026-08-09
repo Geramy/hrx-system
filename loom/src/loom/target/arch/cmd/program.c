@@ -211,6 +211,59 @@ loom_cmd_program_command_t loom_cmd_program_command_at(
   return command;
 }
 
+loom_cmd_program_command_range_t loom_cmd_program_command_range_all(
+    const loom_cmd_program_t* program) {
+  IREE_ASSERT_ARGUMENT(program);
+  return (loom_cmd_program_command_range_t){
+      .first_command = 0,
+      .command_count = program->commands.count,
+  };
+}
+
+void loom_cmd_program_barrier_wave_iterator_initialize(
+    const loom_cmd_program_t* program,
+    loom_cmd_program_barrier_wave_iterator_t* iterator) {
+  IREE_ASSERT_ARGUMENT(program);
+  IREE_ASSERT_ARGUMENT(iterator);
+  *iterator = (loom_cmd_program_barrier_wave_iterator_t){
+      .program = program,
+  };
+}
+
+bool loom_cmd_program_barrier_wave_iterator_next(
+    loom_cmd_program_barrier_wave_iterator_t* iterator,
+    loom_cmd_program_barrier_wave_t* out_wave) {
+  IREE_ASSERT_ARGUMENT(iterator);
+  IREE_ASSERT_ARGUMENT(iterator->program);
+  IREE_ASSERT_ARGUMENT(out_wave);
+  const loom_cmd_program_t* program = iterator->program;
+  if (iterator->next_command == program->commands.count) return false;
+
+  const uint32_t first_command = iterator->next_command;
+  loom_cmd_program_command_t command =
+      loom_cmd_program_command_at(program, first_command);
+  if (loom_cmd_program_command_kind_begins_barrier_wave(command.kind)) {
+    ++iterator->barrier_wave_ordinal;
+  }
+
+  uint32_t next_command = first_command + 1;
+  while (next_command < program->commands.count) {
+    command = loom_cmd_program_command_at(program, next_command);
+    if (loom_cmd_program_command_kind_begins_barrier_wave(command.kind)) break;
+    ++next_command;
+  }
+  *out_wave = (loom_cmd_program_barrier_wave_t){
+      .ordinal = iterator->barrier_wave_ordinal,
+      .commands =
+          {
+              .first_command = first_command,
+              .command_count = next_command - first_command,
+          },
+  };
+  iterator->next_command = next_command;
+  return true;
+}
+
 loom_cmd_program_parameter_root_t loom_cmd_program_parameter_root_at(
     const loom_cmd_program_t* program, uint32_t index) {
   IREE_ASSERT_ARGUMENT(program);

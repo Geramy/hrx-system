@@ -348,6 +348,56 @@ TEST(CmdProgramTest, ParsesCanonicalProgram) {
   EXPECT_EQ(parameter.minimum_alignment, 256u);
 }
 
+TEST(CmdProgramTest, IteratesCanonicalBarrierWavesOnce) {
+  std::vector<uint8_t> data = BuildValidProgram();
+  const uint32_t command_table_offset = iree_unaligned_load_le_u32(
+      data.data() + LOOM_CMD_PROGRAM_HEADER_COMMAND_TABLE_OFFSET);
+  StoreCommand(data, command_table_offset, 0,
+               LOOM_CMD_PROGRAM_COMMAND_KIND_FILL_BARRIER, 0, 0, 0, 0x12345678,
+               4);
+  StoreCommand(data, command_table_offset, 1,
+               LOOM_CMD_PROGRAM_COMMAND_KIND_COPY_BARRIER, 0, 0, 0, 1);
+  StoreCommand(data, command_table_offset, 3,
+               LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_STATIC_BARRIER,
+               /*argument_offset=*/36, /*argument_schema_index=*/0, 0, 0, 1);
+  StoreCommand(data, command_table_offset, 4,
+               LOOM_CMD_PROGRAM_COMMAND_KIND_DISPATCH_INDIRECT_DYNAMIC_BARRIER,
+               /*argument_offset=*/72, /*argument_schema_index=*/0, 0, 0, 1);
+
+  loom_cmd_program_t program = {};
+  IREE_ASSERT_OK(loom_cmd_program_parse(AsByteSpan(data), &program));
+  const loom_cmd_program_command_range_t all_commands =
+      loom_cmd_program_command_range_all(&program);
+  EXPECT_EQ(all_commands.first_command, 0u);
+  EXPECT_EQ(all_commands.command_count, 6u);
+
+  loom_cmd_program_barrier_wave_iterator_t iterator;
+  loom_cmd_program_barrier_wave_iterator_initialize(&program, &iterator);
+  const loom_cmd_program_barrier_wave_t expected[] = {
+      {/*.ordinal=*/1, /*.commands=*/{/*.first_command=*/0,
+                                      /*.command_count=*/1}},
+      {/*.ordinal=*/2, /*.commands=*/{/*.first_command=*/1,
+                                      /*.command_count=*/2}},
+      {/*.ordinal=*/3, /*.commands=*/{/*.first_command=*/3,
+                                      /*.command_count=*/1}},
+      {/*.ordinal=*/4, /*.commands=*/{/*.first_command=*/4,
+                                      /*.command_count=*/1}},
+      {/*.ordinal=*/5, /*.commands=*/{/*.first_command=*/5,
+                                      /*.command_count=*/1}},
+  };
+  for (const loom_cmd_program_barrier_wave_t& expected_wave : expected) {
+    loom_cmd_program_barrier_wave_t wave = {};
+    ASSERT_TRUE(loom_cmd_program_barrier_wave_iterator_next(&iterator, &wave));
+    EXPECT_EQ(wave.ordinal, expected_wave.ordinal);
+    EXPECT_EQ(wave.commands.first_command,
+              expected_wave.commands.first_command);
+    EXPECT_EQ(wave.commands.command_count,
+              expected_wave.commands.command_count);
+  }
+  loom_cmd_program_barrier_wave_t wave = {};
+  EXPECT_FALSE(loom_cmd_program_barrier_wave_iterator_next(&iterator, &wave));
+}
+
 TEST(CmdProgramTest, ParsesTransientRequirement) {
   std::vector<uint8_t> data = BuildValidProgram();
   iree_unaligned_store_le_u32(
