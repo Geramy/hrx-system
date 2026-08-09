@@ -124,7 +124,10 @@ typedef struct loomc_cmd_iree_hal_program_options_t {
   /// Size of this structure in bytes.
   loomc_host_size_t structure_size;
 
-  /// Reserved extension chain. Must be `NULL`.
+  /// Unordered option extension chain.
+  ///
+  /// `loomc_cmd_program_range_options_t` may select a canonical command range.
+  /// The default records the complete selected program.
   const void* next;
 
   /// HAL command-buffer mode used for the reusable recording.

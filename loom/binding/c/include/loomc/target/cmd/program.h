@@ -30,6 +30,63 @@ typedef struct loomc_cmd_program_t loomc_cmd_program_t;
 /// Invalid fixed-buffer or issue-time binding index.
 #define LOOMC_CMD_PROGRAM_BINDING_INVALID UINT32_MAX
 
+/// Half-open range within the canonical command table.
+typedef struct loomc_cmd_program_command_range_t {
+  /// Zero-based first command ordinal.
+  uint32_t first_command;
+
+  /// Number of commands in the range.
+  uint32_t command_count;
+} loomc_cmd_program_command_range_t;
+
+/// Optional canonical command range selected during materialization.
+///
+/// A range preserves the complete program ABI: fixed resources, issue-time
+/// bindings, executables, and launch configuration remain those of the
+/// selected root. Only the canonical commands recorded in the materialized
+/// program are restricted. Barrier-wave ranges returned by
+/// `loomc_cmd_program_barrier_wave_iterator_next` are natural segmentation
+/// boundaries, while subranges support diagnostic prefix isolation.
+typedef struct loomc_cmd_program_range_options_t {
+  /// Structure type. Must be `LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_RANGE_OPTIONS`.
+  loomc_structure_type_t type;
+
+  /// Size of this structure in bytes.
+  loomc_host_size_t structure_size;
+
+  /// Next descriptor in the unordered option extension chain.
+  const void* next;
+
+  /// Half-open range in the selected root's canonical command table.
+  loomc_cmd_program_command_range_t command_range;
+} loomc_cmd_program_range_options_t;
+
+/// One non-empty command range bounded by full execution barriers.
+typedef struct loomc_cmd_program_barrier_wave_t {
+  /// Canonical barrier-wave ordinal used by recorded operation metadata.
+  uint32_t ordinal;
+
+  /// Contiguous canonical commands belonging to the wave.
+  loomc_cmd_program_command_range_t commands;
+} loomc_cmd_program_barrier_wave_t;
+
+/// Single-pass cursor over the barrier waves in one selected program.
+///
+/// The fields are public for stack allocation but owned by the iterator API.
+/// Callers initialize the cursor once and must not modify it while iterating.
+/// The selected program must remain live through the final call to
+/// `loomc_cmd_program_barrier_wave_iterator_next`.
+typedef struct loomc_cmd_program_barrier_wave_iterator_t {
+  /// Selected command program borrowed for the complete iteration.
+  const loomc_cmd_program_t* command_program;
+
+  /// First canonical command not yet returned.
+  uint32_t next_command;
+
+  /// Barrier-wave ordinal active before `next_command` is inspected.
+  uint32_t barrier_wave_ordinal;
+} loomc_cmd_program_barrier_wave_iterator_t;
+
 /// One aggregate buffer requirement in a selected command-program ABI.
 typedef struct loomc_cmd_program_buffer_requirement_t {
   /// Dense fixed-buffer or issue-time binding index, or
@@ -158,6 +215,21 @@ LOOMC_API_EXPORT void loomc_cmd_program_release(
 LOOMC_API_EXPORT loomc_status_t
 loomc_cmd_program_info(const loomc_cmd_program_t* command_program,
                        loomc_cmd_program_info_t* out_info);
+
+/// Initializes `out_iterator` for one forward traversal of `command_program`.
+LOOMC_API_EXPORT loomc_status_t
+loomc_cmd_program_barrier_wave_iterator_initialize(
+    const loomc_cmd_program_t* command_program,
+    loomc_cmd_program_barrier_wave_iterator_t* out_iterator);
+
+/// Advances `iterator` and returns the next non-empty barrier wave if present.
+///
+/// Each canonical command appears in exactly one returned range, and
+/// concatenating the ranges restores the original command traversal.
+/// `out_has_wave` is false after the final wave and `out_wave` is zeroed.
+LOOMC_API_EXPORT loomc_status_t loomc_cmd_program_barrier_wave_iterator_next(
+    loomc_cmd_program_barrier_wave_iterator_t* iterator,
+    loomc_cmd_program_barrier_wave_t* out_wave, bool* out_has_wave);
 
 /// Returns one fixed parameter-buffer root requirement by dense index.
 LOOMC_API_EXPORT loomc_status_t loomc_cmd_program_parameter_root_info(

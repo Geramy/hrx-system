@@ -201,6 +201,23 @@ static iree_status_t SubmitAndWait(
   return status;
 }
 
+static void ExpectRecordedOperation(
+    const loomc_cmd_iree_hal_program_t* program,
+    loomc_host_size_t operation_index, uint32_t command_ordinal,
+    uint32_t barrier_wave_ordinal,
+    loomc_cmd_iree_hal_recorded_operation_phase_t phase) {
+  loomc_cmd_iree_hal_recorded_operation_info_t operation = {
+      /*.type=*/
+      LOOMC_STRUCTURE_TYPE_CMD_IREE_HAL_RECORDED_OPERATION_INFO,
+      /*.structure_size=*/sizeof(operation),
+  };
+  LOOMC_ASSERT_OK(loomc_cmd_iree_hal_program_recorded_operation_info(
+      program, operation_index, &operation));
+  EXPECT_EQ(operation.command_ordinal, command_ordinal);
+  EXPECT_EQ(operation.barrier_wave_ordinal, barrier_wave_ordinal);
+  EXPECT_EQ(operation.phase, phase);
+}
+
 TEST(CommandAmdgpuLifecycleTest,
      CompilesAssemblesMaterializesAndReplaysNativePrograms) {
   ProactorPoolPtr proactor_pool;
@@ -566,17 +583,8 @@ TEST(CommandAmdgpuLifecycleTest,
   ASSERT_EQ(loomc_cmd_iree_hal_program_recorded_operation_count(
                 once_hal_program.get()),
             1u);
-  loomc_cmd_iree_hal_recorded_operation_info_t once_recorded_operation = {
-      /*.type=*/
-      LOOMC_STRUCTURE_TYPE_CMD_IREE_HAL_RECORDED_OPERATION_INFO,
-      /*.structure_size=*/sizeof(once_recorded_operation),
-  };
-  LOOMC_ASSERT_OK(loomc_cmd_iree_hal_program_recorded_operation_info(
-      once_hal_program.get(), 0, &once_recorded_operation));
-  EXPECT_EQ(once_recorded_operation.command_ordinal, 0u);
-  EXPECT_EQ(once_recorded_operation.barrier_wave_ordinal, 0u);
-  EXPECT_EQ(once_recorded_operation.phase,
-            LOOMC_CMD_IREE_HAL_RECORDED_OPERATION_PHASE_PAYLOAD);
+  ExpectRecordedOperation(once_hal_program.get(), 0, 0, 0,
+                          LOOMC_CMD_IREE_HAL_RECORDED_OPERATION_PHASE_PAYLOAD);
 
   const loomc_cmd_iree_hal_program_options_t twice_program_options = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_IREE_HAL_PROGRAM_OPTIONS,
@@ -595,6 +603,118 @@ TEST(CommandAmdgpuLifecycleTest,
   EXPECT_EQ(loomc_cmd_iree_hal_program_recorded_operation_count(
                 twice_hal_program.get()),
             0u);
+
+  const loomc_cmd_program_range_options_t invalid_range_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_RANGE_OPTIONS,
+      /*.structure_size=*/sizeof(invalid_range_options),
+      /*.next=*/nullptr,
+      /*.command_range=*/
+      {
+          /*.first_command=*/2,
+          /*.command_count=*/1,
+      },
+  };
+  const loomc_cmd_iree_hal_program_options_t invalid_program_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_IREE_HAL_PROGRAM_OPTIONS,
+      /*.structure_size=*/sizeof(invalid_program_options),
+      /*.next=*/&invalid_range_options,
+      /*.command_buffer_mode=*/IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT,
+      /*.queue_affinity=*/IREE_HAL_QUEUE_AFFINITY_ANY,
+      /*.fixed_buffers=*/&twice_fixed_source,
+      /*.fixed_buffer_count=*/1,
+  };
+  loomc_cmd_iree_hal_program_t* invalid_hal_program = nullptr;
+  LOOMC_EXPECT_STATUS_IS(LOOMC_STATUS_OUT_OF_RANGE,
+                         loomc_cmd_iree_hal_program_create(
+                             hal_package.get(), twice_command_program.get(),
+                             &invalid_program_options, loomc_allocator_system(),
+                             &invalid_hal_program));
+  EXPECT_EQ(invalid_hal_program, nullptr);
+
+  loomc_cmd_program_barrier_wave_iterator_t twice_wave_iterator = {};
+  LOOMC_ASSERT_OK(loomc_cmd_program_barrier_wave_iterator_initialize(
+      twice_command_program.get(), &twice_wave_iterator));
+  loomc_cmd_program_barrier_wave_t first_wave = {};
+  bool has_wave = false;
+  LOOMC_ASSERT_OK(loomc_cmd_program_barrier_wave_iterator_next(
+      &twice_wave_iterator, &first_wave, &has_wave));
+  ASSERT_TRUE(has_wave);
+  EXPECT_EQ(first_wave.ordinal, 0u);
+  EXPECT_EQ(first_wave.commands.first_command, 0u);
+  EXPECT_EQ(first_wave.commands.command_count, 1u);
+  loomc_cmd_program_barrier_wave_t second_wave = {};
+  LOOMC_ASSERT_OK(loomc_cmd_program_barrier_wave_iterator_next(
+      &twice_wave_iterator, &second_wave, &has_wave));
+  ASSERT_TRUE(has_wave);
+  EXPECT_EQ(second_wave.ordinal, 1u);
+  EXPECT_EQ(second_wave.commands.first_command, 1u);
+  EXPECT_EQ(second_wave.commands.command_count, 1u);
+  loomc_cmd_program_barrier_wave_t exhausted_wave = {};
+  LOOMC_ASSERT_OK(loomc_cmd_program_barrier_wave_iterator_next(
+      &twice_wave_iterator, &exhausted_wave, &has_wave));
+  EXPECT_FALSE(has_wave);
+
+  const loomc_cmd_program_range_options_t first_wave_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_RANGE_OPTIONS,
+      /*.structure_size=*/sizeof(first_wave_options),
+      /*.next=*/nullptr,
+      /*.command_range=*/first_wave.commands,
+  };
+  const loomc_cmd_iree_hal_program_options_t first_wave_program_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_IREE_HAL_PROGRAM_OPTIONS,
+      /*.structure_size=*/sizeof(first_wave_program_options),
+      /*.next=*/&first_wave_options,
+      /*.command_buffer_mode=*/IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT,
+      /*.queue_affinity=*/IREE_HAL_QUEUE_AFFINITY_ANY,
+      /*.fixed_buffers=*/&twice_fixed_source,
+      /*.fixed_buffer_count=*/1,
+      /*.flags=*/
+      LOOMC_CMD_IREE_HAL_PROGRAM_FLAG_RETAIN_RECORDED_OPERATIONS,
+  };
+  loomc_cmd_iree_hal_program_t* raw_first_wave_hal_program = nullptr;
+  LOOMC_ASSERT_OK(loomc_cmd_iree_hal_program_create(
+      hal_package.get(), twice_command_program.get(),
+      &first_wave_program_options, loomc_allocator_system(),
+      &raw_first_wave_hal_program));
+  CmdHalProgramPtr first_wave_hal_program(raw_first_wave_hal_program);
+
+  const loomc_cmd_program_range_options_t second_wave_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_RANGE_OPTIONS,
+      /*.structure_size=*/sizeof(second_wave_options),
+      /*.next=*/nullptr,
+      /*.command_range=*/second_wave.commands,
+  };
+  const loomc_cmd_iree_hal_program_options_t second_wave_program_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_IREE_HAL_PROGRAM_OPTIONS,
+      /*.structure_size=*/sizeof(second_wave_program_options),
+      /*.next=*/&second_wave_options,
+      /*.command_buffer_mode=*/IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT,
+      /*.queue_affinity=*/IREE_HAL_QUEUE_AFFINITY_ANY,
+      /*.fixed_buffers=*/&twice_fixed_source,
+      /*.fixed_buffer_count=*/1,
+      /*.flags=*/
+      LOOMC_CMD_IREE_HAL_PROGRAM_FLAG_RETAIN_RECORDED_OPERATIONS,
+  };
+  loomc_cmd_iree_hal_program_t* raw_second_wave_hal_program = nullptr;
+  LOOMC_ASSERT_OK(loomc_cmd_iree_hal_program_create(
+      hal_package.get(), twice_command_program.get(),
+      &second_wave_program_options, loomc_allocator_system(),
+      &raw_second_wave_hal_program));
+  CmdHalProgramPtr second_wave_hal_program(raw_second_wave_hal_program);
+
+  ASSERT_EQ(loomc_cmd_iree_hal_program_recorded_operation_count(
+                first_wave_hal_program.get()),
+            1u);
+  ExpectRecordedOperation(first_wave_hal_program.get(), 0, 0, 0,
+                          LOOMC_CMD_IREE_HAL_RECORDED_OPERATION_PHASE_PAYLOAD);
+
+  ASSERT_EQ(loomc_cmd_iree_hal_program_recorded_operation_count(
+                second_wave_hal_program.get()),
+            2u);
+  ExpectRecordedOperation(second_wave_hal_program.get(), 0, 1, 1,
+                          LOOMC_CMD_IREE_HAL_RECORDED_OPERATION_PHASE_BARRIER);
+  ExpectRecordedOperation(second_wave_hal_program.get(), 1, 1, 1,
+                          LOOMC_CMD_IREE_HAL_RECORDED_OPERATION_PHASE_PAYLOAD);
 
   loomc_launch_config_module_t* launch_module =
       loomc_cmd_iree_hal_program_launch_module(once_hal_program.get());
@@ -743,11 +863,18 @@ TEST(CommandAmdgpuLifecycleTest,
       /*launch_count=*/
       {launch_count_buffer.get(), 0, launch_count_byte_length},
   };
+  const iree_hal_buffer_binding_table_t twice_binding_table = {
+      /*.count=*/IREE_ARRAYSIZE(twice_bindings),
+      /*.bindings=*/twice_bindings,
+  };
   IREE_ASSERT_OK(SubmitAndWait(
       device.get(),
-      loomc_cmd_iree_hal_program_command_buffer(twice_hal_program.get()),
-      {/*.count=*/IREE_ARRAYSIZE(twice_bindings),
-       /*.bindings=*/twice_bindings}));
+      loomc_cmd_iree_hal_program_command_buffer(first_wave_hal_program.get()),
+      twice_binding_table));
+  IREE_ASSERT_OK(SubmitAndWait(
+      device.get(),
+      loomc_cmd_iree_hal_program_command_buffer(second_wave_hal_program.get()),
+      twice_binding_table));
 
   std::array<uint32_t, kElementCount> once_actual_values = {};
   IREE_ASSERT_OK(iree_hal_device_transfer_d2h(

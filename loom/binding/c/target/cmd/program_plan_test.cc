@@ -629,6 +629,22 @@ command.program.def public target(@command_target) @add_eleven_once(%element_cou
   EXPECT_EQ(command_info.launch_counts.required_byte_length,
             sizeof(loomc_dimension3_t));
 
+  loomc_cmd_program_barrier_wave_iterator_t wave_iterator = {};
+  LOOMC_ASSERT_OK(loomc_cmd_program_barrier_wave_iterator_initialize(
+      eleven_command_program.get(), &wave_iterator));
+  loomc_cmd_program_barrier_wave_t wave = {};
+  bool has_wave = false;
+  LOOMC_ASSERT_OK(loomc_cmd_program_barrier_wave_iterator_next(
+      &wave_iterator, &wave, &has_wave));
+  ASSERT_TRUE(has_wave);
+  EXPECT_EQ(wave.ordinal, 0u);
+  EXPECT_EQ(wave.commands.first_command, 0u);
+  EXPECT_EQ(wave.commands.command_count, 1u);
+  LOOMC_ASSERT_OK(loomc_cmd_program_barrier_wave_iterator_next(
+      &wave_iterator, &wave, &has_wave));
+  EXPECT_FALSE(has_wave);
+  EXPECT_EQ(wave.commands.command_count, 0u);
+
   loomc_cmd_program_parameter_root_info_t parameter_root_info = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PARAMETER_ROOT_INFO,
       /*.structure_size=*/sizeof(parameter_root_info),

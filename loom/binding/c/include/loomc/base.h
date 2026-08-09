@@ -337,6 +337,9 @@ typedef enum loomc_structure_type_e {
 
   /// `loomc_cmd_iree_hal_recorded_operation_info_t`.
   LOOMC_STRUCTURE_TYPE_CMD_IREE_HAL_RECORDED_OPERATION_INFO = 57,
+
+  /// `loomc_cmd_program_range_options_t`.
+  LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_RANGE_OPTIONS = 58,
 } loomc_structure_type_t;
 
 /// One loose string option entry.

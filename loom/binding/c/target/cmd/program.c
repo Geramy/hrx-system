@@ -186,6 +186,69 @@ loomc_status_t loomc_cmd_program_info(
   return loomc_ok_status();
 }
 
+loomc_status_t loomc_cmd_program_barrier_wave_iterator_initialize(
+    const loomc_cmd_program_t* command_program,
+    loomc_cmd_program_barrier_wave_iterator_t* out_iterator) {
+  if (out_iterator == NULL) {
+    return loomc_make_status(LOOMC_STATUS_INVALID_ARGUMENT,
+                             "out_iterator must not be NULL");
+  }
+  *out_iterator = (loomc_cmd_program_barrier_wave_iterator_t){0};
+  if (command_program == NULL) {
+    return loomc_make_status(LOOMC_STATUS_INVALID_ARGUMENT,
+                             "command_program must not be NULL");
+  }
+  *out_iterator = (loomc_cmd_program_barrier_wave_iterator_t){
+      .command_program = command_program,
+  };
+  return loomc_ok_status();
+}
+
+loomc_status_t loomc_cmd_program_barrier_wave_iterator_next(
+    loomc_cmd_program_barrier_wave_iterator_t* iterator,
+    loomc_cmd_program_barrier_wave_t* out_wave, bool* out_has_wave) {
+  if (iterator == NULL || out_wave == NULL || out_has_wave == NULL) {
+    return loomc_make_status(
+        LOOMC_STATUS_INVALID_ARGUMENT,
+        "iterator, out_wave, and out_has_wave must not be NULL");
+  }
+  *out_wave = (loomc_cmd_program_barrier_wave_t){0};
+  *out_has_wave = false;
+  if (iterator->command_program == NULL) {
+    return loomc_make_status(LOOMC_STATUS_FAILED_PRECONDITION,
+                             "barrier-wave iterator is not initialized");
+  }
+
+  const loom_cmd_program_t* parsed = &iterator->command_program->parsed;
+  if (iterator->next_command > parsed->commands.count) {
+    return loomc_make_status(LOOMC_STATUS_OUT_OF_RANGE,
+                             "barrier-wave iterator cursor is out of range");
+  }
+  loom_cmd_program_barrier_wave_iterator_t internal_iterator = {
+      .program = parsed,
+      .next_command = iterator->next_command,
+      .barrier_wave_ordinal = iterator->barrier_wave_ordinal,
+  };
+  loom_cmd_program_barrier_wave_t internal_wave = {0};
+  if (!loom_cmd_program_barrier_wave_iterator_next(&internal_iterator,
+                                                   &internal_wave)) {
+    return loomc_ok_status();
+  }
+
+  iterator->next_command = internal_iterator.next_command;
+  iterator->barrier_wave_ordinal = internal_iterator.barrier_wave_ordinal;
+  *out_wave = (loomc_cmd_program_barrier_wave_t){
+      .ordinal = internal_wave.ordinal,
+      .commands =
+          {
+              .first_command = internal_wave.commands.first_command,
+              .command_count = internal_wave.commands.command_count,
+          },
+  };
+  *out_has_wave = true;
+  return loomc_ok_status();
+}
+
 loomc_status_t loomc_cmd_program_parameter_root_info(
     const loomc_cmd_program_t* command_program, loomc_host_size_t index,
     loomc_cmd_program_parameter_root_info_t* out_info) {

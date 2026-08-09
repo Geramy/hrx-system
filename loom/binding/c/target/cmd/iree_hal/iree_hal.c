@@ -85,6 +85,17 @@ static bool loomc_cmd_iree_hal_iree_string_view_is_well_formed(
   return value.data != NULL || value.size == 0;
 }
 
+typedef struct loomc_cmd_iree_hal_option_prefix_t {
+  // Structure type identifying the option descriptor.
+  loomc_structure_type_t type;
+
+  // Size of the complete option descriptor in bytes.
+  loomc_host_size_t structure_size;
+
+  // Next descriptor in the unordered option chain.
+  const void* next;
+} loomc_cmd_iree_hal_option_prefix_t;
+
 static loomc_status_t loomc_cmd_iree_hal_validate_package_options(
     const loomc_cmd_iree_hal_package_options_t* options) {
   if (options == NULL) {
@@ -130,8 +141,10 @@ static loomc_status_t loomc_cmd_iree_hal_validate_package_options(
   return loomc_ok_status();
 }
 
-static loomc_status_t loomc_cmd_iree_hal_validate_program_options(
-    const loomc_cmd_iree_hal_program_options_t* options) {
+static loomc_status_t loomc_cmd_iree_hal_resolve_program_options(
+    const loomc_cmd_iree_hal_program_options_t* options,
+    const loomc_cmd_program_range_options_t** out_range_options) {
+  *out_range_options = NULL;
   if (options == NULL) return loomc_ok_status();
   if (options->type != LOOMC_STRUCTURE_TYPE_NONE &&
       options->type != LOOMC_STRUCTURE_TYPE_CMD_IREE_HAL_PROGRAM_OPTIONS) {
@@ -145,11 +158,6 @@ static loomc_status_t loomc_cmd_iree_hal_validate_program_options(
         LOOMC_STATUS_INVALID_ARGUMENT,
         "IREE HAL program options structure_size is too small");
   }
-  if (options->next != NULL) {
-    return loomc_make_status(
-        LOOMC_STATUS_UNIMPLEMENTED,
-        "IREE HAL program option extensions are not supported");
-  }
   const loomc_cmd_iree_hal_program_flags_t known_flags =
       LOOMC_CMD_IREE_HAL_PROGRAM_FLAG_RETAIN_RECORDED_OPERATIONS;
   if ((options->flags & ~known_flags) != 0) {
@@ -162,7 +170,77 @@ static loomc_status_t loomc_cmd_iree_hal_validate_program_options(
         "IREE HAL program fixed_buffer_count is non-zero but fixed_buffers is "
         "NULL");
   }
+
+  const void* next = options->next;
+  while (next != NULL) {
+    const loomc_cmd_iree_hal_option_prefix_t* prefix =
+        (const loomc_cmd_iree_hal_option_prefix_t*)next;
+    switch (prefix->type) {
+      case LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_RANGE_OPTIONS: {
+        if (*out_range_options != NULL) {
+          return loomc_make_status(
+              LOOMC_STATUS_INVALID_ARGUMENT,
+              "IREE HAL program option chain contains duplicate command "
+              "ranges");
+        }
+        const loomc_cmd_program_range_options_t* range_options =
+            (const loomc_cmd_program_range_options_t*)next;
+        if (range_options->structure_size != 0 &&
+            range_options->structure_size < sizeof(*range_options)) {
+          return loomc_make_status(
+              LOOMC_STATUS_INVALID_ARGUMENT,
+              "IREE HAL program range options structure_size is too small");
+        }
+        *out_range_options = range_options;
+        next = range_options->next;
+        break;
+      }
+      case LOOMC_STRUCTURE_TYPE_NONE:
+        return loomc_make_status(
+            LOOMC_STATUS_INVALID_ARGUMENT,
+            "IREE HAL program option extension is missing a structure type");
+      default:
+        return loomc_make_status(
+            LOOMC_STATUS_UNIMPLEMENTED,
+            "IREE HAL program option extension type is not supported");
+    }
+  }
   return loomc_ok_status();
+}
+
+static loomc_status_t loomc_cmd_iree_hal_resolve_program_range(
+    const loom_cmd_program_t* program,
+    const loomc_cmd_program_range_options_t* range_options,
+    loom_cmd_program_command_range_t* out_range,
+    uint32_t* out_barrier_wave_ordinal) {
+  const loom_cmd_program_command_range_t requested = {
+      .first_command = range_options->command_range.first_command,
+      .command_count = range_options->command_range.command_count,
+  };
+  if (requested.first_command > program->commands.count ||
+      requested.command_count >
+          program->commands.count - requested.first_command) {
+    return loomc_make_status(LOOMC_STATUS_OUT_OF_RANGE,
+                             "IREE HAL program command range is out of range");
+  }
+  *out_range = requested;
+  *out_barrier_wave_ordinal = 0;
+  if (requested.command_count == 0) return loomc_ok_status();
+
+  loom_cmd_program_barrier_wave_iterator_t iterator;
+  loom_cmd_program_barrier_wave_iterator_initialize(program, &iterator);
+  loom_cmd_program_barrier_wave_t wave;
+  while (loom_cmd_program_barrier_wave_iterator_next(&iterator, &wave)) {
+    const uint32_t end_command =
+        wave.commands.first_command + wave.commands.command_count;
+    if (requested.first_command < end_command) {
+      *out_barrier_wave_ordinal = wave.ordinal;
+      return loomc_ok_status();
+    }
+  }
+  IREE_ASSERT_UNREACHABLE(
+      "validated command range must be contained in a barrier wave");
+  IREE_BUILTIN_UNREACHABLE();
 }
 
 static loomc_status_t loomc_cmd_iree_hal_find_artifact(
@@ -446,7 +524,9 @@ loomc_status_t loomc_cmd_iree_hal_program_create(
     return loomc_make_status(LOOMC_STATUS_INVALID_ARGUMENT,
                              "package and command_program must not be NULL");
   }
-  LOOMC_RETURN_IF_ERROR(loomc_cmd_iree_hal_validate_program_options(options));
+  const loomc_cmd_program_range_options_t* range_options = NULL;
+  LOOMC_RETURN_IF_ERROR(
+      loomc_cmd_iree_hal_resolve_program_options(options, &range_options));
   if (loomc_cmd_program_package(command_program) != package->program) {
     return loomc_make_status(
         LOOMC_STATUS_INVALID_ARGUMENT,
@@ -489,6 +569,14 @@ loomc_status_t loomc_cmd_iree_hal_program_create(
   const loomc_cmd_iree_hal_program_options_t default_options = {0};
   if (options == NULL) options = &default_options;
   const loom_cmd_program_t* parsed = loomc_cmd_program_parsed(command_program);
+  loom_cmd_program_command_range_t materialization_range =
+      loom_cmd_program_command_range_all(parsed);
+  uint32_t first_barrier_wave_ordinal = 0;
+  if (range_options != NULL) {
+    LOOMC_RETURN_IF_ERROR(loomc_cmd_iree_hal_resolve_program_range(
+        parsed, range_options, &materialization_range,
+        &first_barrier_wave_ordinal));
+  }
   const loom_cmd_iree_hal_inputs_t inputs = {
       .binding_count = parsed->requirements.rebindable_binding_count,
       .fixed_buffer_count = options->fixed_buffer_count,
@@ -512,7 +600,7 @@ loomc_status_t loomc_cmd_iree_hal_program_create(
   if (loomc_status_is_ok(status) &&
       (options->flags &
        LOOMC_CMD_IREE_HAL_PROGRAM_FLAG_RETAIN_RECORDED_OPERATIONS) != 0) {
-    const loomc_host_size_t command_count = parsed->commands.count;
+    const loomc_host_size_t command_count = materialization_range.command_count;
     if (command_count >
         LOOMC_HOST_SIZE_MAX / 2 / sizeof(*hal_program->recorded_operations)) {
       status = loomc_make_status(
@@ -533,10 +621,19 @@ loomc_status_t loomc_cmd_iree_hal_program_create(
 
   iree_hal_command_buffer_t* command_buffer = NULL;
   if (loomc_status_is_ok(status)) {
-    status = loomc_status_from_iree(loom_cmd_iree_hal_materialize_program(
-        parsed, &inputs, package->device, options->command_buffer_mode,
-        options->queue_affinity, operation_map_ptr, &command_buffer,
-        iree_allocator_from_loomc(allocator)));
+    if (range_options != NULL) {
+      status =
+          loomc_status_from_iree(loom_cmd_iree_hal_materialize_program_range(
+              parsed, materialization_range, first_barrier_wave_ordinal,
+              &inputs, package->device, options->command_buffer_mode,
+              options->queue_affinity, operation_map_ptr, &command_buffer,
+              iree_allocator_from_loomc(allocator)));
+    } else {
+      status = loomc_status_from_iree(loom_cmd_iree_hal_materialize_program(
+          parsed, &inputs, package->device, options->command_buffer_mode,
+          options->queue_affinity, operation_map_ptr, &command_buffer,
+          iree_allocator_from_loomc(allocator)));
+    }
   }
   if (loomc_status_is_ok(status)) {
     iree_atomic_ref_count_init(&hal_program->ref_count);
