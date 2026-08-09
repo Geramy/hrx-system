@@ -8,26 +8,21 @@
 // pattern on device from the owned runtime's compact context-base control word.
 amdgpu.target<gfx11-generic> @qwen_attention_metadata_gfx11_wave64 {subgroup_size = 64}
 
-config.decl @qwen3_moe.workload.token_capacity : %value: index where [range(%value, 1, 2048)]
-
 config.decl @qwen.attention.metadata_context_capacity : %value: index where [range(%value, 1, 32768)]
 
 kernel.def target(@qwen_attention_metadata_gfx11_wave64) export("qwen_attention_metadata") @qwen_attention_metadata(%token_count: index, %context_capacity: index) {
-  %token_capacity = config.get @qwen3_moe.workload.token_capacity : index
   %configured_context_capacity = config.get @qwen.attention.metadata_context_capacity : index
   %c1 = index.constant 1 : index
   %c255 = index.constant 255 : index
   %c256 = index.constant 256 : index
   %padded_context_capacity = index.add %configured_context_capacity, %c255 : index
   %key_workgroup_count = index.div %padded_context_capacity, %c256 : index
-  kernel.launch.config workgroups(%key_workgroup_count, %token_capacity, %c1) workgroup_size(%c256, %c1, %c1) : index
-} launch(%token_count: index, %context_capacity: index, %control: buffer, %positions: buffer, %key_cache_indices: buffer, %value_cache_indices: buffer, %attention_mask: buffer) {
-  %token_capacity = config.get @qwen3_moe.workload.token_capacity : index
+  kernel.launch.config workgroups(%key_workgroup_count, %token_count, %c1) workgroup_size(%c256, %c1, %c1) : index
+} launch(%token_count: index, %context_capacity: index, %control: buffer, %positions: buffer, %key_cache_indices: buffer, %value_cache_indices: buffer, %attention_mask: buffer) where [range(%token_count, 1, 2048)] {
   %configured_context_capacity = config.get @qwen.attention.metadata_context_capacity : index
-  %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048), eq(%token_count, %token_capacity)] : index
   %bounded_context_capacity = index.assume %context_capacity [range(%context_capacity, 1, 32768), le(%context_capacity, %configured_context_capacity)] : index
   %query0 = kernel.workgroup.id<y> : index
-  %query, %launch_token_count = index.assume %query0, %bounded_token_count [lt(%query0, %bounded_token_count)] : index, index
+  %query, %launch_token_count = index.assume %query0, %token_count [lt(%query0, %token_count)] : index, index
   %key_workgroup = kernel.workgroup.id<x> : index
   %workitem = kernel.workitem.id<x> : index
   %c0 = index.constant 0 : index
@@ -43,7 +38,7 @@ kernel.def target(@qwen_attention_metadata_gfx11_wave64) export("qwen_attention_
   %context_base_i32 = scalar.assume %context_base_raw [range(%context_base_raw, 0, 32767)] : i32
   %context_base0 = index.cast %context_base_i32 : i32 to index
   %context_base = index.assume %context_base0 [range(%context_base0, 0, 32767)] : index
-  %visible_count0 = index.add %context_base, %bounded_token_count : index
+  %visible_count0 = index.add %context_base, %token_count : index
   %visible_count, %launch_context_capacity = index.assume %visible_count0, %bounded_context_capacity [le(%visible_count0, %bounded_context_capacity)] : index, index
   %key_workgroup_base = index.mul %key_workgroup, %c256 : index
   %key0 = index.add %key_workgroup_base, %workitem : index
