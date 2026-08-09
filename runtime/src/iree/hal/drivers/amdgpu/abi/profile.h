@@ -21,6 +21,12 @@ enum iree_hal_amdgpu_profile_dispatch_event_flag_bits_t {
   IREE_HAL_AMDGPU_PROFILE_DISPATCH_EVENT_FLAG_COMMAND_BUFFER = 1u << 0,
   // Workgroup counts were loaded from device memory before dispatch.
   IREE_HAL_AMDGPU_PROFILE_DISPATCH_EVENT_FLAG_INDIRECT_PARAMETERS = 1u << 1,
+  // Explicit dispatch execution progress flags are valid.
+  IREE_HAL_AMDGPU_PROFILE_DISPATCH_EVENT_FLAG_PROGRESS_VALID = 1u << 2,
+  // Dispatch execution started.
+  IREE_HAL_AMDGPU_PROFILE_DISPATCH_EVENT_FLAG_EXECUTION_STARTED = 1u << 3,
+  // Dispatch execution completed.
+  IREE_HAL_AMDGPU_PROFILE_DISPATCH_EVENT_FLAG_EXECUTION_COMPLETED = 1u << 4,
 };
 
 // Device-written dispatch execution event.

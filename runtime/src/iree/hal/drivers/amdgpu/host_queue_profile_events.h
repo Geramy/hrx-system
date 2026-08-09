@@ -82,6 +82,17 @@ iree_hal_amdgpu_host_queue_profiling_completion_signal(
   return (iree_hsa_signal_t){/*.handle=*/(uint64_t)(uintptr_t)signal};
 }
 
+// Returns the release scope required for a profiled dispatch completion.
+// Host-readable progress snapshots require system visibility; ordinary
+// device-local timestamp harvesting remains agent-scoped.
+static inline iree_hsa_fence_scope_t
+iree_hal_amdgpu_host_queue_profiling_completion_release_scope(
+    const iree_hal_amdgpu_host_queue_t* queue) {
+  return queue->profiling.retain_partial_dispatch_events
+             ? IREE_HSA_FENCE_SCOPE_SYSTEM
+             : IREE_HSA_FENCE_SCOPE_AGENT;
+}
+
 // Reserves queue-local dispatch profile event records.
 //
 // Caller must hold submission_mutex. If the ring cannot hold |event_count|
@@ -98,6 +109,22 @@ iree_status_t iree_hal_amdgpu_host_queue_reserve_profile_dispatch_events(
 // Caller must hold submission_mutex. Only valid for the most recent successful
 // reservation on a path that is failing before AQL publication.
 void iree_hal_amdgpu_host_queue_cancel_profile_dispatch_events(
+    iree_hal_amdgpu_host_queue_t* queue,
+    iree_hal_amdgpu_profile_dispatch_event_reservation_t reservation);
+
+// Snapshots one host-readable raw completion signal into its paired event and
+// assigns explicit progress flags. The queue must have stopped executing work
+// that can write |completion_signal| before this is called.
+void iree_hal_amdgpu_profile_dispatch_event_snapshot_progress(
+    const iree_amd_signal_t* completion_signal,
+    iree_hal_amdgpu_profile_dispatch_event_t* event);
+
+// Snapshots and retires dispatch events from one failed queue submission.
+//
+// The reservation must use host-readable completion signals and remain owned
+// by the notification reclaim entry. Caller must be on the queue completion
+// drain path after the queue has reported failure.
+void iree_hal_amdgpu_host_queue_snapshot_failed_profile_dispatch_events(
     iree_hal_amdgpu_host_queue_t* queue,
     iree_hal_amdgpu_profile_dispatch_event_reservation_t reservation);
 

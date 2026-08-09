@@ -661,6 +661,17 @@ enum iree_hal_profile_dispatch_event_flag_bits_t {
 
   // Workgroup counts were loaded from device memory before dispatch.
   IREE_HAL_PROFILE_DISPATCH_EVENT_FLAG_INDIRECT_PARAMETERS = 1u << 1,
+
+  // Explicit dispatch progress flags are valid. Without this flag, emitted
+  // dispatch events represent completed work as in earlier schema versions.
+  IREE_HAL_PROFILE_DISPATCH_EVENT_FLAG_PROGRESS_VALID = 1u << 2,
+
+  // Dispatch execution started. Valid only with PROGRESS_VALID.
+  IREE_HAL_PROFILE_DISPATCH_EVENT_FLAG_EXECUTION_STARTED = 1u << 3,
+
+  // Dispatch execution completed. Valid only with PROGRESS_VALID and implies
+  // EXECUTION_STARTED.
+  IREE_HAL_PROFILE_DISPATCH_EVENT_FLAG_EXECUTION_COMPLETED = 1u << 4,
 };
 
 // Device-timestamped dispatch execution event.

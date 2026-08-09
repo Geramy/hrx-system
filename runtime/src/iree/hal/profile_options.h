@@ -101,6 +101,14 @@ enum iree_hal_device_profiling_flag_bits_t {
   // host-execution, and executable metadata records. No statistics-specific
   // profile chunks are emitted.
   IREE_HAL_DEVICE_PROFILING_FLAG_LIGHTWEIGHT_STATISTICS = 1u << 0,
+
+  // Retains dispatch events for work that was submitted but did not complete
+  // when the producer reports an execution failure. Retained events carry
+  // IREE_HAL_PROFILE_DISPATCH_EVENT_FLAG_PROGRESS_VALID and explicit started
+  // and completed state flags. This requires
+  // IREE_HAL_DEVICE_PROFILING_DATA_DISPATCH_EVENTS and may be rejected by
+  // producers that cannot observe partial dispatch progress.
+  IREE_HAL_DEVICE_PROFILING_FLAG_RETAIN_PARTIAL_DISPATCH_EVENTS = 1u << 1,
 };
 
 // Bitfield specifying profile capture filter predicates.
@@ -303,6 +311,15 @@ iree_hal_device_profiling_options_requests_lightweight_statistics(
     const iree_hal_device_profiling_options_t* options) {
   return iree_all_bits_set(
       options->flags, IREE_HAL_DEVICE_PROFILING_FLAG_LIGHTWEIGHT_STATISTICS);
+}
+
+// Returns true when |options| requests partial dispatch events after failure.
+static inline bool
+iree_hal_device_profiling_options_requests_partial_dispatch_events(
+    const iree_hal_device_profiling_options_t* options) {
+  return iree_all_bits_set(
+      options->flags,
+      IREE_HAL_DEVICE_PROFILING_FLAG_RETAIN_PARTIAL_DISPATCH_EVENTS);
 }
 
 // Returns true when |options| requests operation-attributed counter samples.

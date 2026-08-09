@@ -1066,6 +1066,75 @@ TEST_F(HostQueueCommandBufferProfilingTest,
 }
 
 TEST_F(HostQueueCommandBufferProfilingTest,
+       PartialDispatchCapturePreservesSuccessfulExecution) {
+  iree_hal_amdgpu_logical_device_options_t options;
+  iree_hal_amdgpu_logical_device_options_initialize(&options);
+  options.command_buffer_mode = IREE_HAL_AMDGPU_COMMAND_BUFFER_MODE_AQL;
+  options.preallocate_pools = 0;
+
+  TestLogicalDevice test_device;
+  IREE_ASSERT_OK(
+      test_device.Initialize(&options, &libhsa_, &topology_, host_allocator_));
+
+  CommandBufferProfileSink sink = {};
+  CommandBufferProfileSinkInitialize(&sink);
+  iree_hal_device_profiling_options_t profiling_options = {0};
+  profiling_options.flags =
+      IREE_HAL_DEVICE_PROFILING_FLAG_RETAIN_PARTIAL_DISPATCH_EVENTS;
+  profiling_options.data_families =
+      IREE_HAL_DEVICE_PROFILING_DATA_DISPATCH_EVENTS;
+  profiling_options.sink = CommandBufferProfileSinkAsBase(&sink);
+  DeviceProfilingScope profiling(test_device.base_device());
+  IREE_ASSERT_OK(profiling.Begin(&profiling_options));
+
+  iree_hal_amdgpu_host_queue_t* queue = test_device.first_host_queue();
+  ASSERT_NE(nullptr, queue);
+  EXPECT_TRUE(queue->profiling.retain_partial_dispatch_events);
+  EXPECT_TRUE(queue->profiling.completion_signals_host_readable);
+
+  TwoDispatchCommandBuffer fixture;
+  IREE_ASSERT_OK(CreateTwoDispatchCommandBuffer(&test_device, &fixture));
+
+  Ref<iree_hal_semaphore_t> signal;
+  IREE_ASSERT_OK(CreateSemaphore(test_device.base_device(), signal.out()));
+  iree_hal_semaphore_t* signal_ptr = signal.get();
+  uint64_t signal_value = 1;
+  const iree_hal_semaphore_list_t signal_list = {
+      /*count=*/1,
+      /*semaphores=*/&signal_ptr,
+      /*payload_values=*/&signal_value,
+  };
+  IREE_ASSERT_OK(iree_hal_device_queue_execute(
+      test_device.base_device(), IREE_HAL_QUEUE_AFFINITY_ANY,
+      iree_hal_semaphore_list_empty(), signal_list, fixture.command_buffer,
+      iree_hal_buffer_binding_table_empty(), IREE_HAL_EXECUTE_FLAG_NONE));
+  IREE_ASSERT_OK(iree_hal_semaphore_wait(signal, signal_value,
+                                         iree_infinite_timeout(),
+                                         IREE_ASYNC_WAIT_FLAG_NONE));
+
+  IREE_ASSERT_OK(iree_hal_device_profiling_flush(test_device.base_device()));
+  IREE_ASSERT_OK(profiling.End());
+
+  ExpectTwoDispatchOutputs(fixture);
+  ASSERT_EQ(2u, sink.dispatch_events.size());
+  for (const iree_hal_profile_dispatch_event_t& event : sink.dispatch_events) {
+    EXPECT_EQ(IREE_HAL_PROFILE_DISPATCH_EVENT_FLAG_COMMAND_BUFFER, event.flags);
+    EXPECT_NE(0u, event.start_tick);
+    EXPECT_NE(0u, event.end_tick);
+  }
+
+  CommandBufferProfileSink normal_sink = {};
+  CommandBufferProfileSinkInitialize(&normal_sink);
+  DeviceProfilingScope normal_profiling(test_device.base_device());
+  IREE_ASSERT_OK(
+      normal_profiling.Begin(IREE_HAL_DEVICE_PROFILING_DATA_DISPATCH_EVENTS,
+                             CommandBufferProfileSinkAsBase(&normal_sink)));
+  EXPECT_FALSE(queue->profiling.retain_partial_dispatch_events);
+  EXPECT_FALSE(queue->profiling.completion_signals_host_readable);
+  IREE_ASSERT_OK(normal_profiling.End());
+}
+
+TEST_F(HostQueueCommandBufferProfilingTest,
        CommandBufferExecuteEmitsQueueDeviceSpansAndRelationships) {
   iree_hal_amdgpu_logical_device_options_t options;
   iree_hal_amdgpu_logical_device_options_initialize(&options);

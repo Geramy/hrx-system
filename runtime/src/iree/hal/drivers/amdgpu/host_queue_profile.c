@@ -46,6 +46,9 @@ void iree_hal_amdgpu_host_queue_set_profile_flags(
       flags, IREE_HAL_AMDGPU_HOST_QUEUE_PROFILE_FLAG_QUEUE_DEVICE_EVENTS);
   queue->profiling.dispatch_profiling_enabled = iree_any_bit_set(
       flags, IREE_HAL_AMDGPU_HOST_QUEUE_PROFILE_FLAG_DISPATCHES);
+  queue->profiling.retain_partial_dispatch_events = iree_any_bit_set(
+      flags,
+      IREE_HAL_AMDGPU_HOST_QUEUE_PROFILE_FLAG_RETAIN_PARTIAL_DISPATCH_EVENTS);
 }
 
 iree_hal_amdgpu_profile_queue_device_event_t*

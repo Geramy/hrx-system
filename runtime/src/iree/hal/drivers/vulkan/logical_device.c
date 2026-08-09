@@ -1495,6 +1495,12 @@ static iree_status_t iree_hal_vulkan_logical_device_profiling_begin(
   }
   const iree_hal_device_profiling_options_t resolved_options =
       iree_hal_vulkan_logical_device_resolve_profiling_options(options);
+  if (iree_hal_device_profiling_options_requests_partial_dispatch_events(
+          &resolved_options)) {
+    return iree_make_status(
+        IREE_STATUS_UNIMPLEMENTED,
+        "Vulkan profiling cannot retain partial dispatch events");
+  }
   const iree_hal_device_profiling_data_families_t supported_data_families =
       IREE_HAL_DEVICE_PROFILING_DATA_QUEUE_EVENTS |
       IREE_HAL_DEVICE_PROFILING_DATA_DISPATCH_EVENTS |

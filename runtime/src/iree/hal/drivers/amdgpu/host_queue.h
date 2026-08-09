@@ -351,6 +351,10 @@ typedef struct iree_hal_amdgpu_host_queue_t {
     uint32_t queue_device_events_enabled : 1;
     // True when selected dispatches may receive profile packet augmentation.
     uint32_t dispatch_profiling_enabled : 1;
+    // True when failed submissions retain host-readable dispatch progress.
+    uint32_t retain_partial_dispatch_events : 1;
+    // True when |completion_signals| uses host-readable event memory.
+    uint32_t completion_signals_host_readable : 1;
     // Memory pools and publication policy for queue-local profiling storage.
     iree_hal_amdgpu_host_queue_profiling_memory_t memory;
     // Serializes profile event ring mutation and flush.

@@ -788,8 +788,10 @@ static iree_status_t iree_hal_amdgpu_host_queue_submit_dispatch_packets(
           ? iree_hal_amdgpu_aql_packet_control_barrier(
                 iree_hal_amdgpu_host_queue_max_fence_scope(
                     dispatch_acquire_scope, resolution->inline_acquire_scope),
-                profile_dispatch_packet ? IREE_HSA_FENCE_SCOPE_AGENT
-                                        : IREE_HSA_FENCE_SCOPE_NONE)
+                profile_dispatch_packet
+                    ? iree_hal_amdgpu_host_queue_profiling_completion_release_scope(
+                          queue)
+                    : IREE_HSA_FENCE_SCOPE_NONE)
           : iree_hal_amdgpu_aql_packet_control_barrier(
                 iree_hal_amdgpu_host_queue_max_fence_scope(
                     dispatch_acquire_scope, resolution->inline_acquire_scope),

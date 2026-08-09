@@ -826,6 +826,27 @@ iree_cc_test(
     iree-hal-drivers-amdgpu-tests
 )
 endif()
+
+if(IREE_HAL_DRIVER_AMDGPU)
+iree_cc_test(
+  NAME
+    host_queue_profile_events_test
+  SRCS
+    "host_queue_profile_events_test.cc"
+  DEPS
+    ::amdgpu
+    ::headers
+    iree::base
+    iree::testing::gtest
+    iree::testing::gtest_main
+  LABELS
+    "iree-build-requirement=runtime.hal.amdgpu"
+    "iree-run-requirement=runtime.resource.amd_gpu"
+    "runtime-resource=amd-gpu"
+  RESOURCE_GROUP
+    iree-hal-drivers-amdgpu-tests
+)
+endif()
 endif()
 if(IREE_HAL_DRIVER_AMDGPU)
 iree_amdgpu_hal_cts_testdata(

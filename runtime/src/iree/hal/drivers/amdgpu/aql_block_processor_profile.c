@@ -905,6 +905,7 @@ static bool iree_hal_amdgpu_aql_block_processor_dispatch_profile_has(
 
 static iree_hal_amdgpu_host_queue_command_buffer_packet_flags_t
 iree_hal_amdgpu_aql_block_processor_profile_packet_flags(
+    const iree_hal_amdgpu_aql_block_processor_profile_t* processor,
     iree_hal_amdgpu_aql_block_processor_dispatch_profile_t profile) {
   iree_hal_amdgpu_host_queue_command_buffer_packet_flags_t flags =
       IREE_HAL_AMDGPU_HOST_QUEUE_COMMAND_BUFFER_PACKET_FLAG_NONE;
@@ -913,7 +914,9 @@ iree_hal_amdgpu_aql_block_processor_profile_packet_flags(
           IREE_HAL_AMDGPU_AQL_BLOCK_PROCESSOR_DISPATCH_PROFILE_FLAG_DISPATCH_PACKET)) {
     flags =
         iree_hal_amdgpu_host_queue_command_buffer_packet_flags_set_fence_scopes(
-            flags, IREE_HSA_FENCE_SCOPE_NONE, IREE_HSA_FENCE_SCOPE_AGENT);
+            flags, IREE_HSA_FENCE_SCOPE_NONE,
+            iree_hal_amdgpu_host_queue_profiling_completion_release_scope(
+                processor->queue));
   }
   if (iree_hal_amdgpu_aql_block_processor_dispatch_profile_has(
           profile,
@@ -1110,7 +1113,8 @@ iree_hal_amdgpu_aql_block_processor_profile_emit_direct_dispatch(
           /*dispatch_packet_ordinal=*/state->packets.recorded);
   const iree_hal_amdgpu_host_queue_command_buffer_packet_flags_t
       profile_packet_flags =
-          iree_hal_amdgpu_aql_block_processor_profile_packet_flags(profile);
+          iree_hal_amdgpu_aql_block_processor_profile_packet_flags(processor,
+                                                                   profile);
   const iree_hal_amdgpu_aql_block_processor_dispatch_profile_flags_t
       profile_flags = profile.flags;
 
@@ -1198,7 +1202,8 @@ iree_hal_amdgpu_aql_block_processor_profile_emit_indirect_dispatch(
           /*dispatch_packet_ordinal=*/state->packets.recorded + 1u);
   const iree_hal_amdgpu_host_queue_command_buffer_packet_flags_t
       profile_packet_flags =
-          iree_hal_amdgpu_aql_block_processor_profile_packet_flags(profile);
+          iree_hal_amdgpu_aql_block_processor_profile_packet_flags(processor,
+                                                                   profile);
   const iree_hal_amdgpu_aql_block_processor_profile_packet_flag_pair_t
       command_packet_flags =
           iree_hal_amdgpu_aql_block_processor_profile_split_command_packet_flags(

@@ -22,6 +22,9 @@ enum iree_hal_amdgpu_host_queue_profile_flag_bits_t {
   IREE_HAL_AMDGPU_HOST_QUEUE_PROFILE_FLAG_QUEUE_DEVICE_EVENTS = 1u << 1,
   // Per-dispatch profiling augmentation may be applied to selected dispatches.
   IREE_HAL_AMDGPU_HOST_QUEUE_PROFILE_FLAG_DISPATCHES = 1u << 2,
+  // Dispatch progress must remain host-readable after queue failure.
+  IREE_HAL_AMDGPU_HOST_QUEUE_PROFILE_FLAG_RETAIN_PARTIAL_DISPATCH_EVENTS = 1u
+                                                                           << 3,
 };
 
 // Additional details for one queue operation profile event.

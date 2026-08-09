@@ -629,7 +629,8 @@ IREE_API_EXPORT iree_status_t iree_hal_device_profiling_begin(
   IREE_ASSERT_ARGUMENT(options);
 
   const iree_hal_device_profiling_flags_t supported_flags =
-      IREE_HAL_DEVICE_PROFILING_FLAG_LIGHTWEIGHT_STATISTICS;
+      IREE_HAL_DEVICE_PROFILING_FLAG_LIGHTWEIGHT_STATISTICS |
+      IREE_HAL_DEVICE_PROFILING_FLAG_RETAIN_PARTIAL_DISPATCH_EVENTS;
   if (iree_any_bit_set(options->flags, ~supported_flags)) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "unsupported profile option flags 0x%x",
@@ -707,6 +708,15 @@ IREE_API_EXPORT iree_status_t iree_hal_device_profiling_begin(
         }
       }
     }
+  }
+
+  if (iree_hal_device_profiling_options_requests_partial_dispatch_events(
+          options) &&
+      !iree_hal_device_profiling_options_requests_data(
+          options, IREE_HAL_DEVICE_PROFILING_DATA_DISPATCH_EVENTS)) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "retaining partial dispatch events requires dispatch event data");
   }
 
   const bool data_requested =

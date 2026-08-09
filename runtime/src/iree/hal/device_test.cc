@@ -251,6 +251,14 @@ TEST_F(DeviceProfilingTest, BeginRejectsUnsupportedProfileFlags) {
                         Begin(&profiling_options));
 }
 
+TEST_F(DeviceProfilingTest, BeginPartialDispatchEventsRequiresDispatchData) {
+  iree_hal_device_profiling_options_t profiling_options = {0};
+  profiling_options.flags =
+      IREE_HAL_DEVICE_PROFILING_FLAG_RETAIN_PARTIAL_DISPATCH_EVENTS;
+  IREE_EXPECT_STATUS_IS(IREE_STATUS_INVALID_ARGUMENT,
+                        Begin(&profiling_options));
+}
+
 TEST_F(DeviceProfilingTest, BeginRejectsUnsupportedCaptureFilterFlags) {
   iree_hal_device_profiling_options_t profiling_options = {0};
   profiling_options.capture_filter.flags = 1u << 31;

@@ -653,6 +653,18 @@ iree_runtime_cc_test(
     ],
 )
 
+iree_runtime_cc_test(
+    name = "host_queue_profile_events_test",
+    srcs = ["host_queue_profile_events_test.cc"],
+    deps = [
+        ":amdgpu",
+        ":headers",
+        "//runtime/src/iree/base",
+        "//runtime/src/iree/testing:gtest",
+        "//runtime/src/iree/testing:gtest_main",
+    ],
+)
+
 iree_cmake_extra_content(
     content = "endif()",
     inline = True,

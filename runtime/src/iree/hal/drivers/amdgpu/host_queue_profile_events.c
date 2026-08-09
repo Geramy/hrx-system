@@ -28,6 +28,18 @@ static_assert(
     (uint32_t)IREE_HAL_AMDGPU_PROFILE_DISPATCH_EVENT_FLAG_INDIRECT_PARAMETERS ==
         (uint32_t)IREE_HAL_PROFILE_DISPATCH_EVENT_FLAG_INDIRECT_PARAMETERS,
     "AMDGPU indirect dispatch event flag must match HAL");
+static_assert(
+    (uint32_t)IREE_HAL_AMDGPU_PROFILE_DISPATCH_EVENT_FLAG_PROGRESS_VALID ==
+        (uint32_t)IREE_HAL_PROFILE_DISPATCH_EVENT_FLAG_PROGRESS_VALID,
+    "AMDGPU dispatch progress-valid flag must match HAL");
+static_assert(
+    (uint32_t)IREE_HAL_AMDGPU_PROFILE_DISPATCH_EVENT_FLAG_EXECUTION_STARTED ==
+        (uint32_t)IREE_HAL_PROFILE_DISPATCH_EVENT_FLAG_EXECUTION_STARTED,
+    "AMDGPU dispatch-started flag must match HAL");
+static_assert(
+    (uint32_t)IREE_HAL_AMDGPU_PROFILE_DISPATCH_EVENT_FLAG_EXECUTION_COMPLETED ==
+        (uint32_t)IREE_HAL_PROFILE_DISPATCH_EVENT_FLAG_EXECUTION_COMPLETED,
+    "AMDGPU dispatch-completed flag must match HAL");
 
 // Maximum dispatch events buffered per queue between profiling flushes.
 #define IREE_HAL_AMDGPU_HOST_QUEUE_PROFILE_DISPATCH_EVENT_CAPACITY (64 * 1024)
@@ -39,12 +51,20 @@ static_assert(
 static iree_status_t
 iree_hal_amdgpu_host_queue_require_profiling_signal_memory_pool(
     iree_hal_amdgpu_host_queue_t* queue) {
-  if (queue->profiling.memory.signal_memory_pool.handle) {
+  const hsa_amd_memory_pool_t memory_pool =
+      queue->profiling.retain_partial_dispatch_events
+          ? queue->profiling.memory.event_memory_pool
+          : queue->profiling.memory.signal_memory_pool;
+  if (memory_pool.handle) {
     return iree_ok_status();
   }
   return iree_make_status(
       IREE_STATUS_UNAVAILABLE,
-      "AMDGPU HSA timestamp profiling requires device-local signal memory");
+      queue->profiling.retain_partial_dispatch_events
+          ? "AMDGPU partial dispatch events require host-readable, "
+            "device-visible signal memory"
+          : "AMDGPU HSA timestamp profiling requires device-local signal "
+            "memory");
 }
 
 static iree_status_t
@@ -129,10 +149,22 @@ iree_hal_amdgpu_host_queue_allocate_profiling_completion_signals(
               IREE_STRUCT_FIELD(signal_count, iree_amd_signal_t, NULL)));
   IREE_TRACE_ZONE_APPEND_VALUE_I64(z0, signal_storage_size);
 
+  const bool host_readable =
+      queue->profiling.retain_partial_dispatch_events != 0;
+  const hsa_amd_memory_pool_t memory_pool =
+      host_readable ? queue->profiling.memory.event_memory_pool
+                    : queue->profiling.memory.signal_memory_pool;
   iree_amd_signal_t* signals = NULL;
   iree_status_t status = iree_hsa_amd_memory_pool_allocate(
-      IREE_LIBHSA(queue->libhsa), queue->profiling.memory.signal_memory_pool,
-      signal_storage_size, HSA_AMD_MEMORY_POOL_STANDARD_FLAG, (void**)&signals);
+      IREE_LIBHSA(queue->libhsa), memory_pool, signal_storage_size,
+      HSA_AMD_MEMORY_POOL_STANDARD_FLAG, (void**)&signals);
+  if (iree_status_is_ok(status) && host_readable &&
+      queue->profiling.memory.event_access_agent_count != 0) {
+    status = iree_hsa_amd_agents_allow_access(
+        IREE_LIBHSA(queue->libhsa),
+        (uint32_t)queue->profiling.memory.event_access_agent_count,
+        queue->profiling.memory.event_access_agents, /*flags=*/NULL, signals);
+  }
   if (iree_status_is_ok(status) &&
       IREE_UNLIKELY((uintptr_t)signals % iree_alignof(iree_amd_signal_t) !=
                     0)) {
@@ -147,6 +179,7 @@ iree_hal_amdgpu_host_queue_allocate_profiling_completion_signals(
   }
   if (iree_status_is_ok(status)) {
     queue->profiling.completion_signals = signals;
+    queue->profiling.completion_signals_host_readable = host_readable ? 1 : 0;
   } else if (signals) {
     status = iree_status_join(status, iree_hsa_amd_memory_pool_free(
                                           IREE_LIBHSA(queue->libhsa), signals));
@@ -158,7 +191,13 @@ iree_hal_amdgpu_host_queue_allocate_profiling_completion_signals(
 
 iree_status_t iree_hal_amdgpu_host_queue_ensure_profiling_completion_signals(
     iree_hal_amdgpu_host_queue_t* queue) {
-  if (queue->profiling.completion_signals) return iree_ok_status();
+  const bool host_readable =
+      queue->profiling.retain_partial_dispatch_events != 0;
+  if (queue->profiling.completion_signals &&
+      queue->profiling.completion_signals_host_readable == host_readable) {
+    return iree_ok_status();
+  }
+  iree_hal_amdgpu_host_queue_deallocate_profiling_completion_signals(queue);
   IREE_RETURN_IF_ERROR(
       iree_hal_amdgpu_host_queue_require_profiling_signal_memory_pool(queue));
   return iree_hal_amdgpu_host_queue_allocate_profiling_completion_signals(
@@ -173,6 +212,7 @@ void iree_hal_amdgpu_host_queue_deallocate_profiling_completion_signals(
   iree_hal_amdgpu_hsa_cleanup_assert_success(iree_hsa_amd_memory_pool_free_raw(
       queue->libhsa, queue->profiling.completion_signals));
   queue->profiling.completion_signals = NULL;
+  queue->profiling.completion_signals_host_readable = 0;
 
   IREE_TRACE_ZONE_END(z0);
 }
@@ -361,6 +401,60 @@ void iree_hal_amdgpu_host_queue_cancel_profile_dispatch_events(
   queue->profiling.dispatch_events.write_position =
       reservation.first_event_position;
   queue->profiling.dispatch_events.next_event_id -= reservation.event_count;
+  iree_slim_mutex_unlock(&queue->profiling.event_mutex);
+}
+
+void iree_hal_amdgpu_profile_dispatch_event_snapshot_progress(
+    const iree_amd_signal_t* completion_signal,
+    iree_hal_amdgpu_profile_dispatch_event_t* event) {
+  const iree_hsa_signal_value_t signal_value =
+      iree_atomic_load((const iree_atomic_int64_t*)&completion_signal->value,
+                       iree_memory_order_acquire);
+  const iree_amdgpu_device_tick_t signal_start_tick =
+      *(const volatile iree_amdgpu_device_tick_t*)&completion_signal->start_ts;
+  const iree_amdgpu_device_tick_t signal_end_tick =
+      *(const volatile iree_amdgpu_device_tick_t*)&completion_signal->end_ts;
+
+  if (event->start_tick == 0) event->start_tick = signal_start_tick;
+  if (event->end_tick == 0) event->end_tick = signal_end_tick;
+
+  event->flags &=
+      ~(IREE_HAL_AMDGPU_PROFILE_DISPATCH_EVENT_FLAG_PROGRESS_VALID |
+        IREE_HAL_AMDGPU_PROFILE_DISPATCH_EVENT_FLAG_EXECUTION_STARTED |
+        IREE_HAL_AMDGPU_PROFILE_DISPATCH_EVENT_FLAG_EXECUTION_COMPLETED);
+  event->flags |= IREE_HAL_AMDGPU_PROFILE_DISPATCH_EVENT_FLAG_PROGRESS_VALID;
+  const bool completed = event->end_tick != 0 || signal_value <= 0;
+  const bool started = completed || event->start_tick != 0;
+  if (started) {
+    event->flags |=
+        IREE_HAL_AMDGPU_PROFILE_DISPATCH_EVENT_FLAG_EXECUTION_STARTED;
+  }
+  if (completed) {
+    event->flags |=
+        IREE_HAL_AMDGPU_PROFILE_DISPATCH_EVENT_FLAG_EXECUTION_COMPLETED;
+  }
+}
+
+void iree_hal_amdgpu_host_queue_snapshot_failed_profile_dispatch_events(
+    iree_hal_amdgpu_host_queue_t* queue,
+    iree_hal_amdgpu_profile_dispatch_event_reservation_t reservation) {
+  if (reservation.event_count == 0) return;
+
+  iree_slim_mutex_lock(&queue->profiling.event_mutex);
+  for (uint32_t i = 0; i < reservation.event_count; ++i) {
+    const uint64_t event_position = reservation.first_event_position + i;
+    const iree_amd_signal_t* completion_signal =
+        iree_hal_amdgpu_host_queue_profiling_completion_signal_ptr(
+            queue, event_position);
+    iree_hal_amdgpu_profile_dispatch_event_t* event =
+        iree_hal_amdgpu_host_queue_profile_dispatch_event_at(queue,
+                                                             event_position);
+    iree_hal_amdgpu_profile_dispatch_event_snapshot_progress(completion_signal,
+                                                             event);
+  }
+  queue->profiling.dispatch_events.ready_position =
+      iree_max(queue->profiling.dispatch_events.ready_position,
+               reservation.first_event_position + reservation.event_count);
   iree_slim_mutex_unlock(&queue->profiling.event_mutex);
 }
 
