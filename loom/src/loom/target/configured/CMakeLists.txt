@@ -59,6 +59,7 @@ loom_cc_library(
   DEPS
     iree::base
     iree::base::threading
+    loom::target::arch::cmd::provider
     loom::target::provider
     ${_provider_platform_deps}
   PUBLIC

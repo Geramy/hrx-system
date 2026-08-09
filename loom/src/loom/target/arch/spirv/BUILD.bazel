@@ -39,7 +39,10 @@ exports_files(
 
 _SPIRV_CHECK_PACKAGE_VISIBILITY = ["//loom/src/loom/target/arch/spirv/check:__pkg__"]
 
-_SPIRV_C_API_VISIBILITY = ["//loom/binding/c/target/spirv:__pkg__"]
+_SPIRV_C_API_VISIBILITY = [
+    "//loom/binding/c/target/all:__pkg__",
+    "//loom/binding/c/target/spirv:__pkg__",
+]
 
 _SPIRV_EMIT_VISIBILITY = ["//loom/src/loom/target/emit/spirv:__pkg__"]
 

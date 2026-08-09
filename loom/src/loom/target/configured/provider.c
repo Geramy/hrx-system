@@ -7,6 +7,7 @@
 #include "loom/target/configured/provider.h"
 
 #include "iree/base/threading/call_once.h"
+#include "loom/target/arch/cmd/provider.h"
 
 #ifndef LOOM_CONFIG_TARGET_HAVE_AMDGPU
 #define LOOM_CONFIG_TARGET_HAVE_AMDGPU 0
@@ -27,11 +28,6 @@
 #define LOOM_CONFIG_TARGET_HAVE_X86 0
 #endif  // LOOM_CONFIG_TARGET_HAVE_X86
 
-#define LOOM_CONFIG_TARGET_HAVE_ANY_PROVIDER                            \
-  (LOOM_CONFIG_TARGET_HAVE_AMDGPU || LOOM_CONFIG_TARGET_HAVE_IREE_VM || \
-   LOOM_CONFIG_TARGET_HAVE_LLVMIR || LOOM_CONFIG_TARGET_HAVE_SPIRV ||   \
-   LOOM_CONFIG_TARGET_HAVE_WASM || LOOM_CONFIG_TARGET_HAVE_X86)
-
 #if LOOM_CONFIG_TARGET_HAVE_AMDGPU
 #include "loom/target/arch/amdgpu/provider.h"
 #endif  // LOOM_CONFIG_TARGET_HAVE_AMDGPU
@@ -51,8 +47,8 @@
 #include "loom/target/arch/x86/provider.h"
 #endif  // LOOM_CONFIG_TARGET_HAVE_X86
 
-#if LOOM_CONFIG_TARGET_HAVE_ANY_PROVIDER
 static const loom_target_provider_t* const kConfiguredTargetProviders[] = {
+    &loom_cmd_target_provider,
 #if LOOM_CONFIG_TARGET_HAVE_AMDGPU
     &loom_amdgpu_target_provider,
 #endif  // LOOM_CONFIG_TARGET_HAVE_AMDGPU
@@ -72,16 +68,10 @@ static const loom_target_provider_t* const kConfiguredTargetProviders[] = {
     &loom_x86_target_provider,
 #endif  // LOOM_CONFIG_TARGET_HAVE_X86
 };
-#endif  // LOOM_CONFIG_TARGET_HAVE_ANY_PROVIDER
 
 static const loom_target_provider_set_t kConfiguredTargetProviderSet = {
-#if LOOM_CONFIG_TARGET_HAVE_ANY_PROVIDER
     .providers = kConfiguredTargetProviders,
     .provider_count = IREE_ARRAYSIZE(kConfiguredTargetProviders),
-#else
-    .providers = NULL,
-    .provider_count = 0,
-#endif  // LOOM_CONFIG_TARGET_HAVE_ANY_PROVIDER
 };
 
 static loom_target_environment_t configured_target_environment;

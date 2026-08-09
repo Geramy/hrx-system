@@ -99,6 +99,10 @@ LOOMC_TARGET_CMD_PUBLIC_HDRS = [
     "include/loomc/target/cmd/program.h",
 ]
 
+LOOMC_TARGET_ALL_PUBLIC_HDRS = [
+    "include/loomc/target/all.h",
+]
+
 _TARGET_EXTENSION_VISIBILITY = [
     "//loom/binding/c/target:__subpackages__",
 ]
@@ -108,6 +112,7 @@ _LOOMC_FULL_COMPATIBLE_WITH = loom_config_compatible_with([
 ])
 
 exports_files(
+    LOOMC_TARGET_ALL_PUBLIC_HDRS +
     LOOMC_TARGET_AMDGPU_IREE_HAL_PUBLIC_HDRS +
     LOOMC_TARGET_AMDGPU_PUBLIC_HDRS +
     LOOMC_TARGET_CMD_PUBLIC_HDRS +

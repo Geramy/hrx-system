@@ -18,6 +18,7 @@ loom_cc_library(
     "${PROJECT_SOURCE_DIR}/loom/binding/c/include/loomc/target/amdgpu/base.h"
     "${PROJECT_SOURCE_DIR}/loom/binding/c/include/loomc/target/amdgpu/emit.h"
     "${PROJECT_SOURCE_DIR}/loom/binding/c/include/loomc/target/amdgpu/profile.h"
+    "provider.h"
   SRCS
     "amdgpu.c"
   DEPS
@@ -33,6 +34,7 @@ loom_cc_library(
     loom::target::arch::amdgpu::provider
     loom::target::arch::amdgpu::records::target_records
     loom::target::arch::amdgpu::target_info
+    loom::target::arch::cmd::provider
     loom::target::emit::native::amdgpu::hal_kernel_library
     loom::target::provider
     loom::target::types

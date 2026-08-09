@@ -25,7 +25,11 @@ extern "C" {
 /// AMDGPU HSA code object artifact format.
 #define LOOMC_ARTIFACT_FORMAT_AMDGPU_HSACO "amdgpu-hsaco"
 
-/// Creates a target environment containing the AMDGPU target package.
+/// Creates a target environment containing command and AMDGPU target support.
+///
+/// This leaf product includes the portable command representation, AMDGPU
+/// target profiles and lowering, and HSACO emission. It does not link unrelated
+/// hardware target families.
 ///
 /// @param allocator Host allocator used for target-environment storage.
 /// @param out_target_environment Receives one retained target environment on

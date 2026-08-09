@@ -26,6 +26,7 @@ _IREEVM_EMIT_VISIBILITY = ["//loom/src/loom/target/emit/ireevm:__pkg__"]
 _IREEVM_EXECUTION_VISIBILITY = ["//loom/src/loom/tooling/execution/ireevm:__pkg__"]
 
 _IREEVM_PROVIDER_VISIBILITY = [
+    "//loom/binding/c/target/all:__pkg__",
     "//loom/src/loom/target/all:__pkg__",
     "//loom/src/loom/target/configured:__pkg__",
 ] + _IREEVM_CHECK_PACKAGE_VISIBILITY + _IREEVM_EMIT_VISIBILITY + _IREEVM_EXECUTION_VISIBILITY

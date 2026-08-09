@@ -30,6 +30,7 @@ loom_cc_library(
     ],
     hdrs = [
         "profile_rows.h",
+        "provider.h",
         "//loom/binding/c:include/loomc/target/spirv.h",
         "//loom/binding/c:include/loomc/target/spirv/base.h",
         "//loom/binding/c:include/loomc/target/spirv/emit.h",
@@ -40,7 +41,9 @@ loom_cc_library(
     deps = [
         "//loom/binding/c:loomc",
         "//loom/src/loom/error:error_defs",
+        "//loom/src/loom/target:provider",
         "//loom/src/loom/target:types",
+        "//loom/src/loom/target/arch/cmd:provider",
         "//loom/src/loom/target/arch/spirv:cooperative_properties",
         "//loom/src/loom/target/arch/spirv:features",
         "//loom/src/loom/target/arch/spirv:profile",

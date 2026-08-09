@@ -21,6 +21,7 @@ loom_cc_library(
     "llvmir.c"
   DEPS
     loom::binding::c::loomc
+    loom::target::arch::cmd::provider
     loom::target::arch::llvmir::provider
     loom::target::emit::llvmir::artifact_emitter
   ALWAYSLINK

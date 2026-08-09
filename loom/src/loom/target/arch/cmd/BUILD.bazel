@@ -54,8 +54,10 @@ loom_cc_library(
     srcs = ["provider.c"],
     hdrs = ["provider.h"],
     visibility = [
+        "//loom/binding/c/target:__subpackages__",
         "//loom/src/loom/target/all:__pkg__",
         "//loom/src/loom/target/arch/cmd/check:__pkg__",
+        "//loom/src/loom/target/configured:__pkg__",
     ],
     deps = [
         "//loom/src/loom/target:provider",

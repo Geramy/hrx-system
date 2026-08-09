@@ -27,7 +27,11 @@ extern "C" {
 /// LLVM bitcode artifact format.
 #define LOOMC_ARTIFACT_FORMAT_LLVMIR_BITCODE "llvmir-bitcode"
 
-/// Creates a target environment containing the LLVMIR target package.
+/// Creates a target environment containing command and LLVMIR target support.
+///
+/// This leaf product includes the portable command representation, LLVMIR
+/// target lowering, and LLVMIR text and bitcode emission. It does not link
+/// unrelated target families.
 ///
 /// @param allocator Host allocator used for target-environment storage.
 /// @param out_target_environment Receives one retained target environment on

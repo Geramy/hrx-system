@@ -34,6 +34,23 @@ loom_cc_library(
   PUBLIC
 )
 
+if(LOOM_TARGET_ARCH_AMDGPU AND LOOM_EMIT_AMDGPU AND LOOM_TARGET_ARCH_SPIRV AND LOOM_EMIT_SPIRV)
+loom_cc_test(
+  NAME
+    all_test
+  SRCS
+    "all_test.cc"
+  DEPS
+    iree::testing::gtest
+    iree::testing::gtest_main
+    loom::binding::c::loomc
+    loom::binding::c::target::all
+    loom::binding::c::target::amdgpu
+    loom::binding::c::target::spirv
+    loom::binding::c::test::test_util
+)
+endif()
+
 if(LOOM_TARGET_ARCH_SPIRV AND LOOM_EMIT_SPIRV)
 loom_cc_test(
   NAME

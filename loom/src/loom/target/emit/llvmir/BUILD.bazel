@@ -21,6 +21,7 @@ package(
 )
 
 _LLVMIR_ARTIFACT_EMITTER_VISIBILITY = [
+    "//loom/binding/c/target/all:__pkg__",
     "//loom/binding/c/target/llvmir:__pkg__",
     "//loom/src/loom/tools/loom-compile:__pkg__",
 ]

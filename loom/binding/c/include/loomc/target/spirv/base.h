@@ -25,7 +25,11 @@ extern "C" {
 /// SPIR-V binary artifact format.
 #define LOOMC_ARTIFACT_FORMAT_SPIRV "spirv"
 
-/// Creates a target environment containing the SPIR-V target package.
+/// Creates a target environment containing command and SPIR-V target support.
+///
+/// This leaf product includes the portable command representation, SPIR-V
+/// target profiles and lowering, and SPIR-V binary emission. It does not link
+/// unrelated hardware target families.
 ///
 /// @param allocator Host allocator used for target-environment storage.
 /// @param out_target_environment Receives one retained target environment on

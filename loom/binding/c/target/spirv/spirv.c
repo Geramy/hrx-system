@@ -4,9 +4,11 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+#include "loom/target/arch/cmd/provider.h"
 #include "loom/target/arch/spirv/provider.h"
 #include "loom/target/emit/spirv/module_emitter.h"
 #include "loomc/target/spirv/base.h"
+#include "provider.h"
 #include "target.h"
 
 static void loomc_spirv_emit_artifact_release(void* storage,
@@ -55,7 +57,7 @@ static const loom_target_emitter_t* const kLoomcSpirvEmitters[] = {
     &loomc_spirv_emitter,
 };
 
-static const loom_target_provider_t loomc_spirv_emit_target_provider = {
+const loom_target_provider_t loomc_spirv_artifact_emitter_provider = {
     .emitter_list =
         {
             .values = kLoomcSpirvEmitters,
@@ -64,8 +66,9 @@ static const loom_target_provider_t loomc_spirv_emit_target_provider = {
 };
 
 static const loom_target_provider_t* const kLoomcSpirvTargetProviders[] = {
+    &loom_cmd_target_provider,
     &loom_spirv_target_provider,
-    &loomc_spirv_emit_target_provider,
+    &loomc_spirv_artifact_emitter_provider,
 };
 
 static const loom_target_provider_set_t loomc_spirv_target_provider_set = {

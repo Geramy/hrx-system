@@ -32,6 +32,7 @@ _X86_NATIVE_VISIBILITY = ["//loom/src/loom/target/emit/native/x86:__pkg__"]
 _X86_RECORDS_VISIBILITY = ["//loom/src/loom/target/arch/x86/records:__pkg__"]
 
 _X86_PROVIDER_VISIBILITY = [
+    "//loom/binding/c/target/all:__pkg__",
     "//loom/src/loom/target/all:__pkg__",
     "//loom/src/loom/target/configured:__pkg__",
 ] + _X86_CHECK_PACKAGE_VISIBILITY

@@ -25,6 +25,7 @@ loom_cc_library(
     name = "amdgpu",
     srcs = ["amdgpu.c"],
     hdrs = [
+        "provider.h",
         "//loom/binding/c:include/loomc/target/amdgpu.h",
         "//loom/binding/c:include/loomc/target/amdgpu/base.h",
         "//loom/binding/c:include/loomc/target/amdgpu/emit.h",
@@ -46,6 +47,7 @@ loom_cc_library(
         "//loom/src/loom/target/arch/amdgpu:target_info",
         "//loom/src/loom/target/arch/amdgpu/ops",
         "//loom/src/loom/target/arch/amdgpu/records:target_records",
+        "//loom/src/loom/target/arch/cmd:provider",
         "//loom/src/loom/target/emit/native/amdgpu:hal_kernel_library",
         "//runtime/src/iree/base",
     ],

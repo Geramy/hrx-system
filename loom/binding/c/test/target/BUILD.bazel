@@ -30,6 +30,11 @@ LOOMC_TARGET_AMDGPU_COMPATIBLE_WITH = loom_config_compatible_with([
     "//loom/config/target:amdgpu_artifacts",
 ])
 
+LOOMC_TARGET_ALL_COMPATIBLE_WITH = loom_config_compatible_with([
+    "//loom/config/target:amdgpu_artifacts",
+    "//loom/config/target:spirv_artifacts",
+])
+
 loom_cc_library(
     name = "iree_hal_execution_test_util",
     testonly = True,
@@ -47,6 +52,21 @@ loom_cc_library(
         "//runtime/src/iree/hal",
         "//runtime/src/iree/hal/drivers",
         "//runtime/src/iree/testing:gtest",
+    ],
+)
+
+loom_cc_test(
+    name = "all_test",
+    srcs = ["all_test.cc"],
+    target_compatible_with = LOOMC_TARGET_ALL_COMPATIBLE_WITH,
+    deps = [
+        "//loom/binding/c:loomc",
+        "//loom/binding/c/target/all",
+        "//loom/binding/c/target/amdgpu",
+        "//loom/binding/c/target/spirv",
+        "//loom/binding/c/test:test_util",
+        "//runtime/src/iree/testing:gtest",
+        "//runtime/src/iree/testing:gtest_main",
     ],
 )
 

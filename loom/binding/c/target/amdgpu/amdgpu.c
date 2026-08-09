@@ -14,8 +14,10 @@
 #include "loom/target/arch/amdgpu/provider.h"
 #include "loom/target/arch/amdgpu/records/target_records.h"
 #include "loom/target/arch/amdgpu/target_info.h"
+#include "loom/target/arch/cmd/provider.h"
 #include "loom/target/emit/native/amdgpu/hal_kernel_library.h"
 #include "loomc/iree.h"
+#include "provider.h"
 #include "target.h"
 
 static void loomc_amdgpu_target_profile_deinitialize(
@@ -339,7 +341,7 @@ static const loom_target_emitter_t* const kLoomcAmdgpuEmitters[] = {
     &loomc_amdgpu_hsaco_emitter,
 };
 
-static const loom_target_provider_t loomc_amdgpu_emit_target_provider = {
+const loom_target_provider_t loomc_amdgpu_artifact_emitter_provider = {
     .emitter_list =
         {
             .values = kLoomcAmdgpuEmitters,
@@ -348,8 +350,9 @@ static const loom_target_provider_t loomc_amdgpu_emit_target_provider = {
 };
 
 static const loom_target_provider_t* const kLoomcAmdgpuTargetProviders[] = {
+    &loom_cmd_target_provider,
     &loom_amdgpu_target_provider,
-    &loomc_amdgpu_emit_target_provider,
+    &loomc_amdgpu_artifact_emitter_provider,
 };
 
 static const loom_target_provider_set_t loomc_amdgpu_target_provider_set = {
