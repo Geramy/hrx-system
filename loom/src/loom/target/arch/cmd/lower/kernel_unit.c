@@ -273,6 +273,8 @@ static iree_status_t loom_cmd_kernel_unit_materialize_exact_arguments(
         loom_module_copy_value_name(module, argument, replacement));
     IREE_RETURN_IF_ERROR(
         loom_module_replace_value_type_uses(module, argument, replacement));
+    IREE_RETURN_IF_ERROR(loom_region_replace_attribute_value_references(
+        module, loom_func_like_body(kernel), argument, replacement));
     // Keep function-contract predicates on the formal argument. Moving their
     // references to a body-local constant would make the serialized function
     // metadata depend on a value that is not in scope until its body is read.

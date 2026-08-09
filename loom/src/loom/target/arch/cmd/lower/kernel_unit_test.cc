@@ -321,6 +321,70 @@ command.program.def @prefill(%token_count: index, %column_count: index) launch(%
   EXPECT_EQ(unit.module, nullptr);
 }
 
+TEST_F(CmdKernelUnitTest, RewritesBodyPredicatesUsingExactArguments) {
+  ModulePtr source_module = ParseAndVerify(R"(
+kernel.def @scatter(%token_count: index) {
+  %one = index.constant 1 : index
+  kernel.launch.config workgroups(%token_count, %one, %one) workgroup_size(%one, %one, %one) : index
+} launch(%token_count: index, %row: index, %output: buffer) where [range(%token_count, 1, 1024), range(%row, 0, 1023)] {
+  %bounded_row, %bounded_token_count = index.assume %row, %token_count [lt(%row, %token_count)] : index, index
+  %zero = index.constant 0 : offset
+  %output_view = buffer.view %output[%zero] : buffer -> view<1024xi32, #dense>
+  %value = view.load %output_view[%bounded_row] : view<1024xi32, #dense> -> i32
+  view.store %value, %output_view[%bounded_row] : i32, view<1024xi32, #dense>
+  kernel.return
+}
+
+command.program.def @root(%row: index) launch(%output: buffer) where [range(%row, 0, 1023)] {
+  %token_count = index.constant 512 : index
+  kernel.launch @scatter[%token_count](%token_count, %row, %output) : [index](index, index, buffer)
+  command.return
+}
+)");
+  ASSERT_NE(source_module.get(), nullptr);
+
+  loom_func_like_t source_program = loom_func_like_cast(
+      source_module.get(), FindSymbol(source_module.get(), IREE_SV("root")));
+  loom_op_t* source_launch = FindLaunch(source_program);
+  ASSERT_NE(source_launch, nullptr);
+
+  iree_arena_allocator_t fact_arena;
+  iree_arena_initialize(&block_pool_, &fact_arena);
+  loom_value_fact_table_t source_facts = {};
+  IREE_ASSERT_OK(loom_value_fact_table_initialize(&source_facts, &fact_arena,
+                                                  source_module->values.count));
+  loom_type_registry_configure_fact_context(&source_facts.context);
+  IREE_ASSERT_OK(loom_value_fact_table_compute(
+      &source_facts, source_module.get(), source_program));
+
+  loom_cmd_kernel_unit_t unit = {};
+  IREE_ASSERT_OK(loom_cmd_kernel_unit_materialize(
+      source_module.get(), source_launch, &source_facts, &block_pool_,
+      iree_allocator_system(), &unit));
+  iree_arena_deinitialize(&fact_arena);
+
+  ASSERT_NE(unit.module, nullptr);
+  ASSERT_NE(unit.kernel_op, nullptr);
+  Verify(unit.module);
+  EXPECT_EQ(unit.source_argument_count, 3u);
+  ASSERT_EQ(unit.argument_count, 2u);
+  ASSERT_NE(unit.source_argument_ordinals, nullptr);
+  EXPECT_EQ(unit.source_argument_ordinals[0], 1u);
+  EXPECT_EQ(unit.source_argument_ordinals[1], 2u);
+
+  loom_func_like_t unit_kernel =
+      loom_func_like_cast(unit.module, unit.kernel_op);
+  uint16_t unit_argument_count = 0;
+  const loom_value_id_t* unit_arguments =
+      loom_func_like_arg_ids(unit_kernel, &unit_argument_count);
+  ASSERT_EQ(unit_argument_count, 2u);
+  EXPECT_TRUE(loom_module_value_has_predicate_attribute_uses(
+      unit.module, unit_arguments[0]));
+  EXPECT_EQ(CountOpKind(unit.kernel_op, LOOM_OP_INDEX_ASSUME), 2u);
+
+  loom_cmd_kernel_unit_deinitialize(&unit);
+}
+
 TEST_F(CmdKernelUnitTest, MaterializesTypedViewsAtNativeAbiBoundary) {
   ModulePtr source_module = ParseAndVerify(R"(
 kernel.def @copy(%element_count: index) {
