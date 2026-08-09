@@ -341,9 +341,10 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
       module.get(), loom_func_like_body(source_program_like), &schedule_arena,
       &schedule));
   ASSERT_EQ(schedule.command_count, 4u);
+  const loom_value_fact_table_t source_facts = {};
   loom_cmd_launch_graph_t launch_graph = {};
   IREE_ASSERT_OK(loom_cmd_launch_graph_materialize(
-      module.get(), source_program, &schedule, &block_pool_,
+      module.get(), source_program, &schedule, &source_facts, &block_pool_,
       iree_allocator_system(), &launch_graph));
   ASSERT_EQ(launch_graph.launch_count, 4u);
   ASSERT_EQ(launch_graph.wave_count, 2u);
@@ -642,9 +643,10 @@ command.program.def @residual(%value: index) launch() {
   IREE_ASSERT_OK(loom_cmd_schedule_plan_build(
       module.get(), loom_func_like_body(source_program_like), &schedule_arena,
       &schedule));
+  const loom_value_fact_table_t source_facts = {};
   loom_cmd_launch_graph_t launch_graph = {};
   IREE_ASSERT_OK(loom_cmd_launch_graph_materialize(
-      module.get(), source_program, &schedule, &block_pool_,
+      module.get(), source_program, &schedule, &source_facts, &block_pool_,
       iree_allocator_system(), &launch_graph));
   iree_arena_deinitialize(&schedule_arena);
 

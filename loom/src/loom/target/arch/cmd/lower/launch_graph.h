@@ -15,6 +15,7 @@
 #include "loom/target/arch/cmd/lower/schedule.h"
 #include "loom/target/arch/cmd/program.h"
 #include "loom/target/types.h"
+#include "loom/util/fact_table.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -77,6 +78,8 @@ typedef struct loom_cmd_launch_graph_t {
 // those operands is cloned once, and ordinary canonicalization plus CSE runs
 // across the combined function. Equal residual xyz tuples share one dense host
 // result ordinal. Exact tuples are returned as direct launch metadata.
+// |source_facts| is a borrowed table populated for the source program and each
+// scheduled kernel's launch-config region by the owning program plan.
 //
 // This host slice accepts only workload values derived from command-program
 // specialization arguments and pure scalar operations. Buffer-sourced values
@@ -84,6 +87,7 @@ typedef struct loom_cmd_launch_graph_t {
 iree_status_t loom_cmd_launch_graph_materialize(
     const loom_module_t* source_module, loom_op_t* source_program_op,
     const loom_cmd_schedule_plan_t* schedule,
+    const loom_value_fact_table_t* source_facts,
     iree_arena_block_pool_t* block_pool, iree_allocator_t allocator,
     loom_cmd_launch_graph_t* out_graph);
 

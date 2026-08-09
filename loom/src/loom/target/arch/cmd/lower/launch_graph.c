@@ -18,6 +18,7 @@
 #include "loom/ops/kernel/launch_config.h"
 #include "loom/ops/kernel/ops.h"
 #include "loom/ops/op_defs.h"
+#include "loom/ops/special_values.h"
 #include "loom/ops/type_registry.h"
 #include "loom/pass/value_facts.h"
 #include "loom/rewrite/materialize.h"
@@ -40,6 +41,8 @@ typedef struct loom_cmd_launch_graph_build_t {
   loom_func_like_t source_program;
   // Existing command schedule defining launch order.
   const loom_cmd_schedule_plan_t* schedule;
+  // Borrowed source facts populated by the owning program plan.
+  const loom_value_fact_table_t* source_facts;
   // Owned aggregate host module under construction.
   loom_module_t* module;
   // Aggregate host function under construction.
@@ -201,15 +204,14 @@ static iree_status_t loom_cmd_launch_graph_resolve_program_value(
 }
 
 static iree_status_t loom_cmd_launch_graph_copy_value_name(
-    loom_cmd_launch_graph_build_t* build, loom_value_id_t source_value,
-    loom_value_id_t target_value) {
+    loom_cmd_launch_graph_build_t* build, loom_ir_remap_t* remap,
+    loom_value_id_t source_value, loom_value_id_t target_value) {
   const loom_string_id_t source_name =
       loom_module_value(build->source_module, source_value)->name_id;
   if (source_name == LOOM_STRING_ID_INVALID) return iree_ok_status();
   loom_string_id_t target_name = LOOM_STRING_ID_INVALID;
-  IREE_RETURN_IF_ERROR(
-      loom_ir_remap_string_id(&build->program_remap, source_name,
-                              /*allow_invalid=*/false, &target_name));
+  IREE_RETURN_IF_ERROR(loom_ir_remap_string_id(
+      remap, source_name, /*allow_invalid=*/false, &target_name));
   return loom_module_set_value_name(build->module, target_value, target_name);
 }
 
@@ -354,7 +356,7 @@ static iree_status_t loom_cmd_launch_graph_build_host_function(
     IREE_RETURN_IF_ERROR(loom_module_set_value_type(
         build->module, host_arguments[i], host_type));
     IREE_RETURN_IF_ERROR(loom_cmd_launch_graph_copy_value_name(
-        build, source_arguments[i], host_arguments[i]));
+        build, &build->program_remap, source_arguments[i], host_arguments[i]));
   }
   IREE_RETURN_IF_ERROR(loom_cmd_launch_graph_attach_program_predicates(build));
 
@@ -415,9 +417,47 @@ static iree_status_t loom_cmd_launch_graph_clone_config(
         &config_remap, config_arguments.values[i], target_workload));
   }
 
-  IREE_RETURN_IF_ERROR(loom_ir_clone_block_ops(
-      &build->builder, config_block, &config_remap,
-      &(loom_ir_clone_block_options_t){.omit_terminators = true}));
+  config_op = NULL;
+  loom_block_for_each_op(config_block, config_op) {
+    if (config_op == launch_config) continue;
+    bool materialize_results = config_op->result_count != 0;
+    const loom_value_id_t* source_results = loom_op_const_results(config_op);
+    for (uint16_t i = 0; i < config_op->result_count; ++i) {
+      const loom_value_facts_t facts =
+          loom_value_fact_table_lookup(build->source_facts, source_results[i]);
+      const loom_type_t type =
+          loom_module_value_type(build->source_module, source_results[i]);
+      materialize_results &=
+          loom_value_facts_can_materialize_constant(facts, type);
+    }
+    if (!materialize_results) {
+      loom_op_t* cloned_op = NULL;
+      IREE_RETURN_IF_ERROR(loom_ir_clone_op(&build->builder, config_op,
+                                            &config_remap, &cloned_op));
+      continue;
+    }
+
+    loom_location_id_t target_location = LOOM_LOCATION_UNKNOWN;
+    IREE_RETURN_IF_ERROR(loom_ir_remap_location_id(
+        &config_remap, config_op->location, &target_location));
+    for (uint16_t i = 0; i < config_op->result_count; ++i) {
+      const loom_value_id_t source_result = source_results[i];
+      loom_type_t target_type = {0};
+      IREE_RETURN_IF_ERROR(loom_ir_remap_type(
+          &config_remap,
+          loom_module_value_type(build->source_module, source_result),
+          &target_type));
+      loom_value_id_t target_result = LOOM_VALUE_ID_INVALID;
+      IREE_RETURN_IF_ERROR(loom_constant_build(
+          &build->builder,
+          loom_value_fact_table_lookup(build->source_facts, source_result),
+          target_type, target_location, &target_result));
+      IREE_RETURN_IF_ERROR(
+          loom_ir_remap_map_value(&config_remap, source_result, target_result));
+      IREE_RETURN_IF_ERROR(loom_cmd_launch_graph_copy_value_name(
+          build, &config_remap, source_result, target_result));
+    }
+  }
   for (uint8_t dimension = 0;
        dimension < LOOM_CMD_PROGRAM_LAUNCH_COUNT_DIMENSION_COUNT; ++dimension) {
     const loom_value_id_t source_count =
@@ -634,11 +674,13 @@ static iree_status_t loom_cmd_launch_graph_compact_results(
 iree_status_t loom_cmd_launch_graph_materialize(
     const loom_module_t* source_module, loom_op_t* source_program_op,
     const loom_cmd_schedule_plan_t* schedule,
+    const loom_value_fact_table_t* source_facts,
     iree_arena_block_pool_t* block_pool, iree_allocator_t allocator,
     loom_cmd_launch_graph_t* out_graph) {
   IREE_ASSERT_ARGUMENT(source_module);
   IREE_ASSERT_ARGUMENT(source_program_op);
   IREE_ASSERT_ARGUMENT(schedule);
+  IREE_ASSERT_ARGUMENT(source_facts);
   IREE_ASSERT_ARGUMENT(block_pool);
   IREE_ASSERT_ARGUMENT(out_graph);
   memset(out_graph, 0, sizeof(*out_graph));
@@ -658,6 +700,7 @@ iree_status_t loom_cmd_launch_graph_materialize(
       .source_module = source_module,
       .source_program = loom_func_like_cast(source_module, source_program_op),
       .schedule = schedule,
+      .source_facts = source_facts,
       .module = graph_module,
   };
   IREE_ASSERT(loom_func_like_isa(build.source_program));

@@ -20,10 +20,13 @@
 #include "loom/ir/module.h"
 #include "loom/ops/func/ops.h"
 #include "loom/ops/index/ops.h"
+#include "loom/ops/kernel/ops.h"
 #include "loom/ops/op_registry.h"
+#include "loom/ops/type_registry.h"
 #include "loom/target/arch/cmd/lower/launch_artifact.h"
 #include "loom/testing/diagnostic_matchers.h"
 #include "loom/testing/module_ptr.h"
+#include "loom/util/fact_table.h"
 #include "loom/verify/verify.h"
 
 namespace loom {
@@ -160,10 +163,12 @@ class CmdLaunchGraphTest : public ::testing::Test {
 
 TEST_F(CmdLaunchGraphTest, SharesDynamicTuplesAndElidesDirectTuples) {
   ModulePtr source_module = ParseAndVerify(R"(
+config.def @project.bias = 1 : index
+
 kernel.def @project(%row_count: index) {
-  %one = index.constant 1 : index
-  %row_groups = index.add %row_count, %one : index
-  kernel.launch.config workgroups(%row_groups, %one, %one) workgroup_size(%one, %one, %one) : index
+  %bias = config.get @project.bias : index
+  %row_groups = index.add %row_count, %bias : index
+  kernel.launch.config workgroups(%row_groups, %bias, %bias) workgroup_size(%bias, %bias, %bias) : index
 } launch(%row_count: index, %storage: buffer) where [range(%row_count, 1, 512)] {
   kernel.return
 }
@@ -195,10 +200,25 @@ command.program.def @prefill(%token_count: index) launch(%storage: buffer) where
       source_module.get(), loom_func_like_body(source_program_like),
       &schedule_arena, &schedule));
 
+  iree_arena_allocator_t fact_arena;
+  iree_arena_initialize(&block_pool_, &fact_arena);
+  loom_value_fact_table_t source_facts = {};
+  IREE_ASSERT_OK(loom_value_fact_table_initialize(&source_facts, &fact_arena,
+                                                  source_module->values.count));
+  loom_type_registry_configure_fact_context(&source_facts.context);
+  IREE_ASSERT_OK(loom_value_fact_table_compute(
+      &source_facts, source_module.get(), source_program_like));
+  const loom_func_like_t source_kernel = loom_func_like_cast(
+      source_module.get(), FindSymbol(source_module.get(), IREE_SV("project")));
+  IREE_ASSERT_OK(loom_value_fact_table_compute_region(
+      &source_facts, source_module.get(), source_kernel,
+      loom_kernel_def_config(source_kernel.op), source_kernel.op));
+
   loom_cmd_launch_graph_t graph = {};
   IREE_ASSERT_OK(loom_cmd_launch_graph_materialize(
-      source_module.get(), source_program, &schedule, &block_pool_,
-      iree_allocator_system(), &graph));
+      source_module.get(), source_program, &schedule, &source_facts,
+      &block_pool_, iree_allocator_system(), &graph));
+  iree_arena_deinitialize(&fact_arena);
   iree_arena_deinitialize(&schedule_arena);
 
   ASSERT_NE(graph.module, nullptr);

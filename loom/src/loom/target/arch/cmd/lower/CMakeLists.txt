@@ -65,6 +65,7 @@ loom_cc_library(
     loom::ops::func
     loom::ops::kernel
     loom::ops::op_defs
+    loom::ops::special_values
     loom::ops::type_registry
     loom::pass::value_facts
     loom::rewrite::materialize
@@ -74,6 +75,7 @@ loom_cc_library(
     loom::target::types
     loom::transforms::cleanup::canonicalize
     loom::transforms::cleanup::cse
+    loom::util::fact_table
   PUBLIC
 )
 
@@ -197,6 +199,7 @@ loom_cc_library(
     loom::ir
     loom::link::linker
     loom::ops::command
+    loom::ops::kernel
     loom::ops::op_defs
     loom::ops::type_registry
     loom::util::fact_table
@@ -286,9 +289,12 @@ loom_cc_test(
     loom::ir
     loom::ops::func
     loom::ops::index
+    loom::ops::kernel
     loom::ops::op_registry
+    loom::ops::type_registry
     loom::testing::diagnostic_matchers
     loom::testing::module_ptr
+    loom::util::fact_table
     loom::verify
 )
 

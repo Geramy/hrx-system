@@ -10,6 +10,7 @@
 
 #include "loom/ir/module.h"
 #include "loom/link/linker.h"
+#include "loom/ops/kernel/ops.h"
 #include "loom/ops/op_defs.h"
 #include "loom/ops/type_registry.h"
 #include "loom/target/arch/cmd/lower/lower.h"
@@ -53,6 +54,46 @@ typedef struct loom_cmd_program_root_build_t {
   uint32_t* dependency_unit_indices;
   uint32_t dependency_count;
 } loom_cmd_program_root_build_t;
+
+static iree_status_t loom_cmd_program_plan_compute_kernel_config_facts(
+    const loom_module_t* module, const loom_cmd_program_root_build_t* roots,
+    iree_host_size_t root_count, iree_arena_allocator_t* scratch_arena,
+    loom_value_fact_table_t* facts) {
+  uint8_t* computed_symbols = NULL;
+  if (module->symbols.count != 0) {
+    IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+        scratch_arena, module->symbols.count, sizeof(*computed_symbols),
+        (void**)&computed_symbols));
+    memset(computed_symbols, 0,
+           module->symbols.count * sizeof(*computed_symbols));
+  }
+
+  for (iree_host_size_t root_index = 0; root_index < root_count; ++root_index) {
+    const loom_cmd_schedule_plan_t* schedule = &roots[root_index].schedule;
+    for (iree_host_size_t launch_index = 0;
+         launch_index < schedule->command_count; ++launch_index) {
+      const loom_op_t* launch_op = schedule->commands[launch_index];
+      IREE_ASSERT(loom_kernel_launch_isa(launch_op));
+      const loom_symbol_ref_t callee = loom_kernel_launch_callee(launch_op);
+      IREE_ASSERT(loom_symbol_ref_is_valid(callee));
+      IREE_ASSERT_EQ(callee.module_id, 0u);
+      IREE_ASSERT_LT(callee.symbol_id, module->symbols.count);
+      if (computed_symbols[callee.symbol_id]) continue;
+      computed_symbols[callee.symbol_id] = 1;
+
+      loom_op_t* kernel_op =
+          module->symbols.entries[callee.symbol_id].defining_op;
+      IREE_ASSERT(kernel_op != NULL);
+      IREE_ASSERT(loom_kernel_def_isa(kernel_op));
+      loom_region_t* config_region = loom_kernel_def_config(kernel_op);
+      if (!config_region) continue;
+      IREE_RETURN_IF_ERROR(loom_value_fact_table_compute_region(
+          facts, module, loom_func_like_cast(module, kernel_op), config_region,
+          kernel_op));
+    }
+  }
+  return iree_ok_status();
+}
 
 static iree_status_t loom_cmd_program_plan_allocate_tables(
     iree_host_size_t root_count, iree_host_size_t dependency_capacity,
@@ -358,12 +399,17 @@ iree_status_t loom_cmd_program_plan_prepare(
     status = loom_value_fact_table_compute(&source_facts, preparation_module,
                                            root_builds[i].program);
   }
+  if (iree_status_is_ok(status)) {
+    status = loom_cmd_program_plan_compute_kernel_config_facts(
+        preparation_module, root_builds, source_program_count, &scratch_arena,
+        &source_facts);
+  }
   for (iree_host_size_t i = 0;
        i < source_program_count && iree_status_is_ok(status); ++i) {
     loom_cmd_program_root_build_t* root = &root_builds[i];
     status = loom_cmd_launch_graph_materialize(
-        preparation_module, root->program_op, &root->schedule, block_pool,
-        host_allocator, &root->launch_graph);
+        preparation_module, root->program_op, &root->schedule, &source_facts,
+        block_pool, host_allocator, &root->launch_graph);
   }
 
   if (iree_status_is_ok(status)) {
