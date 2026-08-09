@@ -31,6 +31,8 @@ typedef struct PipelineRunCounts {
   int target_callgraph_specialization = 0;
   // Lexical pass-run ordinal of retained call-graph specialization.
   int target_callgraph_specialization_ordinal = 0;
+  // Number of structured source-loop unrolling pass runs.
+  int unroll_scf_for = 0;
   // Number of source-to-low pass runs.
   int source_to_low = 0;
   // Lexical pass-run ordinal of source-to-low.
@@ -104,6 +106,8 @@ iree_status_t InspectPipelineRun(void* user_data, loom_op_t* op,
     ++counts->target_callgraph_specialization;
     counts->target_callgraph_specialization_ordinal =
         count_context->current_run_ordinal;
+  } else if (iree_string_view_equal(key, IREE_SV("unroll-scf-for"))) {
+    ++counts->unroll_scf_for;
   } else if (iree_string_view_equal(key, IREE_SV("source-to-low"))) {
     ++counts->source_to_low;
     counts->source_to_low_ordinal = count_context->current_run_ordinal;
@@ -187,6 +191,53 @@ class TargetPipelineTest : public ::testing::Test {
   // Target environment used by pipeline construction.
   loom_target_environment_t environment_;
 };
+
+TEST_F(TargetPipelineTest, ExpandedSourceFinalizesAuthoredUnrollLoops) {
+  ModulePtr module = AllocateModule(IREE_SV("pipeline"));
+  const loom_target_pipeline_options_t options = {0};
+
+  loom_op_t* pipeline_op = nullptr;
+  IREE_ASSERT_OK(loom_target_pipeline_build_to_expanded_source(
+      module.get(), IREE_SV("compile"), &options, &environment_,
+      loom_pass_environment_empty(), &pipeline_op));
+
+  const PipelineRunCounts counts = CountPipelineRuns(module.get(), pipeline_op);
+  EXPECT_EQ(counts.unroll_scf_for, 1);
+  EXPECT_EQ(counts.source_to_low, 0);
+}
+
+TEST_F(TargetPipelineTest, SourceLowRetainsPostLegalizationUnroll) {
+  ModulePtr module = AllocateModule(IREE_SV("pipeline"));
+  const loom_target_pipeline_options_t options = {0};
+
+  loom_op_t* pipeline_op = nullptr;
+  IREE_ASSERT_OK(loom_target_pipeline_build_to_source_low(
+      module.get(), IREE_SV("compile"), &options, &environment_,
+      loom_pass_environment_empty(), &pipeline_op));
+
+  const PipelineRunCounts counts = CountPipelineRuns(module.get(), pipeline_op);
+  EXPECT_EQ(counts.unroll_scf_for, 2);
+  EXPECT_EQ(counts.source_to_low, 1);
+}
+
+TEST_F(TargetPipelineTest, StructuredSourcePreservesDynamicUnrollIntent) {
+  ModulePtr module = AllocateModule(IREE_SV("pipeline"));
+  const loom_target_pipeline_options_t options = {
+      /*.source_to_low_max_errors=*/{},
+      /*.source_to_low_legality_diagnostic_flags=*/{},
+      /*.control_flow_lowering=*/
+      LOOM_TARGET_CONTROL_FLOW_LOWERING_STRUCTURED_LOW,
+  };
+
+  loom_op_t* pipeline_op = nullptr;
+  IREE_ASSERT_OK(loom_target_pipeline_build_to_source_low(
+      module.get(), IREE_SV("compile"), &options, &environment_,
+      loom_pass_environment_empty(), &pipeline_op));
+
+  const PipelineRunCounts counts = CountPipelineRuns(module.get(), pipeline_op);
+  EXPECT_EQ(counts.unroll_scf_for, 0);
+  EXPECT_EQ(counts.source_to_low, 1);
+}
 
 TEST_F(TargetPipelineTest, ZeroChecksBuildsNoSanitizerPassSlots) {
   ModulePtr module = AllocateModule(IREE_SV("pipeline"));

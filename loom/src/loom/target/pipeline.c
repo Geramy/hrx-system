@@ -303,6 +303,21 @@ static iree_status_t loom_target_pipeline_build_cleanup_body(
   return loom_target_pipeline_build_cleanup(builder);
 }
 
+static iree_status_t loom_target_pipeline_build_expanded_source_finalization(
+    loom_builder_t* builder, void* user_data) {
+  const loom_target_pipeline_build_context_t* context =
+      (const loom_target_pipeline_build_context_t*)user_data;
+  loom_target_control_flow_lowering_t control_flow_lowering =
+      LOOM_TARGET_CONTROL_FLOW_LOWERING_CFG;
+  IREE_RETURN_IF_ERROR(loom_target_pipeline_resolve_control_flow_lowering(
+      context->options, &control_flow_lowering));
+  if (control_flow_lowering == LOOM_TARGET_CONTROL_FLOW_LOWERING_CFG) {
+    IREE_RETURN_IF_ERROR(
+        loom_target_pipeline_build_run(builder, IREE_SV("unroll-scf-for")));
+  }
+  return loom_target_pipeline_build_cleanup(builder);
+}
+
 static iree_status_t
 loom_target_pipeline_build_source_normalization_before_authoring_expansion(
     loom_builder_t* builder, void* user_data) {
@@ -412,7 +427,10 @@ static iree_status_t loom_target_pipeline_build_expanded_source_body(
       builder,
       loom_target_pipeline_build_source_normalization_before_authoring_expansion,
       user_data, &for_op));
-  return loom_target_pipeline_build_authoring_expansion(builder);
+  IREE_RETURN_IF_ERROR(loom_target_pipeline_build_authoring_expansion(builder));
+  return loom_target_pipeline_build_for_target_functions(
+      builder, loom_target_pipeline_build_expanded_source_finalization,
+      user_data, &for_op);
 }
 
 static iree_status_t loom_target_pipeline_build_source_low_body(

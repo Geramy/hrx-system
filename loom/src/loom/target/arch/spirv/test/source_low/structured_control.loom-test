@@ -31,6 +31,12 @@ pass.pipeline<module> @__loom_check_source_low pipeline {
   specialize-target-callgraph
   for func {
     where target {
+      canonicalize
+      cse
+    }
+  }
+  for func {
+    where target {
       legalize-math
     }
   }
