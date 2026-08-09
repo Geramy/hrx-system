@@ -57,11 +57,15 @@ kernel.decl target(@qwen3_moe_decode_split_gfx11_wave64) export("qwen3_moe_flash
 
 kernel.decl target(@qwen3_moe_dense_gfx11_wave64) export("qwen3_moe_dense_linear_q4k_f16_wmma") @qwen3_moe_dense_linear_q4k_f16_wmma(%token_count: index) launch(%token_count: index, %input: buffer, %weight: buffer, %output: buffer)
 
+kernel.decl target(@qwen3_moe_dense_gfx11_wave64) @qwen3_moe_dense_linear_q4k_f16_wmma_parameterized(%token_count: index, %input_size: index, %output_size: index, %output_accumulation: index) launch(%token_count: index, %input_size: index, %output_size: index, %output_accumulation: index, %input: buffer, %weight: buffer, %output: buffer)
+
 kernel.decl target(@qwen3_moe_dense_gfx11_wave32) export("qwen3_moe_dense_linear_q4k_q8_1_x4") @qwen3_moe_dense_linear_q4k_q8_1_x4(%token_count: index) launch(%token_count: index, %q8_input: buffer, %weight: buffer, %output: buffer)
 
 kernel.decl target(@qwen3_moe_attention_prepare_gfx11_wave32) export("qwen3_moe_dense_linear_q4k_q8_1_x4_next_q8") @qwen3_moe_dense_linear_q4k_q8_1_x4_next_q8(%token_count: index) launch(%token_count: index, %q8_input: buffer, %weight: buffer, %output: buffer, %norm_weight: buffer, %normalized_output: buffer, %completion_counter: buffer, %next_q8_output: buffer)
 
 kernel.decl target(@qwen3_moe_dense_gfx11_wave64) export("qwen3_moe_dense_linear_q6k_f16_wmma") @qwen3_moe_dense_linear_q6k_f16_wmma(%token_count: index) launch(%token_count: index, %input: buffer, %weight: buffer, %output: buffer)
+
+kernel.decl target(@qwen3_moe_dense_gfx11_wave64) @qwen3_moe_dense_linear_q6k_f16_wmma_parameterized(%token_count: index, %input_size: index, %output_size: index, %output_accumulation: index) launch(%token_count: index, %input_size: index, %output_size: index, %output_accumulation: index, %input: buffer, %weight: buffer, %output: buffer)
 
 kernel.decl target(@qwen3_moe_vocabulary_projection_gfx11_wave32) export("ggml_quantize_q8_1_x4_f32") @ggml_quantize_q8_1_x4_f32(%token_count: index, %input_size: index) launch(%token_count: index, %input_size: index, %input: buffer, %output: buffer)
 
