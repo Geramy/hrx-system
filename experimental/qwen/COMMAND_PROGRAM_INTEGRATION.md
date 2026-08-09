@@ -102,7 +102,7 @@ the hosting framework to duplicate it:
 | Device-produced launch values | A future dynamic-indirect path; no device-to-host routing readback is required by the program representation. |
 
 For the current decode root the compiler reports two fixed parameter roots,
-580 concrete parameter ranges, five rebindable bindings, and one 225,536-byte
+580 concrete parameter ranges, five rebindable bindings, and one 209,152-byte
 transient slab aligned to 256 bytes. The main GGUF-derived fixed root requires
 18,550,716,416 bytes; the auxiliary root requires 256 bytes. These are queried
 from the compiled program rather than copied into llama.cpp tables.
@@ -289,17 +289,20 @@ command representation and issue path do not change.
 
 ## Current proof boundary
 
-The generic command-program stack already executes reusable multi-root command
-buffers on AMDGPU through the public APIs above. The production-shaped Qwen
-witness currently proves a narrower boundary: its targetless 48-layer decode
-root prepares successfully, partitions into one root unit plus 14 independently
-compiled kernel units, assembles those units, opens the portable command
-artifact, and reports the complete fixed/rebindable resource ABI.
+The generic command-program stack executes reusable multi-root command buffers
+on AMDGPU through the public APIs above. The production Qwen path now exercises
+the same complete lifecycle: its targetless 48-layer decode root partitions
+into one root unit plus 14 independently compiled kernel units, compiles those
+units concurrently, assembles the selected root, loads one shared HAL package,
+validates every fixed parameter range against the live model slab, and records
+one reusable 293-dispatch command buffer.
 
-That Qwen test does not yet materialize and issue the full 30B decode root. The
-next vertical slice is intentionally singular: feed the assembled Qwen program
-through the already exercised HAL package/materialization API, bind the owned
-runtime's real GGUF slab, KV caches, request state, output, and transient slab,
-then compare the selected token. Completing that slice replaces the last
-production ownership boundary; it does not require another Graph2 or
-`CommandPrograms` redesign.
+`qwen_decode_command_program_prepare` owns that cold path and may run while the
+model gather is in flight. `qwen_decode_command_program_issue` supplies the KV
+caches, request state, output staging, and packed transient slab through the
+five-entry binding table and submits the recorded command buffer without a
+graph walk, compilation, launch evaluation, parameter lookup, allocation
+planning, or command recording. The prefill CLI exposes this exact path behind
+`--decode_one --decode_command_program`; on the pinned prefill-512 oracle, both
+the existing owned decode runner and the materialized command program select
+token 264 at context 513 on gfx1100.
