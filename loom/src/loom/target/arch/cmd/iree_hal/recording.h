@@ -58,6 +58,43 @@ typedef struct loom_cmd_iree_hal_inputs_t {
   const loom_cmd_iree_hal_entry_t* entries;
 } loom_cmd_iree_hal_inputs_t;
 
+// Phase of one HAL operation emitted for a portable command.
+typedef enum loom_cmd_iree_hal_operation_phase_e {
+  // Full execution barrier emitted before a payload or by a standalone
+  // barrier command.
+  LOOM_CMD_IREE_HAL_OPERATION_PHASE_BARRIER = 0,
+  // Fill, copy, or dispatch payload emitted for a portable command.
+  LOOM_CMD_IREE_HAL_OPERATION_PHASE_PAYLOAD = 1,
+} loom_cmd_iree_hal_operation_phase_t;
+
+// Identity of one HAL operation emitted while recording a portable program.
+//
+// Entries are stored in recorder-relative HAL command-index order. A
+// materializer recording into a newly created empty command buffer therefore
+// produces the absolute command indices reported by HAL profiling.
+typedef struct loom_cmd_iree_hal_operation_map_entry_t {
+  // Zero-based ordinal in the canonical portable command table.
+  uint32_t command_ordinal;
+  // Zero-based wave containing the operation after applying leading barriers.
+  uint32_t barrier_wave_ordinal;
+  // Relationship between this HAL operation and its portable command.
+  loom_cmd_iree_hal_operation_phase_t phase;
+} loom_cmd_iree_hal_operation_map_entry_t;
+
+// Caller-owned optional operation identity output for program recording.
+//
+// |entries| must have capacity for twice the portable command count, the
+// maximum produced when every command carries a leading barrier. Recording
+// resets |count| and appends one entry after each successful HAL operation.
+typedef struct loom_cmd_iree_hal_operation_map_t {
+  // Caller-owned output storage.
+  loom_cmd_iree_hal_operation_map_entry_t* entries;
+  // Number of entries available in |entries|.
+  iree_host_size_t capacity;
+  // Number of entries populated by the recorder.
+  iree_host_size_t count;
+} loom_cmd_iree_hal_operation_map_t;
+
 // Records one verified cmd.core low function into a begun command buffer.
 //
 // The function must use the command_program ABI and contain a single
@@ -92,7 +129,9 @@ iree_status_t loom_cmd_iree_hal_materialize_function(
 // allocation, executable query, symbol lookup, or compiler IR traversal.
 iree_status_t loom_cmd_iree_hal_record_program(
     const loom_cmd_program_t* program, const loom_cmd_iree_hal_inputs_t* inputs,
-    iree_hal_command_buffer_t* command_buffer, iree_allocator_t host_allocator);
+    iree_hal_command_buffer_t* command_buffer,
+    loom_cmd_iree_hal_operation_map_t* operation_map,
+    iree_allocator_t host_allocator);
 
 // Creates and records a reusable command buffer for one parsed program.
 //
@@ -104,6 +143,7 @@ iree_status_t loom_cmd_iree_hal_materialize_program(
     const loom_cmd_program_t* program, const loom_cmd_iree_hal_inputs_t* inputs,
     iree_hal_device_t* device, iree_hal_command_buffer_mode_t mode,
     iree_hal_queue_affinity_t queue_affinity,
+    loom_cmd_iree_hal_operation_map_t* operation_map,
     iree_hal_command_buffer_t** out_command_buffer,
     iree_allocator_t host_allocator);
 

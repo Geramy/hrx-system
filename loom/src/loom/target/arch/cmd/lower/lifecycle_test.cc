@@ -573,8 +573,8 @@ TEST_F(CommandLifecycleTest,
   iree_hal_command_buffer_t* once_command_buffer = nullptr;
   IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program(
       &once_program, &once_inputs, device, IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT,
-      IREE_HAL_QUEUE_AFFINITY_ANY, &once_command_buffer,
-      iree_allocator_system()));
+      IREE_HAL_QUEUE_AFFINITY_ANY, /*operation_map=*/nullptr,
+      &once_command_buffer, iree_allocator_system()));
   const loom_cmd_iree_hal_inputs_t twice_inputs = {
       /*.binding_count=*/4,
       /*.fixed_buffer_count=*/0,
@@ -588,7 +588,8 @@ TEST_F(CommandLifecycleTest,
   IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program(
       &twice_program, &twice_inputs, device,
       IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT, IREE_HAL_QUEUE_AFFINITY_ANY,
-      &twice_command_buffer, iree_allocator_system()));
+      /*operation_map=*/nullptr, &twice_command_buffer,
+      iree_allocator_system()));
   program.reset();
   iree_hal_executable_release(executable);
 

@@ -463,6 +463,101 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 3, 
   }
 }
 
+TEST_F(CmdIreeHalRecordingTest, MapsPortableCommandsToHalOperations) {
+  ModulePtr module = ParseAndVerify(R"(
+low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, executable_count = 1, fixed_buffer_count = 0, rebindable_binding_count = 2}) @operation_map() {
+  %source = low.resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
+  %target = low.resource<command_input> {index = 1, source_type = buffer} : reg<cmd.binding>
+  %executable = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.executable>
+  %entry = low.resource<command_input> {index = 0, source_type = index} : reg<cmd.entry>
+  %zero_u32 = low.const<cmd.constant.u32> {value = 0} : reg<cmd.u32>
+  %one_u32 = low.const<cmd.constant.u32> {value = 1} : reg<cmd.u32>
+  %zero_u64 = low.const<cmd.constant.u64> {value = 0} : reg<cmd.u64>
+  %buffer_length = low.const<cmd.constant.u64> {value = 64} : reg<cmd.u64>
+  %count_length = low.const<cmd.constant.u64> {value = 12} : reg<cmd.u64>
+  %source_ref = low.op<cmd.buffer.ref.binding>(%source, %zero_u64, %buffer_length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
+  %target_ref = low.op<cmd.buffer.ref.binding>(%target, %zero_u64, %buffer_length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
+  %count_ref = low.op<cmd.buffer.ref.binding>(%source, %zero_u64, %count_length) : (reg<cmd.binding>, reg<cmd.u64>, reg<cmd.u64>) -> reg<cmd.buffer_ref>
+  low.op<cmd.fill>(%source_ref, %zero_u32, %one_u32) : (reg<cmd.buffer_ref>, reg<cmd.u32>, reg<cmd.u32>)
+  low.op<cmd.copy.barrier>(%source_ref, %target_ref) : (reg<cmd.buffer_ref>, reg<cmd.buffer_ref>)
+  low.op<cmd.dispatch.direct>(%executable, %entry, %one_u32, %one_u32, %one_u32) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.u32>, reg<cmd.u32>, reg<cmd.u32>)
+  low.op<cmd.barrier.execution>() : ()
+  low.op<cmd.dispatch.indirect.static>(%executable, %entry, %count_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.buffer_ref>)
+  low.op<cmd.dispatch.indirect.dynamic.barrier>(%executable, %entry, %count_ref) : (reg<cmd.executable>, reg<cmd.entry>, reg<cmd.buffer_ref>)
+  low.return
+}
+)");
+
+  iree_hal_resource_t executable_storage = {};
+  iree_hal_executable_t* executable =
+      reinterpret_cast<iree_hal_executable_t*>(&executable_storage);
+  loom_cmd_iree_hal_entry_t entry = {};
+  entry.executable_index = 0;
+  entry.function = iree_hal_executable_function_from_index(0);
+  const loom_cmd_iree_hal_inputs_t inputs = {
+      /*.binding_count=*/2,
+      /*.fixed_buffer_count=*/0,
+      /*.fixed_buffers=*/nullptr,
+      /*.executable_count=*/1,
+      /*.executables=*/&executable,
+      /*.entry_count=*/1,
+      /*.entries=*/&entry,
+  };
+
+  iree_byte_span_t program_data = iree_byte_span_empty();
+  IREE_ASSERT_OK(loom_cmd_program_serialize_low(
+      module.get(), FindFunction(module.get(), IREE_SV("operation_map")),
+      /*parameter_requirements=*/nullptr, /*transient_requirement=*/nullptr,
+      &program_data, iree_allocator_system()));
+  loom_cmd_program_t program = {};
+  IREE_ASSERT_OK(loom_cmd_program_parse(
+      iree_make_const_byte_span(program_data.data, program_data.data_length),
+      &program));
+  module.reset();
+  ASSERT_EQ(program.commands.count, 6u);
+
+  std::array<loom_cmd_iree_hal_operation_map_entry_t, 12> map_entries = {};
+  loom_cmd_iree_hal_operation_map_t operation_map = {
+      /*.entries=*/map_entries.data(),
+      /*.capacity=*/map_entries.size(),
+      /*.count=*/map_entries.size(),
+  };
+  CaptureCommandBuffer command_buffer = {};
+  InitializeCommandBuffer(inputs.binding_count, &command_buffer);
+  IREE_ASSERT_OK(iree_hal_command_buffer_begin(&command_buffer.base));
+  IREE_ASSERT_OK(loom_cmd_iree_hal_record_program(
+      &program, &inputs, &command_buffer.base, &operation_map,
+      iree_allocator_system()));
+  IREE_ASSERT_OK(iree_hal_command_buffer_end(&command_buffer.base));
+
+  struct ExpectedEntry {
+    uint32_t command_ordinal;
+    uint32_t barrier_wave_ordinal;
+    loom_cmd_iree_hal_operation_phase_t phase;
+  };
+  const std::array<ExpectedEntry, 8> expected = {{
+      {0, 0, LOOM_CMD_IREE_HAL_OPERATION_PHASE_PAYLOAD},
+      {1, 1, LOOM_CMD_IREE_HAL_OPERATION_PHASE_BARRIER},
+      {1, 1, LOOM_CMD_IREE_HAL_OPERATION_PHASE_PAYLOAD},
+      {2, 1, LOOM_CMD_IREE_HAL_OPERATION_PHASE_PAYLOAD},
+      {3, 2, LOOM_CMD_IREE_HAL_OPERATION_PHASE_BARRIER},
+      {4, 2, LOOM_CMD_IREE_HAL_OPERATION_PHASE_PAYLOAD},
+      {5, 3, LOOM_CMD_IREE_HAL_OPERATION_PHASE_BARRIER},
+      {5, 3, LOOM_CMD_IREE_HAL_OPERATION_PHASE_PAYLOAD},
+  }};
+  ASSERT_EQ(command_buffer.commands.size(), expected.size());
+  ASSERT_EQ(operation_map.count, expected.size());
+  for (iree_host_size_t i = 0; i < expected.size(); ++i) {
+    EXPECT_EQ(operation_map.entries[i].command_ordinal,
+              expected[i].command_ordinal);
+    EXPECT_EQ(operation_map.entries[i].barrier_wave_ordinal,
+              expected[i].barrier_wave_ordinal);
+    EXPECT_EQ(operation_map.entries[i].phase, expected[i].phase);
+  }
+
+  iree_allocator_free(iree_allocator_system(), program_data.data);
+}
+
 TEST_F(CmdIreeHalRecordingTest, PacksMixedLogicalArgumentsByEntryMetadata) {
   ModulePtr module = ParseAndVerify(R"(
 low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, executable_count = 1, fixed_buffer_count = 0, rebindable_binding_count = 3}) @packing() {
@@ -530,7 +625,8 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, 
   InitializeCommandBuffer(inputs.binding_count, &command_buffer);
   IREE_ASSERT_OK(iree_hal_command_buffer_begin(&command_buffer.base));
   IREE_ASSERT_OK(loom_cmd_iree_hal_record_program(
-      &program, &inputs, &command_buffer.base, iree_allocator_system()));
+      &program, &inputs, &command_buffer.base, /*operation_map=*/nullptr,
+      iree_allocator_system()));
   IREE_ASSERT_OK(iree_hal_command_buffer_end(&command_buffer.base));
 
   ASSERT_EQ(command_buffer.commands.size(), 1u);
@@ -562,9 +658,9 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, 
       iree_hal_command_buffer_begin(&incompatible_command_buffer.base));
   IREE_EXPECT_STATUS_IS(
       IREE_STATUS_INVALID_ARGUMENT,
-      loom_cmd_iree_hal_record_program(&program, &inputs,
-                                       &incompatible_command_buffer.base,
-                                       iree_allocator_system()));
+      loom_cmd_iree_hal_record_program(
+          &program, &inputs, &incompatible_command_buffer.base,
+          /*operation_map=*/nullptr, iree_allocator_system()));
   EXPECT_TRUE(incompatible_command_buffer.commands.empty());
   IREE_ASSERT_OK(
       iree_hal_command_buffer_end(&incompatible_command_buffer.base));
@@ -676,7 +772,8 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, 
   iree_hal_command_buffer_t* command_buffer = nullptr;
   IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program(
       &program, &inputs, device, IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT,
-      IREE_HAL_QUEUE_AFFINITY_ANY, &command_buffer, iree_allocator_system()));
+      IREE_HAL_QUEUE_AFFINITY_ANY, /*operation_map=*/nullptr, &command_buffer,
+      iree_allocator_system()));
   iree_allocator_free(iree_allocator_system(), program_data.data);
   iree_hal_executable_release(executable);
 
@@ -758,7 +855,8 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 1, 
   InitializeCommandBuffer(inputs.binding_count, &command_buffer);
   IREE_ASSERT_OK(iree_hal_command_buffer_begin(&command_buffer.base));
   IREE_ASSERT_OK(loom_cmd_iree_hal_record_program(
-      &program, &inputs, &command_buffer.base, iree_allocator_system()));
+      &program, &inputs, &command_buffer.base, /*operation_map=*/nullptr,
+      iree_allocator_system()));
   IREE_ASSERT_OK(iree_hal_command_buffer_end(&command_buffer.base));
 
   ASSERT_EQ(command_buffer.commands.size(), 3u);
@@ -827,7 +925,8 @@ low.func.def target<cmd.core> abi(command_program) abi_layout({entry_count = 0, 
   iree_hal_command_buffer_t* command_buffer = nullptr;
   IREE_ASSERT_OK(loom_cmd_iree_hal_materialize_program(
       &program, &inputs, device, IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT,
-      IREE_HAL_QUEUE_AFFINITY_ANY, &command_buffer, iree_allocator_system()));
+      IREE_HAL_QUEUE_AFFINITY_ANY, /*operation_map=*/nullptr, &command_buffer,
+      iree_allocator_system()));
   iree_allocator_free(iree_allocator_system(), program_data.data);
   iree_hal_buffer_release(fixed_buffer);
 

@@ -482,7 +482,7 @@ loomc_status_t loomc_cmd_iree_hal_program_create(
   loomc_status_t status =
       loomc_status_from_iree(loom_cmd_iree_hal_materialize_program(
           parsed, &inputs, package->device, options->command_buffer_mode,
-          options->queue_affinity, &command_buffer,
+          options->queue_affinity, /*operation_map=*/NULL, &command_buffer,
           iree_allocator_from_loomc(allocator)));
 
   loomc_cmd_iree_hal_program_t* hal_program = NULL;

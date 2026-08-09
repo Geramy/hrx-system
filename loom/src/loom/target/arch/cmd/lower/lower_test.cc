@@ -604,9 +604,9 @@ command.program.def public @attention(%token_count: index) launch(%parameters: b
   CaptureCommandBuffer artifact_command_buffer = {};
   InitializeCommandBuffer(inputs.binding_count, &artifact_command_buffer);
   IREE_ASSERT_OK(iree_hal_command_buffer_begin(&artifact_command_buffer.base));
-  IREE_ASSERT_OK(loom_cmd_iree_hal_record_program(&program, &inputs,
-                                                  &artifact_command_buffer.base,
-                                                  iree_allocator_system()));
+  IREE_ASSERT_OK(loom_cmd_iree_hal_record_program(
+      &program, &inputs, &artifact_command_buffer.base,
+      /*operation_map=*/nullptr, iree_allocator_system()));
   IREE_ASSERT_OK(iree_hal_command_buffer_end(&artifact_command_buffer.base));
   ExpectCapturedProgramsEqual(low_command_buffer, artifact_command_buffer);
 
