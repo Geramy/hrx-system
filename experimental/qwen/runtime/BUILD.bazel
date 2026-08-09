@@ -46,6 +46,7 @@ iree_runtime_cc_test(
         "//loom/config/target:amdgpu_artifacts",
     ]),
     deps = [
+        "//experimental/qwen/programs:command_package_source",
         "//experimental/qwen/programs:decode_source",
         "//experimental/qwen/programs:dense_projection_specialization_test_source",
         "//experimental/qwen/programs:prefill_source",
