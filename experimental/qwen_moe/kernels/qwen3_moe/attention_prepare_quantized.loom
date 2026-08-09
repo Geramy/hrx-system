@@ -21,8 +21,6 @@ config.decl @qwen3_moe.model.hidden_size : %value: index where [range(%value, 12
 
 config.decl @qwen3_moe.model.rms_epsilon : f32
 
-config.decl @qwen3_moe.workload.token_capacity : %value: index where [range(%value, 1, 2048)]
-
 // Shared Q8_1 x4 packer used by the standalone differential path.
 kernel.decl @ggml_quantize_q8_1_x4_f32(%token_count: index, %input_size: index) launch(%token_count: index, %input_size: index, %input: buffer, %output: buffer)
 
@@ -30,15 +28,12 @@ kernel.decl @ggml_quantize_q8_1_x4_f32(%token_count: index, %input_size: index) 
 // prefill schedules that reuse one normalized row across many output tiles;
 // decode uses the fused Q8_1 producer below.
 kernel.def target(@qwen3_moe_attention_prepare_gfx11_wave32) @qwen3_moe_rmsnorm_f32(%token_count: index) {
-  %token_capacity = config.get @qwen3_moe.workload.token_capacity : index
   %c1 = index.constant 1 : index
   %c256 = index.constant 256 : index
-  kernel.launch.config workgroups(%token_capacity, %c1, %c1) workgroup_size(%c256, %c1, %c1) : index
-} launch(%token_count: index, %input: buffer, %weight: buffer, %output: buffer) {
+  kernel.launch.config workgroups(%token_count, %c1, %c1) workgroup_size(%c256, %c1, %c1) : index
+} launch(%token_count: index, %input: buffer, %weight: buffer, %output: buffer) where [range(%token_count, 1, 2048)] {
   %hidden_size0 = config.get @qwen3_moe.model.hidden_size : index
   %epsilon = config.get @qwen3_moe.model.rms_epsilon : f32
-  %token_capacity = config.get @qwen3_moe.workload.token_capacity : index
-  %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048), le(%token_count, %token_capacity)] : index
   %hidden_size = index.assume %hidden_size0 [range(%hidden_size0, 128, 32768), mul(%hidden_size0, 128)] : index
   %token0 = kernel.workgroup.id<x> : index
   %workitem = kernel.workitem.id<x> : index
@@ -52,9 +47,9 @@ kernel.def target(@qwen3_moe_attention_prepare_gfx11_wave32) @qwen3_moe_rmsnorm_
   %scratch_bytes = index.constant 1024 : offset
   %c0_offset = index.constant 0 : offset
   %c0_f32 = scalar.constant 0.0 : f32
-  %valid_token = index.cmp ult, %token0, %bounded_token_count : index
+  %valid_token = index.cmp ult, %token0, %token_count : index
   %safe_token0 = scf.select %valid_token, %token0, %c0 : index
-  %token, %launch_token_count = index.assume %safe_token0, %bounded_token_count [lt(%safe_token0, %bounded_token_count)] : index, index
+  %token, %launch_token_count = index.assume %safe_token0, %token_count [lt(%safe_token0, %token_count)] : index, index
   %hidden_size_i32 = index.cast %hidden_size : index to i32
   %hidden_size_f32 = scalar.sitofp %hidden_size_i32 : i32 to f32
   %input_noalias, %weight_noalias, %output_noalias = buffer.assume.noalias %input, %weight, %output : buffer, buffer, buffer
@@ -286,36 +281,30 @@ func.template<qwen3_moe.rmsnorm_quantize_q8_1_x4.body> device @qwen3_moe_rmsnorm
 // Fuses attention RMSNorm directly into the Q8_1 x4 row consumed by decode
 // projections. The output has hidden_size / 128 physical groups of 144 bytes.
 kernel.def target(@qwen3_moe_attention_prepare_gfx11_wave32) @qwen3_moe_attention_rmsnorm_quantize_q8_1_x4(%token_count: index) {
-  %token_capacity = config.get @qwen3_moe.workload.token_capacity : index
   %c1 = index.constant 1 : index
   %c256 = index.constant 256 : index
-  kernel.launch.config workgroups(%token_capacity, %c1, %c1) workgroup_size(%c256, %c1, %c1) : index
-} launch(%token_count: index, %input: buffer, %weight: buffer, %output: buffer) {
-  %token_capacity = config.get @qwen3_moe.workload.token_capacity : index
-  %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048), le(%token_count, %token_capacity)] : index
+  kernel.launch.config workgroups(%token_count, %c1, %c1) workgroup_size(%c256, %c1, %c1) : index
+} launch(%token_count: index, %input: buffer, %weight: buffer, %output: buffer) where [range(%token_count, 1, 2048)] {
   %publish_normalized = scalar.constant false : i1
   %reduction_subgroup_count = index.constant 8 : index
   %token = kernel.workgroup.id<x> : index
   %input_noalias, %weight_noalias, %output_noalias = buffer.assume.noalias %input, %weight, %output : buffer, buffer, buffer
-  func.apply<qwen3_moe.rmsnorm_quantize_q8_1_x4.body>(%publish_normalized, %reduction_subgroup_count, %bounded_token_count, %token, %input_noalias, %weight_noalias, %output_noalias, %output_noalias) : (i1, index, index, index, buffer, buffer, buffer, buffer)
+  func.apply<qwen3_moe.rmsnorm_quantize_q8_1_x4.body>(%publish_normalized, %reduction_subgroup_count, %token_count, %token, %input_noalias, %weight_noalias, %output_noalias, %output_noalias) : (i1, index, index, index, buffer, buffer, buffer, buffer)
   kernel.return
 }
 
 // Publishes both the ordinary F32 RMSNorm row required by routing and the Q8_1
 // x4 row consumed by direct decode contractions.
 kernel.def target(@qwen3_moe_attention_prepare_gfx11_wave32) @qwen3_moe_rmsnorm_f32_quantize_q8_1_x4(%token_count: index) {
-  %token_capacity = config.get @qwen3_moe.workload.token_capacity : index
   %c1 = index.constant 1 : index
   %c256 = index.constant 256 : index
-  kernel.launch.config workgroups(%token_capacity, %c1, %c1) workgroup_size(%c256, %c1, %c1) : index
-} launch(%token_count: index, %input: buffer, %weight: buffer, %normalized_output: buffer, %q8_output: buffer) {
-  %token_capacity = config.get @qwen3_moe.workload.token_capacity : index
-  %bounded_token_count = index.assume %token_count [range(%token_count, 1, 2048), le(%token_count, %token_capacity)] : index
+  kernel.launch.config workgroups(%token_count, %c1, %c1) workgroup_size(%c256, %c1, %c1) : index
+} launch(%token_count: index, %input: buffer, %weight: buffer, %normalized_output: buffer, %q8_output: buffer) where [range(%token_count, 1, 2048)] {
   %publish_normalized = scalar.constant true : i1
   %reduction_subgroup_count = index.constant 8 : index
   %token = kernel.workgroup.id<x> : index
   %input_noalias, %weight_noalias, %normalized_output_noalias, %q8_output_noalias = buffer.assume.noalias %input, %weight, %normalized_output, %q8_output : buffer, buffer, buffer, buffer
-  func.apply<qwen3_moe.rmsnorm_quantize_q8_1_x4.body>(%publish_normalized, %reduction_subgroup_count, %bounded_token_count, %token, %input_noalias, %weight_noalias, %normalized_output_noalias, %q8_output_noalias) : (i1, index, index, index, buffer, buffer, buffer, buffer)
+  func.apply<qwen3_moe.rmsnorm_quantize_q8_1_x4.body>(%publish_normalized, %reduction_subgroup_count, %token_count, %token, %input_noalias, %weight_noalias, %normalized_output_noalias, %q8_output_noalias) : (i1, index, index, index, buffer, buffer, buffer, buffer)
   kernel.return
 }
 

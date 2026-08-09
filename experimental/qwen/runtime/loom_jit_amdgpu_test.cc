@@ -429,14 +429,14 @@ static iree_status_t RunRmsnormFixture(const std::string& fixture_directory) {
   }
   if (distinct_executable == executable_ptr.get() ||
       qwen_loom_jit_entry_count(jit_ptr.get()) != 2 ||
-      distinct_dispatch_config.workgroup_count[0] != 512 ||
+      distinct_dispatch_config.workgroup_count[0] != 511 ||
       distinct_dispatch_config.workgroup_count[1] != 1 ||
       distinct_dispatch_config.workgroup_count[2] != 1 ||
       qwen_loom_executable_hal_executable(distinct_executable_ptr.get()) !=
           qwen_loom_executable_hal_executable(executable_ptr.get())) {
     return iree_make_status(
         IREE_STATUS_INTERNAL,
-        "batched workloads did not retain capacity geometry over shared code");
+        "batched workloads did not derive distinct geometry over shared code");
   }
 
   qwen_loom_executable_t* cache_hit = nullptr;
