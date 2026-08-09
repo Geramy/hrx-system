@@ -6,10 +6,12 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "experimental/qwen/programs/command_package_source.h"
 #include "experimental/qwen/programs/decode_source.h"
 #include "experimental/qwen/programs/dense_projection_specialization_test_source.h"
 #include "experimental/qwen/programs/prefill_source.h"
@@ -122,6 +124,11 @@ static SourcePtr CreateEmbeddedSource(const iree_file_toc_t* files,
 static SourcePtr CreateDecodeSource() {
   return CreateEmbeddedSource(qwen_loom_decode_program_source_create(),
                               qwen_loom_decode_program_source_size());
+}
+
+static SourcePtr CreateCommandPackageSource() {
+  return CreateEmbeddedSource(qwen_loom_command_package_source_create(),
+                              qwen_loom_command_package_source_size());
 }
 
 static SourcePtr CreatePrefillSource() {
@@ -332,10 +339,6 @@ TEST(QwenDecodeCommandProgramTest, CompilesCompleteProductionPlan) {
       loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_AMDGPU_HSACO),
   };
   const loomc_config_binding_t config_bindings[] = {
-      {
-          /*.key=*/loomc_make_cstring_view("qwen3_moe.workload.token_capacity"),
-          /*.value=*/loomc_make_cstring_view("1"),
-      },
       {
           /*.key=*/loomc_make_cstring_view("qwen3_30b.request.token_capacity"),
           /*.value=*/loomc_make_cstring_view("512"),
@@ -591,6 +594,151 @@ TEST(QwenDecodeCommandProgramTest, CompilesExactPrefill512Plan) {
       FindCommandArtifact(assembled_program.get(), "qwen3_30b_prefill_512");
   ASSERT_NE(command_artifact, nullptr);
   EXPECT_GT(command_artifact->contents.data_length, 0u);
+}
+
+TEST(QwenDecodeCommandProgramTest, CompilesSharedPrefillAndDecodePlan) {
+  TargetEnvironmentPtr target_environment = CreateTargetEnvironment();
+  ContextPtr context = CreateContext(target_environment.get());
+  WorkspacePtr coordinator_workspace = CreateWorkspace();
+  SourcePtr source = CreateCommandPackageSource();
+  ModulePtr module = DeserializeModule(
+      context.get(), coordinator_workspace.get(), source.get());
+  CompilerPtr compiler = CreateCompiler(context.get());
+  PassProgramPtr preparation_pass_program =
+      CreatePreparationPassProgram(context.get());
+  PassProgramPtr unit_pass_program = CreateUnitPassProgram(context.get());
+
+  const loomc_cmd_program_plan_options_t command_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PLAN_OPTIONS,
+      /*.structure_size=*/sizeof(command_options),
+      /*.next=*/nullptr,
+      /*.dependency_artifact_format=*/
+      loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_AMDGPU_HSACO),
+  };
+  const loomc_program_plan_options_t plan_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_OPTIONS,
+      /*.structure_size=*/sizeof(plan_options),
+      /*.next=*/&command_options,
+      /*.config=*/
+      {
+          /*.bindings=*/nullptr,
+          /*.binding_count=*/0,
+          /*.json_object=*/loomc_string_view_empty(),
+          /*.flags=*/LOOMC_CONFIG_POLICY_FLAG_REQUIRE_RESOLVED,
+      },
+  };
+  loomc_program_plan_t* raw_plan = nullptr;
+  loomc_result_t* raw_result = nullptr;
+  LOOMC_ASSERT_OK(loomc_prepare_programs(
+      compiler.get(), coordinator_workspace.get(),
+      preparation_pass_program.get(), unit_pass_program.get(), module.get(),
+      &plan_options, loomc_allocator_system(), &raw_plan, &raw_result));
+  PlanPtr plan(raw_plan);
+  ResultPtr prepare_result(raw_result);
+  ASSERT_TRUE(ResultSucceeded(prepare_result.get(),
+                              "shared command-package preparation"));
+
+  ASSERT_EQ(loomc_program_plan_root_count(plan.get()), 2u);
+  loomc_program_plan_root_t decode_root = loomc_program_plan_root_invalid();
+  loomc_program_plan_root_t prefill_root = loomc_program_plan_root_invalid();
+  LOOMC_ASSERT_OK(loomc_program_plan_lookup_root(
+      plan.get(), loomc_make_cstring_view("qwen3_30b_decode_576"),
+      &decode_root));
+  LOOMC_ASSERT_OK(loomc_program_plan_lookup_root(
+      plan.get(), loomc_make_cstring_view("qwen3_30b_prefill_512"),
+      &prefill_root));
+  loomc_program_plan_root_info_t decode_root_info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_ROOT_INFO,
+      /*.structure_size=*/sizeof(decode_root_info),
+  };
+  loomc_program_plan_root_info_t prefill_root_info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_ROOT_INFO,
+      /*.structure_size=*/sizeof(prefill_root_info),
+  };
+  LOOMC_ASSERT_OK(
+      loomc_program_plan_root_info(plan.get(), decode_root, &decode_root_info));
+  EXPECT_EQ(decode_root_info.dependency_count, 14u);
+  LOOMC_ASSERT_OK(loomc_program_plan_root_info(plan.get(), prefill_root,
+                                               &prefill_root_info));
+  EXPECT_EQ(prefill_root_info.dependency_count, 27u);
+
+  std::vector<uint64_t> decode_dependency_units;
+  std::vector<uint64_t> prefill_dependency_units;
+  for (loomc_host_size_t i = 0; i < decode_root_info.dependency_count; ++i) {
+    loomc_program_plan_dependency_info_t dependency_info = {
+        /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_DEPENDENCY_INFO,
+        /*.structure_size=*/sizeof(dependency_info),
+    };
+    LOOMC_ASSERT_OK(loomc_program_plan_root_dependency_info(
+        plan.get(), decode_root, i, &dependency_info));
+    decode_dependency_units.push_back(dependency_info.unit.value);
+  }
+  for (loomc_host_size_t i = 0; i < prefill_root_info.dependency_count; ++i) {
+    loomc_program_plan_dependency_info_t dependency_info = {
+        /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_DEPENDENCY_INFO,
+        /*.structure_size=*/sizeof(dependency_info),
+    };
+    LOOMC_ASSERT_OK(loomc_program_plan_root_dependency_info(
+        plan.get(), prefill_root, i, &dependency_info));
+    prefill_dependency_units.push_back(dependency_info.unit.value);
+  }
+  std::sort(decode_dependency_units.begin(), decode_dependency_units.end());
+  std::sort(prefill_dependency_units.begin(), prefill_dependency_units.end());
+  std::vector<uint64_t> shared_dependency_units;
+  std::set_intersection(
+      decode_dependency_units.begin(), decode_dependency_units.end(),
+      prefill_dependency_units.begin(), prefill_dependency_units.end(),
+      std::back_inserter(shared_dependency_units));
+  EXPECT_FALSE(shared_dependency_units.empty());
+
+  const loomc_host_size_t unit_count =
+      loomc_program_plan_unit_count(plan.get());
+  std::vector<ProgramPtr> unit_programs;
+  std::vector<loomc_program_t*> unit_table_values;
+  unit_programs.reserve(unit_count);
+  unit_table_values.reserve(unit_count);
+  for (loomc_host_size_t i = 0; i < unit_count; ++i) {
+    WorkspacePtr worker_workspace = CreateWorkspace();
+    loomc_program_t* raw_program = nullptr;
+    raw_result = nullptr;
+    LOOMC_ASSERT_OK(loomc_program_plan_compile_unit(
+        plan.get(), worker_workspace.get(),
+        loomc_program_plan_unit_from_index(static_cast<uint32_t>(i)),
+        /*options=*/nullptr, loomc_allocator_system(), &raw_program,
+        &raw_result));
+    ProgramPtr program(raw_program);
+    ResultPtr result(raw_result);
+    ASSERT_TRUE(ResultSucceeded(
+        result.get(), "shared command-package unit " + std::to_string(i)));
+    unit_table_values.push_back(program.get());
+    unit_programs.push_back(std::move(program));
+  }
+
+  const loomc_program_plan_unit_table_t unit_table = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_UNIT_TABLE,
+      /*.structure_size=*/sizeof(unit_table),
+      /*.next=*/nullptr,
+      /*.programs=*/unit_table_values.data(),
+      /*.program_count=*/unit_table_values.size(),
+  };
+  const loomc_program_plan_root_t roots[] = {prefill_root, decode_root};
+  loomc_program_t* raw_assembled_program = nullptr;
+  loomc_result_t* raw_assemble_result = nullptr;
+  LOOMC_ASSERT_OK(loomc_program_plan_assemble(
+      plan.get(), coordinator_workspace.get(), roots, std::size(roots),
+      &unit_table, /*options=*/nullptr, loomc_allocator_system(),
+      &raw_assembled_program, &raw_assemble_result));
+  ProgramPtr assembled_program(raw_assembled_program);
+  ResultPtr assemble_result(raw_assemble_result);
+  ASSERT_TRUE(ResultSucceeded(assemble_result.get(),
+                              "shared command-package assembly"));
+  EXPECT_EQ(loomc_program_export_count(assembled_program.get()), 2u);
+  EXPECT_NE(
+      FindCommandArtifact(assembled_program.get(), "qwen3_30b_prefill_512"),
+      nullptr);
+  EXPECT_NE(
+      FindCommandArtifact(assembled_program.get(), "qwen3_30b_decode_576"),
+      nullptr);
 }
 
 }  // namespace

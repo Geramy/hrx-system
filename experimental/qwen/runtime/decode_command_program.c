@@ -741,10 +741,6 @@ iree_status_t qwen_decode_command_program_prepare(
   if (iree_status_is_ok(status)) {
     const loomc_config_binding_t config_bindings[] = {
         {
-            .key = loomc_make_cstring_view("qwen3_moe.workload.token_capacity"),
-            .value = loomc_make_cstring_view("1"),
-        },
-        {
             .key = loomc_make_cstring_view("qwen3_30b.request.token_capacity"),
             .value = loomc_make_string_view(
                 request_token_capacity_storage,

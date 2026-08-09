@@ -4,7 +4,6 @@
 // fully unrolls the layer loop and folds the storage predicates before command
 // planning, leaving one exact parameter placement and dispatch schedule.
 
-config.def @qwen3_moe.workload.token_capacity = 1 : index
 config.def @qwen3_30b.request.token_capacity = 512 : index
 config.def @qwen.attention.metadata_context_capacity = 576 : index
 config.def @qwen3_moe.model.hidden_size = 2048 : index
