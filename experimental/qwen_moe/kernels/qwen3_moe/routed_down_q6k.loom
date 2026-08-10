@@ -302,7 +302,7 @@ func.template<qwen3_moe.routed_down.q6k_f32.body> device @qwen3_moe_routed_down_
   %route_id_view = buffer.view %route_id_noalias[%c0_offset] : buffer -> view<[%body_token_count]x[%bounded_route_id_stride]xi32, #dense>
   %route_weight_view = buffer.view %route_weight_noalias[%c0_offset] : buffer -> view<[%body_token_count]x[%bounded_route_count]xf32, #dense>
   %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%body_token_count]x[%bounded_output_size]xf32, #dense>
-  %scale_stage = buffer.alloca %scale_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
+  %scale_stage = buffer.alloca<workgroup> align(16) %scale_stage_bytes : buffer
   %routed_sum0 = scf.if %publish_output -> (f32) {
     %active_sum = scf.for %route = [%c0 to %bounded_route_count step %c1](%route_acc = %c0_f32 : f32) -> (f32) unroll {
       // Route metadata is uniform across all channels. Keeping the access in
@@ -391,7 +391,7 @@ func.template<qwen3_moe.routed_down.q6k_f32.pair_body> device @qwen3_moe_routed_
   %route_id_view = buffer.view %route_id_noalias[%c0_offset] : buffer -> view<[%body_token_count]x[%bounded_route_id_stride]xi32, #dense>
   %route_weight_view = buffer.view %route_weight_noalias[%c0_offset] : buffer -> view<[%body_token_count]x[%bounded_route_count]xf32, #dense>
   %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%body_token_count]x[%body_output_size]xf32, #dense>
-  %scale_stage = buffer.alloca %scale_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
+  %scale_stage = buffer.alloca<workgroup> align(16) %scale_stage_bytes : buffer
   %routed_sum0, %routed_sum1 = scf.for %route = [%c0 to %bounded_route_count step %c1](%route_acc0 = %c0_f32 : f32, %route_acc1 = %c0_f32 : f32) -> (f32, f32) {
     %bounded_route, %body_route_count = index.assume %route, %bounded_route_count [lt(%route, %bounded_route_count)] : index, index
     %route_for_stride, %body_route_id_stride = index.assume %bounded_route, %bounded_route_id_stride [lt(%bounded_route, %bounded_route_id_stride)] : index, index

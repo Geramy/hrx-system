@@ -162,7 +162,7 @@ kernel.def target(@qwen3_moe_expert_table_partition_gfx11_wave32) @qwen3_moe_bui
     }
     // The counter cannot become reusable until every descriptor store is
     // complete and visible to the following dispatch.
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     scf.if %is_lane_zero {
       view.atomic.reduce<addi> %negative_expert_count_i32, %completion_counter_view[%c0] {ordering = release, scope = device} : i32, view<1xi32, #dense>
     }
