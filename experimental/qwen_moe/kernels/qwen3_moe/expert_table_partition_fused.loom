@@ -40,12 +40,10 @@ kernel.def target(@qwen3_moe_expert_table_partition_gfx11_wave32) @qwen3_moe_bui
   %assignment_count = index.mul %bounded_token_count, %bounded_route_count : index
   %assignment_table_byte_base = index.scale %launch_expert_count, %c4_bytes : index, offset -> offset
   %route_ids_noalias, %expert_table_noalias, %partition_table_noalias, %completion_counter_noalias = buffer.assume.noalias %route_ids, %expert_table, %partition_table, %completion_counter : buffer, buffer, buffer, buffer
-  %expert_table_global = buffer.assume.memory_space<global> %expert_table_noalias : buffer
-  %completion_counter_global = buffer.assume.memory_space<global> %completion_counter_noalias : buffer
-  %completion_counter_aligned = buffer.assume.alignment %completion_counter_global {minimum_alignment = 16} : buffer
+  %completion_counter_aligned = buffer.assume.alignment %completion_counter_noalias {minimum_alignment = 16} : buffer
   %route_view = buffer.view %route_ids_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x[%bounded_route_stride]xi32, #dense>
-  %count_view = buffer.view %expert_table_global[%c0_offset] : buffer -> view<[%launch_expert_count]xi32, #dense>
-  %assignment_view = buffer.view %expert_table_global[%assignment_table_byte_base] : buffer -> view<[%launch_expert_count]x[%bounded_token_count]xi32, #dense>
+  %count_view = buffer.view %expert_table_noalias[%c0_offset] : buffer -> view<[%launch_expert_count]xi32, #dense>
+  %assignment_view = buffer.view %expert_table_noalias[%assignment_table_byte_base] : buffer -> view<[%launch_expert_count]x[%bounded_token_count]xi32, #dense>
   %completion_counter_view = buffer.view %completion_counter_aligned[%c0_offset] : buffer -> view<1xi32, #dense>
 
   %expert_route_count = scf.for %block_base = [%c0 to %assignment_count step %workgroup_size](%matched_base = %c0_i32 : i32) -> (i32) {

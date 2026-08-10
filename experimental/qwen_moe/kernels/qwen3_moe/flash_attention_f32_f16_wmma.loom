@@ -36,10 +36,8 @@ kernel.def target(@qwen3_moe_attention_gfx11_wave64) @qwen3_moe_flash_attention_
   kernel.launch.config workgroups(%query_tile_count, %query_head_count, %c1) workgroup_size(%c256, %c1, %c1) : index
 } launch(%query_token_count: index, %key_value_token_count: index, %query: buffer, %key: buffer, %value: buffer, %mask: buffer, %output: buffer) where [range(%query_token_count, 1, 2048)] {
   %bounded_key_value_token_count = index.assume %key_value_token_count [range(%key_value_token_count, 1, 32768)] : index
-  %query_head_count0 = config.get @qwen3_moe.attention.query_head_count : index
-  %key_value_head_count0 = config.get @qwen3_moe.attention.key_value_head_count : index
-  %query_head_count = index.assume %query_head_count0 [range(%query_head_count0, 1, 64)] : index
-  %key_value_head_count = index.assume %key_value_head_count0 [range(%key_value_head_count0, 1, 64)] : index
+  %query_head_count = config.get @qwen3_moe.attention.query_head_count : index
+  %key_value_head_count = config.get @qwen3_moe.attention.key_value_head_count : index
   %query_tile = kernel.workgroup.id<x> : index
   %query_head0 = kernel.workgroup.id<y> : index
   %query_head, %launch_query_head_count = index.assume %query_head0, %query_head_count [lt(%query_head0, %query_head_count)] : index, index
@@ -120,16 +118,11 @@ kernel.def target(@qwen3_moe_attention_gfx11_wave64) @qwen3_moe_flash_attention_
   %query_transposed_layout = encoding.layout.strided [1, 136] : encoding<layout>
   %probability_transposed_layout = encoding.layout.strided [1, 24] : encoding<layout>
   %query_noalias, %key_noalias, %value_noalias, %mask_noalias, %output_noalias = buffer.assume.noalias %query, %key, %value, %mask, %output : buffer, buffer, buffer, buffer, buffer
-  %query_global = buffer.assume.memory_space<global> %query_noalias : buffer
-  %key_global = buffer.assume.memory_space<global> %key_noalias : buffer
-  %value_global = buffer.assume.memory_space<global> %value_noalias : buffer
-  %mask_global = buffer.assume.memory_space<global> %mask_noalias : buffer
-  %output_global = buffer.assume.memory_space<global> %output_noalias : buffer
-  %query_aligned = buffer.assume.alignment %query_global {minimum_alignment = 16} : buffer
-  %key_aligned = buffer.assume.alignment %key_global {minimum_alignment = 16} : buffer
-  %value_aligned = buffer.assume.alignment %value_global {minimum_alignment = 16} : buffer
-  %mask_aligned = buffer.assume.alignment %mask_global {minimum_alignment = 16} : buffer
-  %output_aligned = buffer.assume.alignment %output_global {minimum_alignment = 16} : buffer
+  %query_aligned = buffer.assume.alignment %query_noalias {minimum_alignment = 16} : buffer
+  %key_aligned = buffer.assume.alignment %key_noalias {minimum_alignment = 16} : buffer
+  %value_aligned = buffer.assume.alignment %value_noalias {minimum_alignment = 16} : buffer
+  %mask_aligned = buffer.assume.alignment %mask_noalias {minimum_alignment = 16} : buffer
+  %output_aligned = buffer.assume.alignment %output_noalias {minimum_alignment = 16} : buffer
   %query_view = buffer.view %query_aligned[%c0_offset] : buffer -> view<[%query_token_count]x[%query_head_count]x128xf32, #dense>
   %key_view = buffer.view %key_aligned[%c0_offset] : buffer -> view<[%bounded_key_value_token_count]x[%key_value_width]xf16, #dense>
   %value_view = buffer.view %value_aligned[%c0_offset] : buffer -> view<[%bounded_key_value_token_count]x[%key_value_width]xf16, #dense>
@@ -583,9 +576,8 @@ kernel.def target(@qwen3_moe_attention_gfx11_wave64) @qwen3_moe_flash_attention_
   %c0_offset = index.constant 0 : offset
   %c128 = index.constant 128 : index
   %c256 = index.constant 256 : index
-  %query_head_count0 = config.get @qwen3_moe.attention.query_head_count : index
+  %query_head_count = config.get @qwen3_moe.attention.query_head_count : index
   %context_capacity = config.get @qwen3_moe.attention.test.context_capacity : index
-  %query_head_count = index.assume %query_head_count0 [range(%query_head_count0, 1, 64)] : index
   %bounded_query_token_count = index.assume %query_token_count [range(%query_token_count, 1, 2048)] : index
   %bounded_context_count = index.assume %context_count [range(%context_count, 1, 32768), le(%context_count, %context_capacity)] : index
   %bounded_source_row, %source_query_token_count = index.assume %source_row, %bounded_query_token_count [range(%source_row, 0, 2047), lt(%source_row, %bounded_query_token_count)] : index, index

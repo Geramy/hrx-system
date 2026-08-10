@@ -88,7 +88,7 @@ func.def inline @ggml_q6k_load_f32_scale(%input_size: index, %row: index, %block
   %c0 = index.constant 0 : index
   %c16 = index.constant 16 : index
   %c192 = index.constant 192 : offset
-  %c210 = index.constant 210 : index
+  %c210_bytes = index.constant 210 : offset
   %c256 = index.constant 256 : index
   %bounded_lane = index.assume %lane [range(%lane, 0, 63)] : index
   %block_count = index.div %input_size, %c256 : index
@@ -99,11 +99,10 @@ func.def inline @ggml_q6k_load_f32_scale(%input_size: index, %row: index, %block
     scf.yield %c0 : index
   }
   %itid = index.rem %bounded_lane, %c16 : index
-  %weight_row_byte_count = index.mul %block_count, %c210 : index
-  %weight_row_byte_index = index.mul %row, %weight_row_byte_count : index
-  %block_byte_index = index.mul %safe_block, %c210 : index
-  %weight_block_byte_index = index.add %weight_row_byte_index, %block_byte_index : index
-  %weight_block_byte_base = index.cast %weight_block_byte_index : index to offset
+  %weight_row_bytes = index.scale %block_count, %c210_bytes : index, offset -> offset
+  %weight_row_byte_base = index.scale %row, %weight_row_bytes : index, offset -> offset
+  %block_byte_add = index.scale %safe_block, %c210_bytes : index, offset -> offset
+  %weight_block_byte_base = index.add %weight_row_byte_base, %block_byte_add : offset
   %scale_byte_base = index.add %weight_block_byte_base, %c192 : offset
   %scale_view = buffer.view %weight[%scale_byte_base] : buffer -> view<16xi8, #dense>
   %scale_i8 = view.load %scale_view[%itid] : view<16xi8, #dense> -> i8
@@ -133,7 +132,7 @@ func.def inline @ggml_q6k_f32_block_row(%input_size: index, %row: index, %block:
   %c16 = index.constant 16 : index
   %c128 = index.constant 128 : offset
   %c208 = index.constant 208 : offset
-  %c210 = index.constant 210 : index
+  %c210_bytes = index.constant 210 : offset
   %c256 = index.constant 256 : index
   %c0_offset = index.constant 0 : offset
   %c4_i32v = vector.constant 4 : vector<1xi32>
@@ -158,11 +157,10 @@ func.def inline @ggml_q6k_f32_block_row(%input_size: index, %row: index, %block:
   %vector_half = index.div %itid, %c8 : index
   %vector_index = index.rem %itid, %c8 : index
   %vector_quarter = index.div %vector_index, %c4 : index
-  %weight_row_byte_count = index.mul %block_count, %c210 : index
-  %weight_row_byte_index = index.mul %row, %weight_row_byte_count : index
-  %block_byte_index = index.mul %safe_block, %c210 : index
-  %weight_block_byte_index = index.add %weight_row_byte_index, %block_byte_index : index
-  %weight_block_byte_base = index.cast %weight_block_byte_index : index to offset
+  %weight_row_bytes = index.scale %block_count, %c210_bytes : index, offset -> offset
+  %weight_row_byte_base = index.scale %row, %weight_row_bytes : index, offset -> offset
+  %block_byte_add = index.scale %safe_block, %c210_bytes : index, offset -> offset
+  %weight_block_byte_base = index.add %weight_row_byte_base, %block_byte_add : offset
   %qh_byte_base = index.add %weight_block_byte_base, %c128 : offset
   %d_byte_base = index.add %weight_block_byte_base, %c208 : offset
   %ql_view = buffer.view %weight[%weight_block_byte_base] : buffer -> view<32xi32, #dense>
