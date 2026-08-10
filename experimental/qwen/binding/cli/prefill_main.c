@@ -20,16 +20,15 @@
 #include "iree/tokenizer/types.h"
 #include "iree/tooling/device_util.h"
 
-#define QWEN_PREFILL_TOKEN_COUNT 512
+#define QWEN_PREFILL_MIN_TOKEN_COUNT 32
+#define QWEN_PREFILL_MAX_TOKEN_COUNT 512
 #define QWEN_CONTEXT_CAPACITY 576
-#define QWEN_PREFILL_TOKEN_BYTE_LENGTH \
-  (QWEN_PREFILL_TOKEN_COUNT * sizeof(iree_tokenizer_token_id_t))
 
 IREE_FLAG(string, tokens, "",
-          "Raw token IDs: exactly 512 little-endian I32 values.");
+          "Raw token IDs: exactly 32, 64, 128, 256, or 512 little-endian I32 "
+          "values.");
 IREE_FLAG(int32_t, expected_token, IREE_TOKENIZER_TOKEN_ID_INVALID,
-          "Expected selected token (pinned oracle: 264); omit to skip "
-          "validation.");
+          "Expected selected prefill token; omit to skip validation.");
 IREE_FLAG(bool, decode_one, false,
           "Consume the device-published prefill token at position 512 and "
           "execute one exact-count decode issue.");
@@ -40,8 +39,8 @@ IREE_FLAG(bool, command_access_sanitizer, false,
           "Compile command-program kernels with report-only access checks; "
           "requires --amdgpu_asan=true.");
 IREE_FLAG(bool, command_barrier_waves, false,
-          "Diagnostically issue Prefill-512 one barrier wave at a time and "
-          "report each completed canonical command range.");
+          "Diagnostically issue the selected prefill one barrier wave at a "
+          "time and report each completed canonical command range.");
 IREE_FLAG(int32_t, command_capture_prefix, -1,
           "Execute canonical commands [0, N) and capture the complete "
           "transient backing root without issuing command N.");
@@ -50,26 +49,26 @@ IREE_FLAG(string, command_capture_transient, "",
           "--command_capture_prefix.");
 
 static const char* const qwen_prefill_cli_usage =
-    "Runs complete Qwen prefill-512 and optional exact-count one-token "
-    "decode.\n"
+    "Runs one exact Qwen prefill shape and optional one-token Decode-576.\n"
     "\n"
     "Required flags:\n"
     "  --device=<device URI>\n"
     "  --parameters=<GGUF or parameter archive path>\n"
-    "  --tokens=<raw 512-element little-endian I32 token path>\n"
+    "  --tokens=<raw 32/64/128/256/512-element little-endian I32 path>\n"
     "\n"
     "Optional validation:\n"
-    "  --expected_token=<prefill-selected token ID; pinned oracle is 264>\n"
+    "  --expected_token=<prefill-selected token ID>\n"
     "  --decode_one\n"
     "  --expected_decode_token=<decode-selected token ID>\n"
     "  --command_barrier_waves\n"
     "  --command_capture_prefix=<first excluded canonical command>\n"
     "  --command_capture_transient=<transient root output path>\n"
     "\n"
-    "Both stages execute reusable command programs from one compiled "
-    "multi-root package. Profiling flags surround the prefill issue. "
-    "Barrier-wave and prefix-capture modes are fault-localization only and "
-    "invalidate timing.\n";
+    "Decode-576 currently requires the 512-row prefill root. Both stages "
+    "execute reusable command programs from one compiled multi-root package. "
+    "Profiling flags surround the prefill issue. Barrier-wave and "
+    "prefix-capture modes are fault-localization only and invalidate timing."
+    "\n";
 
 typedef struct qwen_prefill_cli_timepoint_t {
   // Timeline semaphore carrying this timepoint.
@@ -88,12 +87,30 @@ static iree_hal_semaphore_list_t qwen_prefill_cli_timepoint_list(
   return list;
 }
 
+static const char* qwen_prefill_cli_program_name(
+    qwen_command_program_t program) {
+  switch (program) {
+    case QWEN_COMMAND_PROGRAM_PREFILL_32:
+      return "prefill-32";
+    case QWEN_COMMAND_PROGRAM_PREFILL_64:
+      return "prefill-64";
+    case QWEN_COMMAND_PROGRAM_PREFILL_128:
+      return "prefill-128";
+    case QWEN_COMMAND_PROGRAM_PREFILL_256:
+      return "prefill-256";
+    case QWEN_COMMAND_PROGRAM_PREFILL_512:
+      return "prefill-512";
+    case QWEN_COMMAND_PROGRAM_DECODE_576:
+      return "decode-576";
+    default:
+      return "unknown";
+  }
+}
+
 static void qwen_prefill_cli_barrier_wave_callback(
     void* user_data, const qwen_command_barrier_wave_event_info_t* event_info) {
   (void)user_data;
-  const char* program_name =
-      event_info->program == QWEN_COMMAND_PROGRAM_PREFILL_512 ? "prefill"
-                                                              : "decode";
+  const char* program_name = qwen_prefill_cli_program_name(event_info->program);
   const char* event_name =
       event_info->event == QWEN_COMMAND_BARRIER_WAVE_EVENT_BEFORE_EXECUTE
           ? "issuing"
@@ -126,8 +143,10 @@ static iree_status_t qwen_wait_for_model_ready_bringup_workaround(
 static iree_status_t qwen_prefill_cli_load_tokens(
     iree_string_view_t path, iree_allocator_t host_allocator,
     iree_io_file_contents_t** out_contents,
-    iree_tokenizer_token_id_t out_token_ids[QWEN_PREFILL_TOKEN_COUNT]) {
+    iree_tokenizer_token_id_t out_token_ids[QWEN_PREFILL_MAX_TOKEN_COUNT],
+    iree_host_size_t* out_token_count) {
   *out_contents = NULL;
+  *out_token_count = 0;
   if (iree_string_view_is_empty(path)) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "--tokens must specify a token-ID file");
@@ -135,8 +154,13 @@ static iree_status_t qwen_prefill_cli_load_tokens(
 
   IREE_RETURN_IF_ERROR(iree_io_file_contents_map(path, IREE_IO_FILE_ACCESS_READ,
                                                  host_allocator, out_contents));
-  if ((*out_contents)->const_buffer.data_length !=
-      QWEN_PREFILL_TOKEN_BYTE_LENGTH) {
+  const iree_host_size_t byte_length =
+      (*out_contents)->const_buffer.data_length;
+  if (byte_length <
+          QWEN_PREFILL_MIN_TOKEN_COUNT * sizeof(iree_tokenizer_token_id_t) ||
+      byte_length % sizeof(iree_tokenizer_token_id_t) != 0 ||
+      byte_length >
+          QWEN_PREFILL_MAX_TOKEN_COUNT * sizeof(iree_tokenizer_token_id_t)) {
     const iree_host_size_t actual_byte_length =
         (*out_contents)->const_buffer.data_length;
     iree_io_file_contents_free(*out_contents);
@@ -144,18 +168,46 @@ static iree_status_t qwen_prefill_cli_load_tokens(
     return iree_make_status(
         IREE_STATUS_INVALID_ARGUMENT,
         "token-ID file '%.*s' has %" PRIhsz
-        " bytes; expected exactly %zu little-endian I32 bytes",
+        " bytes; expected %d to %d complete little-endian I32 values",
         (int)path.size, path.data, actual_byte_length,
-        QWEN_PREFILL_TOKEN_BYTE_LENGTH);
+        QWEN_PREFILL_MIN_TOKEN_COUNT, QWEN_PREFILL_MAX_TOKEN_COUNT);
   }
 
+  *out_token_count = byte_length / sizeof(iree_tokenizer_token_id_t);
   const uint8_t* source_data = (*out_contents)->const_buffer.data;
-  for (iree_host_size_t i = 0; i < QWEN_PREFILL_TOKEN_COUNT; ++i) {
+  for (iree_host_size_t i = 0; i < *out_token_count; ++i) {
     const uint32_t token_bits =
         iree_unaligned_load_le_u32(source_data + i * sizeof(uint32_t));
     memcpy(&out_token_ids[i], &token_bits, sizeof(token_bits));
   }
   return iree_ok_status();
+}
+
+static iree_status_t qwen_prefill_cli_select_program(
+    iree_host_size_t token_count, qwen_command_program_t* out_program) {
+  switch (token_count) {
+    case 32:
+      *out_program = QWEN_COMMAND_PROGRAM_PREFILL_32;
+      return iree_ok_status();
+    case 64:
+      *out_program = QWEN_COMMAND_PROGRAM_PREFILL_64;
+      return iree_ok_status();
+    case 128:
+      *out_program = QWEN_COMMAND_PROGRAM_PREFILL_128;
+      return iree_ok_status();
+    case 256:
+      *out_program = QWEN_COMMAND_PROGRAM_PREFILL_256;
+      return iree_ok_status();
+    case 512:
+      *out_program = QWEN_COMMAND_PROGRAM_PREFILL_512;
+      return iree_ok_status();
+    default:
+      return iree_make_status(
+          IREE_STATUS_INVALID_ARGUMENT,
+          "Qwen command prefill supports exactly 32, 64, 128, 256, or 512 "
+          "tokens; received %" PRIhsz,
+          token_count);
+  }
 }
 
 static iree_status_t qwen_prefill_cli_run(void) {
@@ -196,11 +248,24 @@ static iree_status_t qwen_prefill_cli_run(void) {
         "prefix capture cannot be combined with barrier-wave issue, decode, "
         "or selected-token validation");
   }
-  iree_tokenizer_token_id_t token_ids[QWEN_PREFILL_TOKEN_COUNT];
+  iree_tokenizer_token_id_t token_ids[QWEN_PREFILL_MAX_TOKEN_COUNT];
+  iree_host_size_t prefill_token_count = 0;
+  qwen_command_program_t prefill_program = QWEN_COMMAND_PROGRAM_COUNT;
   iree_io_file_contents_t* token_contents = NULL;
-  status =
-      qwen_prefill_cli_load_tokens(iree_make_cstring_view(FLAG_tokens),
-                                   host_allocator, &token_contents, token_ids);
+  status = qwen_prefill_cli_load_tokens(iree_make_cstring_view(FLAG_tokens),
+                                        host_allocator, &token_contents,
+                                        token_ids, &prefill_token_count);
+  if (iree_status_is_ok(status)) {
+    status =
+        qwen_prefill_cli_select_program(prefill_token_count, &prefill_program);
+  }
+  if (iree_status_is_ok(status) && FLAG_decode_one &&
+      prefill_program != QWEN_COMMAND_PROGRAM_PREFILL_512) {
+    status = iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "--decode_one requires the 512-token prefill root until additional "
+        "decode context classes are available");
+  }
 
   qwen_tooling_runtime_context_t runtime_context;
   if (iree_status_is_ok(status)) {
@@ -266,7 +331,7 @@ static iree_status_t qwen_prefill_cli_run(void) {
   if (iree_status_is_ok(status)) {
     qwen_request_options_t request_options;
     qwen_request_options_initialize(&request_options);
-    request_options.token_capacity = QWEN_PREFILL_TOKEN_COUNT;
+    request_options.token_capacity = QWEN_PREFILL_MAX_TOKEN_COUNT;
     request_options.context_capacity = QWEN_CONTEXT_CAPACITY;
     status = qwen_request_create(
         model, &request_options, qwen_prefill_cli_timepoint_list(&model_ready),
@@ -281,7 +346,7 @@ static iree_status_t qwen_prefill_cli_run(void) {
   if (iree_status_is_ok(status)) {
     status = qwen_request_reset_tokens(
         request, /*context_base=*/0,
-        iree_tokenizer_make_token_id_list(token_ids, QWEN_PREFILL_TOKEN_COUNT),
+        iree_tokenizer_make_token_id_list(token_ids, prefill_token_count),
         qwen_prefill_cli_timepoint_list(&request_ready),
         qwen_prefill_cli_timepoint_list(&tokens_ready));
   }
@@ -296,8 +361,8 @@ static iree_status_t qwen_prefill_cli_run(void) {
       .next = NULL,
   };
   if (iree_status_is_ok(status)) {
-    status = qwen_command_package_query_program(
-        command_package, QWEN_COMMAND_PROGRAM_PREFILL_512, &prefill_info);
+    status = qwen_command_package_query_program(command_package,
+                                                prefill_program, &prefill_info);
   }
 
   uint8_t* transient_capture = NULL;
@@ -315,7 +380,7 @@ static iree_status_t qwen_prefill_cli_run(void) {
   }
   if (iree_status_is_ok(status) && capture_prefix_requested) {
     status = qwen_command_package_capture_transient_prefix(
-        command_package, QWEN_COMMAND_PROGRAM_PREFILL_512, request,
+        command_package, prefill_program, request,
         (uint32_t)FLAG_command_capture_prefix,
         iree_make_byte_span(
             transient_capture,
@@ -362,8 +427,7 @@ static iree_status_t qwen_prefill_cli_run(void) {
   }
   if (iree_status_is_ok(status) && !capture_prefix_requested) {
     status = qwen_command_package_issue(
-        command_package, QWEN_COMMAND_PROGRAM_PREFILL_512, request,
-        prefill_issue_options_ptr,
+        command_package, prefill_program, request, prefill_issue_options_ptr,
         qwen_prefill_cli_timepoint_list(&tokens_ready),
         qwen_prefill_cli_timepoint_list(&issue_complete));
   }
@@ -393,9 +457,10 @@ static iree_status_t qwen_prefill_cli_run(void) {
     const qwen_model_statistics_t model_statistics =
         qwen_model_statistics(model);
     fprintf(stdout,
-            "Qwen command prefill 512 selected token %" PRId32 ": %" PRIu64
-            " resident bytes, %" PRIu64 " transient bytes\n",
-            selected_token, (uint64_t)model_statistics.allocation_bytes,
+            "Qwen command prefill %" PRIhsz " selected token %" PRId32
+            ": %" PRIu64 " resident bytes, %" PRIu64 " transient bytes\n",
+            prefill_token_count, selected_token,
+            (uint64_t)model_statistics.allocation_bytes,
             (uint64_t)prefill_info.transient_byte_length);
   }
 
