@@ -290,19 +290,23 @@ command representation and issue path do not change.
 ## Current proof boundary
 
 The generic command-program stack executes reusable multi-root command buffers
-on AMDGPU through the public APIs above. The production Qwen path now exercises
-the same complete lifecycle: its targetless 48-layer decode root partitions
-into one root unit plus 14 independently compiled kernel units, compiles those
-units concurrently, assembles the selected root, loads one shared HAL package,
-validates every fixed parameter range against the live model slab, and records
-one reusable 293-dispatch command buffer.
+on AMDGPU through the public APIs above. The production Qwen package now owns
+six roots: exact PP32, PP64, PP128, PP256, and PP512 programs over one authored
+prefill body plus Decode-576. The compiler partitions and deduplicates their
+kernel dependencies, compiles independent units concurrently, assembles the
+selected root set, loads one shared HAL package, validates every fixed
+parameter range against the live model slab, and records one reusable command
+buffer per root.
 
-`qwen_decode_command_program_prepare` owns that cold path and may run while the
-model gather is in flight. `qwen_decode_command_program_issue` supplies the KV
-caches, request state, output staging, and packed transient slab through the
-five-entry binding table and submits the recorded command buffer without a
-graph walk, compilation, launch evaluation, parameter lookup, allocation
-planning, or command recording. The prefill CLI exposes this exact path behind
-`--decode_one --decode_command_program`; on the pinned prefill-512 oracle, both
-the existing owned decode runner and the materialized command program select
-token 264 at context 513 on gfx1100.
+`qwen_command_package_prepare` owns that cold path and runs while the model
+gather is in flight. `qwen_command_package_issue` supplies the KV caches,
+request state, output staging, and packed transient slab through the reported
+binding table. Every issue submits an existing recording without a graph walk,
+compilation, launch evaluation, parameter lookup, allocation planning, or
+command recording.
+
+Both the raw-token fixture CLI and the tokenizer-backed `qwen-cli` execute only
+through that package. A live PP32 text run issued one prefill and seven
+Decode-576 continuations; all eight token IDs matched the independent owned
+runner. The smaller PP32 to Decode-576 boundary and the existing PP512 to
+Decode-576 boundary also reproduce their owned full-model selected tokens.

@@ -23,10 +23,8 @@
 #include "loomc/target/cmd.h"
 #include "loomc/target/cmd/iree_hal.h"
 
-#define QWEN_COMMAND_MAXIMUM_PREFILL_TOKEN_COUNT 512
 #define QWEN_COMMAND_INITIAL_CONTEXT_BASE 0
 #define QWEN_COMMAND_MINIMUM_DECODE_CONTEXT_BASE 0
-#define QWEN_COMMAND_CONTEXT_CAPACITY 576
 #define QWEN_COMMAND_FIXED_BUFFER_COUNT 2
 #define QWEN_COMMAND_INITIAL_SEMAPHORE_CAPACITY 8
 
@@ -98,8 +96,8 @@ static const qwen_command_program_descriptor_t
         [QWEN_COMMAND_PROGRAM_PREFILL_512] =
             {
                 .export_name = "qwen3_30b_prefill_512",
-                .token_count = QWEN_COMMAND_MAXIMUM_PREFILL_TOKEN_COUNT,
-                .context_count = QWEN_COMMAND_MAXIMUM_PREFILL_TOKEN_COUNT,
+                .token_count = QWEN_COMMAND_PREFILL_TOKEN_CAPACITY,
+                .context_count = QWEN_COMMAND_PREFILL_TOKEN_CAPACITY,
                 .minimum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE,
                 .maximum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE + 1,
             },
@@ -273,7 +271,7 @@ void qwen_command_package_options_initialize(
   *out_options = (qwen_command_package_options_t){
       .structure_size = sizeof(*out_options),
       .next = NULL,
-      .request_token_capacity = QWEN_COMMAND_MAXIMUM_PREFILL_TOKEN_COUNT,
+      .request_token_capacity = QWEN_COMMAND_PREFILL_TOKEN_CAPACITY,
       .context_capacity = QWEN_COMMAND_CONTEXT_CAPACITY,
       .request_flags = QWEN_REQUEST_FLAG_NONE,
       .sanitizer_checks = 0,
@@ -365,12 +363,11 @@ static iree_status_t qwen_command_validate_options(
         IREE_STATUS_INVALID_ARGUMENT,
         "Qwen command-package option extensions are unsupported");
   }
-  if (options->request_token_capacity <
-      QWEN_COMMAND_MAXIMUM_PREFILL_TOKEN_COUNT) {
+  if (options->request_token_capacity < QWEN_COMMAND_PREFILL_TOKEN_CAPACITY) {
     return iree_make_status(
         IREE_STATUS_INVALID_ARGUMENT,
         "Qwen command package requires at least %d request token rows",
-        QWEN_COMMAND_MAXIMUM_PREFILL_TOKEN_COUNT);
+        QWEN_COMMAND_PREFILL_TOKEN_CAPACITY);
   }
   if (options->context_capacity != QWEN_COMMAND_CONTEXT_CAPACITY) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
