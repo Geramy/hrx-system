@@ -320,11 +320,13 @@ iree-bazel-run //experimental/qwen/binding/cli:qwen-prefill-cli -- \
   --expected_decode_token=<oracle-token>
 ```
 
-The benchmark executable owns the same model, request, and reusable program
-objects independently of the CLI. It consumes the leading
-`--prefill_token_count` values from the 512-token fixture, prepares only that
-shape, and requires its selected-token oracle explicitly. This keeps a
-shape-filtered optimization run from compiling unrelated prefill programs:
+The benchmark executable owns the same model and request independently of the
+CLI. It prepares both the owned recorder and the six-root command package,
+then exposes independently filterable rows for the selected exact prefill
+shape. Setup, compilation, command recording, and warmup remain outside the
+manual issue-to-completion interval. Both paths consume the leading
+`--prefill_token_count` values from the 512-token fixture and require the same
+selected-token oracle explicitly:
 
 ```sh
 iree-bazel-run \
@@ -335,13 +337,15 @@ iree-bazel-run \
   --prefill_token_count=512 \
   --expected_prefill_token=264 \
   --expected_decode_token=<oracle-token> \
-  --benchmark_filter='Qwen/FullModel/(Prefill/512|Decode/513)'
+  --benchmark_filter='Qwen/FullModel/(Owned|Command)/(Prefill/512|Decode/513)'
 ```
 
 Use the same command with counts such as 32 or 128 and their matching external
-prefill oracle to produce resident `Prefill/32` or `Prefill/128` rows. When an
-expected decode token is supplied, the runner appends the validated prefill
-selection and registers the corresponding `Decode/<prefill-count + 1>` row.
+prefill oracle to compare resident `Owned/Prefill/32` and
+`Command/Prefill/32`, or the corresponding 128-row pair. Decode comparison is
+registered only for a 512-token prefill: both implementations then use the
+same 576-row compiled attention schedule while issuing the token at position
+512.
 
 Model files and token fixtures are intentionally not repository inputs. The
 authored kernel cases use bounded synthetic packed data, so individual kernels

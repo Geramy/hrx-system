@@ -54,6 +54,7 @@ iree_runtime_cc_binary(
         "//loom/config/execute:amdgpu_hal",
     ]),
     deps = [
+        "//experimental/qwen/runtime:command_package",
         "//experimental/qwen/runtime:model",
         "//experimental/qwen/runtime:model_shape",
         "//experimental/qwen/runtime:program",
