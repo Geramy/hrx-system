@@ -38,7 +38,7 @@ typedef enum qwen_command_program_e {
   QWEN_COMMAND_PROGRAM_PREFILL_256 = 3,
   // Exact 512-row initial prefill with a 512-row attention extent.
   QWEN_COMMAND_PROGRAM_PREFILL_512 = 4,
-  // One-token decode over the 576-row context class.
+  // One-token decode over a 576-row attention and cache capacity.
   QWEN_COMMAND_PROGRAM_DECODE_576 = 5,
   // Number of known command programs.
   QWEN_COMMAND_PROGRAM_COUNT = 6,
@@ -151,6 +151,12 @@ typedef struct qwen_command_issue_options_t {
 // Initializes |out_options| for the exact prefill family and Decode-576.
 IREE_API_EXPORT void qwen_command_package_options_initialize(
     qwen_command_package_options_t* out_options);
+
+// Selects the exact initial-prefill program matching |token_count|.
+//
+// Returns INVALID_ARGUMENT when no prepared exact shape matches.
+IREE_API_EXPORT iree_status_t qwen_command_select_prefill_program(
+    iree_host_size_t token_count, qwen_command_program_t* out_program);
 
 // Initializes |out_options| for a normal whole-program issue.
 IREE_API_EXPORT void qwen_command_issue_options_initialize(
