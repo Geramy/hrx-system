@@ -104,11 +104,11 @@ func.template<ggml.quantize_q8_1_x4.group_body> device @ggml_quantize_q8_1_x4_gr
   %input_values = vector.load %input_view[%input_index] : view<[%launched_element_count]xf32, #dense> -> vector<4xf32>
   %absolute_values = vector.absf %input_values : vector<4xf32>
   %thread_max = vector.reduce<maxnumf> %absolute_values, %c0_f32 : vector<4xf32>, f32
-  %scratch = buffer.alloca %scratch_bytes {base_alignment = 16, memory_space = workgroup} : buffer
+  %scratch = buffer.alloca<workgroup> align(16) %scratch_bytes : buffer
   %scratch_values = buffer.view %scratch[%c0_offset] : buffer -> view<32xf32, #dense>
   %scratch_d = buffer.view %scratch[%scratch_d_byte_add] : buffer -> view<4xf32, #dense>
   view.store %thread_max, %scratch_values[%lane] : f32, view<32xf32, #dense>
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   %is_cohort_leader = index.cmp eq, %word_in_block, %c0 : index
   scf.if %is_cohort_leader {
     %cohort_base = index.mul %block_in_group, %c8 : index
@@ -117,7 +117,7 @@ func.template<ggml.quantize_q8_1_x4.group_body> device @ggml_quantize_q8_1_x4_gr
     %d = scalar.divf %amax, %c127 : f32
     view.store %d, %scratch_d[%block_in_group] : f32, view<4xf32, #dense>
   }
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   %d = view.load %scratch_d[%block_in_group] : view<4xf32, #dense> -> f32
   %d_nonzero = scalar.cmpf one, %d, %c0_f32 : f32
   %d_inverse = scf.if %d_nonzero -> (f32) {
@@ -142,7 +142,7 @@ func.template<ggml.quantize_q8_1_x4.group_body> device @ggml_quantize_q8_1_x4_gr
   }
   %thread_sum = vector.reduce<addf> %rounded_values, %c0_f32 : vector<4xf32>, f32
   view.store %thread_sum, %scratch_values[%lane] : f32, view<32xf32, #dense>
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   %publishes_metadata = scalar.andi %is_cohort_leader, %publish_output : i1
   scf.if %publishes_metadata {
     %cohort_base = index.mul %block_in_group, %c8 : index

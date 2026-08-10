@@ -199,10 +199,10 @@ func.template<qwen3_moe.routed_down.quantized_prefill.body> device @qwen3_moe_ro
   %count_view = buffer.view %expert_table_noalias[%c0_offset] : buffer -> view<[%bounded_expert_count]xi32, #dense>
   %assignment_view = buffer.view %expert_table_noalias[%assignment_table_byte_base] : buffer -> view<[%bounded_expert_count]x[%token_count]xi32, #dense>
   %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%assignment_count]x[%bounded_output_size]xf16, #dense>
-  %weight_stage = buffer.alloca %weight_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
-  %activation_stage = buffer.alloca %activation_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
-  %route_stage = buffer.alloca %route_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
-  %result_stage = buffer.alloca %result_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
+  %weight_stage = buffer.alloca<workgroup> align(16) %weight_stage_bytes : buffer
+  %activation_stage = buffer.alloca<workgroup> align(16) %activation_stage_bytes : buffer
+  %route_stage = buffer.alloca<workgroup> align(16) %route_stage_bytes : buffer
+  %result_stage = buffer.alloca<workgroup> align(16) %result_stage_bytes : buffer
   %weight_stage_view = buffer.view %weight_stage[%c0_offset] : buffer -> view<64x40xf16, #dense>
   %activation_stage_physical_view = buffer.view %activation_stage[%c0_offset] : buffer -> view<32x40xf16, #dense>
   %activation_fragment_layout = encoding.layout.strided [1, %c40] : encoding<layout>
@@ -248,7 +248,7 @@ func.template<qwen3_moe.routed_down.quantized_prefill.body> device @qwen3_moe_ro
       }
       view.store %assignment_i32, %route_stage_view[%local_route] : i32, view<32xi32, #dense>
     }
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     %load_packet = index.rem %workitem, %c8 : index
     %load_k = index.mul %load_packet, %c4 : index
     %load_row0 = index.div %workitem, %c8 : index
@@ -417,7 +417,7 @@ func.template<qwen3_moe.routed_down.quantized_prefill.body> device @qwen3_moe_ro
               vector.store %activation_values, %activation_stage_physical_view[%activation_row, %load_k] : vector<4xf16>, view<32x40xf16, #dense>
             }
           }
-          kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+          kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
           %next00, %next01, %next10, %next11 = scf.for %k_half = [%c0 to %c32 step %c16](%half_acc00 = %group_acc00 : vector<8xf16>, %half_acc01 = %group_acc01 : vector<8xf16>, %half_acc10 = %group_acc10 : vector<8xf16>, %half_acc11 = %group_acc11 : vector<8xf16>) -> (vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>) unroll {
             %lhs0 = vector.fragment.load<lhs> %weight_stage_view[%subgroup_channel_add, %k_half] shape [%m, %k] : view<64x40xf16, #dense> -> vector<16xf16>
             %lhs1 = vector.fragment.load<lhs> %weight_stage_view[%subgroup_channel1, %k_half] shape [%m, %k] : view<64x40xf16, #dense> -> vector<16xf16>
@@ -429,7 +429,7 @@ func.template<qwen3_moe.routed_down.quantized_prefill.body> device @qwen3_moe_ro
             %half_next11 = vector.mma %lhs1, %rhs1, %half_acc11 : vector<16xf16>, vector<16xf16>, vector<8xf16>
             scf.yield %half_next00, %half_next01, %half_next10, %half_next11 : vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>
           }
-          kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+          kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
           scf.yield %next00, %next01, %next10, %next11 : vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>
         }
         scf.yield %outer_result00, %outer_result01, %outer_result10, %outer_result11 : vector<8xf16>, vector<8xf16>, vector<8xf16>, vector<8xf16>
@@ -467,31 +467,31 @@ func.template<qwen3_moe.routed_down.quantized_prefill.body> device @qwen3_moe_ro
     %writes10 = scalar.andi %assignment0_nonnegative, %valid_channel1 : i1
     %writes11 = scalar.andi %assignment1_nonnegative, %valid_channel1 : i1
     vector.fragment.store<result> %result00, %result_fragment_view[%c0, %c0] shape [%m, %n] : vector<8xf16>, view<16x16xf16, %result_fragment_layout>
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = subgroup}
+    kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
     scf.if %writes00 {
       %values = vector.load %result_physical_view[%publish_route, %publish_channel_add] : view<16x16xf16, #dense> -> vector<4xf16>
       %mask = vector.mask.range [%channel0 to %bounded_output_size step %c1] : index -> vector<4xi1>
       vector.store.mask %values, %output_view[%bounded_assignment0, %channel0], %mask : vector<4xf16>, view<[%assignment_count]x[%bounded_output_size]xf16, #dense>, vector<4xi1>
     }
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = subgroup}
+    kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
     vector.fragment.store<result> %result01, %result_fragment_view[%c0, %c0] shape [%m, %n] : vector<8xf16>, view<16x16xf16, %result_fragment_layout>
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = subgroup}
+    kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
     scf.if %writes01 {
       %values = vector.load %result_physical_view[%publish_route, %publish_channel_add] : view<16x16xf16, #dense> -> vector<4xf16>
       %mask = vector.mask.range [%channel0 to %bounded_output_size step %c1] : index -> vector<4xi1>
       vector.store.mask %values, %output_view[%bounded_assignment1, %channel0], %mask : vector<4xf16>, view<[%assignment_count]x[%bounded_output_size]xf16, #dense>, vector<4xi1>
     }
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = subgroup}
+    kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
     vector.fragment.store<result> %result10, %result_fragment_view[%c0, %c0] shape [%m, %n] : vector<8xf16>, view<16x16xf16, %result_fragment_layout>
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = subgroup}
+    kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
     scf.if %writes10 {
       %values = vector.load %result_physical_view[%publish_route, %publish_channel_add] : view<16x16xf16, #dense> -> vector<4xf16>
       %mask = vector.mask.range [%channel1 to %bounded_output_size step %c1] : index -> vector<4xi1>
       vector.store.mask %values, %output_view[%bounded_assignment0, %channel1], %mask : vector<4xf16>, view<[%assignment_count]x[%bounded_output_size]xf16, #dense>, vector<4xi1>
     }
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = subgroup}
+    kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
     vector.fragment.store<result> %result11, %result_fragment_view[%c0, %c0] shape [%m, %n] : vector<8xf16>, view<16x16xf16, %result_fragment_layout>
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = subgroup}
+    kernel.barrier<workgroup> scope(subgroup) ordering(acq_rel)
     scf.if %writes11 {
       %values = vector.load %result_physical_view[%publish_route, %publish_channel_add] : view<16x16xf16, #dense> -> vector<4xf16>
       %mask = vector.mask.range [%channel1 to %bounded_output_size step %c1] : index -> vector<4xi1>
@@ -499,7 +499,7 @@ func.template<qwen3_moe.routed_down.quantized_prefill.body> device @qwen3_moe_ro
     }
     // Route, operand, and result stages are reused by the next concentrated
     // routing partition. All waves must finish publication before reuse.
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   }
   func.return
 }

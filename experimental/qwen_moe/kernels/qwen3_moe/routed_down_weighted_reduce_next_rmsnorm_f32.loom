@@ -56,7 +56,7 @@ kernel.def target(@qwen3_moe_routed_down_next_norm_gfx11_wave32) @qwen3_moe_rout
   %hidden_state_view = buffer.view %hidden_state_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32, #dense>
   %next_norm_weight_view = buffer.view %next_norm_weight_noalias[%c0_offset] : buffer -> view<[%hidden_size]xf32, #dense>
   %next_projection_input_view = buffer.view %next_projection_input_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32, #dense>
-  %scratch = buffer.alloca %scratch_bytes {base_alignment = 16, memory_space = workgroup} : buffer
+  %scratch = buffer.alloca<workgroup> align(16) %scratch_bytes : buffer
   %scratch_view = buffer.view %scratch[%c0_offset] : buffer -> view<8xf32, #dense>
 
   // The predicate depends only on the workgroup ID, so every workitem either
@@ -82,7 +82,7 @@ kernel.def target(@qwen3_moe_routed_down_next_norm_gfx11_wave32) @qwen3_moe_rout
     scf.if %is_subgroup_leader {
       view.store %subgroup_sum, %scratch_view[%subgroup] : f32, view<8xf32, #dense>
     }
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     %is_reduction_subgroup = index.cmp eq, %subgroup, %c0 : index
     %is_reduction_lane = index.cmp ult, %lane, %c8 : index
     %loads_subgroup_sum = scalar.andi %is_reduction_subgroup, %is_reduction_lane : i1
@@ -100,7 +100,7 @@ kernel.def target(@qwen3_moe_routed_down_next_norm_gfx11_wave32) @qwen3_moe_rout
       %scale = scalar.rsqrtf<nnan|ninf|nsz|afn> %biased_mean : f32
       view.store %scale, %scratch_view[%c0] : f32, view<8xf32, #dense>
     }
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
 
     %scale = view.load %scratch_view[%c0] : view<8xf32, #dense> -> f32
     %scale_x8 = vector.splat %scale : vector<8xf32>

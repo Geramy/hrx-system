@@ -117,7 +117,7 @@ func.def inline @ggml_q6k_stage_f32_scales(%input_size: index, %row: index, %blo
   %scale_stage_view = buffer.view %scale_stage[%c0_offset] : buffer -> view<[%frame_count]x64xf32, #dense>
   %scale = func.call @ggml_q6k_load_f32_scale(%input_size, %row, %block, %bounded_lane, %weight) : (index, index, index, index, buffer) -> (f32)
   view.store %scale, %scale_stage_view[%frame, %bounded_lane] : f32, view<[%frame_count]x64xf32, #dense>
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   func.return
 }
 
@@ -264,7 +264,7 @@ func.template<ggml.linear_q6k_f32.body> device @ggml_linear_q6k_f32_body(%publis
   %cohort = index.div %lane, %c16 : index
   scf.if %publish_output {
     %input_noalias, %weight_noalias, %output_noalias = buffer.assume.noalias %input, %weight, %output : buffer, buffer, buffer
-    %scale_stage = buffer.alloca %scale_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
+    %scale_stage = buffer.alloca<workgroup> align(16) %scale_stage_bytes : buffer
     %acc0, %acc1 = scf.for %block_base = [%c0 to %block_count step %c4](%row_acc0 = %c0_f32 : f32, %row_acc1 = %c0_f32 : f32) -> (f32, f32) {
       %block = index.add %block_base, %cohort : index
       func.call @ggml_q6k_stage_f32_scales(%bounded_input_size, %row0, %block, %c2, %c0, %lane, %weight_noalias, %scale_stage) : (index, index, index, index, index, index, buffer, buffer)

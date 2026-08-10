@@ -128,11 +128,11 @@ kernel.def target(@qwen3_moe_attention_gfx11_wave64) @qwen3_moe_flash_attention_
   %value_view = buffer.view %value_aligned[%c0_offset] : buffer -> view<[%bounded_key_value_token_count]x[%key_value_width]xf16, #dense>
   %mask_view = buffer.view %mask_aligned[%c0_offset] : buffer -> view<[%query_token_count]x[%bounded_key_value_token_count]xf16, #dense>
   %output_view = buffer.view %output_aligned[%c0_offset] : buffer -> view<[%query_token_count]x[%query_head_count]x128xf32, #dense>
-  %query_stage = buffer.alloca %query_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
-  %score_stage = buffer.alloca %score_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
-  %probability_stage = buffer.alloca %probability_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
-  %product_stage = buffer.alloca %product_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
-  %tail_key_value_stage = buffer.alloca %tail_key_value_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
+  %query_stage = buffer.alloca<workgroup> align(16) %query_stage_bytes : buffer
+  %score_stage = buffer.alloca<workgroup> align(16) %score_stage_bytes : buffer
+  %probability_stage = buffer.alloca<workgroup> align(16) %probability_stage_bytes : buffer
+  %product_stage = buffer.alloca<workgroup> align(16) %product_stage_bytes : buffer
+  %tail_key_value_stage = buffer.alloca<workgroup> align(16) %tail_key_value_stage_bytes : buffer
   %query_stage_view = buffer.view %query_stage[%c0_offset] : buffer -> view<16x136xf16, #dense>
   %query_transposed_view = buffer.view %query_stage[%c0_offset] : buffer -> view<128x16xf16, %query_transposed_layout>
   %score_stage_view = buffer.view %score_stage[%c0_offset] : buffer -> view<64x24xf32, #dense>
@@ -159,7 +159,7 @@ kernel.def target(@qwen3_moe_attention_gfx11_wave64) @qwen3_moe_flash_attention_
     }
     view.store %query_value, %query_stage_view[%local_query_row, %query_channel] : f16, view<16x136xf16, #dense>
   }
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   %full_max, %full_sum, %full_output0, %full_output1, %full_output2, %full_output3 = scf.for %key_origin = [%c0 to %full_key_value_token_count step %c64](%current_max = %negative_f32x4 : vector<4xf32>, %current_sum = %c0_f32x4 : vector<4xf32>, %current_output0 = %output_zero0 : vector<4xf16>, %current_output1 = %output_zero1 : vector<4xf16>, %current_output2 = %output_zero2 : vector<4xf16>, %current_output3 = %output_zero3 : vector<4xf16>) -> (vector<4xf32>, vector<4xf32>, vector<4xf16>, vector<4xf16>, vector<4xf16>, vector<4xf16>) {
     // Cache the complete 16x64 mask tile before QK. Causal masks leave future
     // KV blocks entirely at negative infinity; reducing the cached tile lets
@@ -200,7 +200,7 @@ kernel.def target(@qwen3_moe_attention_gfx11_wave64) @qwen3_moe_flash_attention_
     scf.if %is_subgroup_leader {
       view.store %subgroup_mask_maximum, %mask_summary_view[%subgroup] : f32, view<4xf32, #dense>
     }
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     %subgroup_mask_maxima = vector.load %mask_summary_view[%c0] : view<4xf32, #dense> -> vector<4xf32>
     %workgroup_mask_maximum = vector.reduce<maxnumf> %subgroup_mask_maxima, %negative_large : vector<4xf32>, f32
     %block_has_attention = scalar.cmpf ogt, %workgroup_mask_maximum, %negative_large : f32
@@ -219,7 +219,7 @@ kernel.def target(@qwen3_moe_attention_gfx11_wave64) @qwen3_moe_flash_attention_
         scf.yield %next_score_accumulator : vector<4xf32>
       }
       vector.fragment.store<result> %score_fragment, %score_stage_view[%subgroup_score_column, %c0] shape [%m, %n] : vector<4xf32>, view<64x24xf32, #dense>
-      kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+      kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
       // LDS transposes ownership from one 16-column score slice per wave to
       // four complete query rows per wave. Every lane contributes one key
       // column to each of those rows.
@@ -250,7 +250,7 @@ kernel.def target(@qwen3_moe_attention_gfx11_wave64) @qwen3_moe_flash_attention_
       view.store %probability1, %probability_stage_view[%query_row1, %lane] : f16, view<16x64xf16, %probability_transposed_layout>
       view.store %probability2, %probability_stage_view[%query_row2, %lane] : f16, view<16x64xf16, %probability_transposed_layout>
       view.store %probability3, %probability_stage_view[%query_row3, %lane] : f16, view<16x64xf16, %probability_transposed_layout>
-      kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+      kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
       // Match the Vulkan CM1 ownership schedule by computing two sequential
       // 64-channel output tiles. This keeps one P*V accumulator live per wave
       // and reuses a 2 KiB exchange tile instead of retaining both halves.
@@ -281,7 +281,7 @@ kernel.def target(@qwen3_moe_attention_gfx11_wave64) @qwen3_moe_flash_attention_
           scf.yield %next_product_accumulator : vector<8xf16>
         }
         vector.fragment.store<result> %product_fragment, %product_stage_view[%c0, %subgroup_product_channel] shape [%m, %n] : vector<8xf16>, view<16x64xf16, #dense>
-        kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+        kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
         %owns_output_tile = index.cmp eq, %lane_output_tile, %output_tile : index
         %updated_output0, %updated_output1, %updated_output2, %updated_output3 = scf.if %owns_output_tile -> (vector<4xf16>, vector<4xf16>, vector<4xf16>, vector<4xf16>) {
           %block_output0 = vector.load %product_stage_view[%query_row0, %lane_product_channel] : view<16x64xf16, #dense> -> vector<4xf16>
@@ -297,7 +297,7 @@ kernel.def target(@qwen3_moe_attention_gfx11_wave64) @qwen3_moe_flash_attention_
           scf.yield %tile_output0, %tile_output1, %tile_output2, %tile_output3 : vector<4xf16>, vector<4xf16>, vector<4xf16>, vector<4xf16>
         }
         // Complete every read before the next output tile overwrites LDS.
-        kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+        kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
         scf.yield %updated_output0, %updated_output1, %updated_output2, %updated_output3 : vector<4xf16>, vector<4xf16>, vector<4xf16>, vector<4xf16>
       }
       scf.yield %next_max, %next_sum, %next_output0, %next_output1, %next_output2, %next_output3 : vector<4xf32>, vector<4xf32>, vector<4xf16>, vector<4xf16>, vector<4xf16>, vector<4xf16>
@@ -331,7 +331,7 @@ kernel.def target(@qwen3_moe_attention_gfx11_wave64) @qwen3_moe_flash_attention_
       }
       view.store %tail_key_value, %tail_key_value_stage_view[%tail_key_row, %tail_key_channel] : f16, view<32x128xf16, #dense>
     }
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     // Waves zero and one compute the two 16-column QK fragments in this tile.
     scf.if %tail_score_wave {
       %tail_score_subgroup = index.assume %subgroup [range(%subgroup, 0, 1)] : index
@@ -346,7 +346,7 @@ kernel.def target(@qwen3_moe_attention_gfx11_wave64) @qwen3_moe_flash_attention_
       }
       vector.fragment.store<result> %tail_score_fragment, %score_stage_view[%tail_score_column, %c0] shape [%m, %n] : vector<4xf32>, view<64x24xf32, #dense>
     }
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     // LDS changes ownership from the QK wave to four query-row waves. Lanes
     // beyond the logical tail never read the score or mask buffers.
     %tail_lane_valid = index.cmp ult, %lane, %tail_key_count : index
@@ -416,7 +416,7 @@ kernel.def target(@qwen3_moe_attention_gfx11_wave64) @qwen3_moe_flash_attention_
     view.store %probability1, %probability_stage_view[%query_row1, %lane] : f16, view<16x64xf16, %probability_transposed_layout>
     view.store %probability2, %probability_stage_view[%query_row2, %lane] : f16, view<16x64xf16, %probability_transposed_layout>
     view.store %probability3, %probability_stage_view[%query_row3, %lane] : f16, view<16x64xf16, %probability_transposed_layout>
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     // Reuse product scratch for V after every probability is resident in its
     // disjoint LDS tile.
     scf.for %load_iteration = [%c0 to %c16 step %c1] unroll {
@@ -435,7 +435,7 @@ kernel.def target(@qwen3_moe_attention_gfx11_wave64) @qwen3_moe_flash_attention_
       }
       view.store %tail_value, %tail_key_value_stage_view[%tail_value_row, %tail_value_channel] : f16, view<32x128xf16, #dense>
     }
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     // Keep tail V staging separate from the 2 KiB product exchange, then use
     // the same two 64-channel phases as the aligned path.
     %old_scale_f16 = vector.fptrunc %old_scale : vector<4xf32> to vector<4xf16>
@@ -462,7 +462,7 @@ kernel.def target(@qwen3_moe_attention_gfx11_wave64) @qwen3_moe_flash_attention_
         scf.yield %next_product_accumulator : vector<8xf16>
       }
       vector.fragment.store<result> %tail_product_fragment, %product_stage_view[%c0, %subgroup_product_channel] shape [%m, %n] : vector<8xf16>, view<16x64xf16, #dense>
-      kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+      kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
       %owns_output_tile = index.cmp eq, %lane_output_tile, %output_tile : index
       %updated_output0, %updated_output1, %updated_output2, %updated_output3 = scf.if %owns_output_tile -> (vector<4xf16>, vector<4xf16>, vector<4xf16>, vector<4xf16>) {
         %block_output0 = vector.load %product_stage_view[%query_row0, %lane_product_channel] : view<16x64xf16, #dense> -> vector<4xf16>
@@ -477,7 +477,7 @@ kernel.def target(@qwen3_moe_attention_gfx11_wave64) @qwen3_moe_flash_attention_
       } else {
         scf.yield %tile_output0, %tile_output1, %tile_output2, %tile_output3 : vector<4xf16>, vector<4xf16>, vector<4xf16>, vector<4xf16>
       }
-      kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+      kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
       scf.yield %updated_output0, %updated_output1, %updated_output2, %updated_output3 : vector<4xf16>, vector<4xf16>, vector<4xf16>, vector<4xf16>
     }
     scf.yield %next_max, %next_sum, %next_output0, %next_output1, %next_output2, %next_output3 : vector<4xf32>, vector<4xf32>, vector<4xf16>, vector<4xf16>, vector<4xf16>, vector<4xf16>

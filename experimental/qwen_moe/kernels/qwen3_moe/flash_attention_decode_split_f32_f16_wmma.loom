@@ -110,10 +110,10 @@ func.template<qwen3_moe.attention.decode_split.produce_partials.active> device @
   %partial_max_view = buffer.view %partial_max_aligned[%c0_offset] : buffer -> view<[%key_value_head_count]x[%key_value_block_count]x16xf32, #dense>
   %partial_sum_view = buffer.view %partial_sum_aligned[%c0_offset] : buffer -> view<[%key_value_head_count]x[%key_value_block_count]x16xf32, #dense>
   %partial_output_view = buffer.view %partial_output_aligned[%c0_offset] : buffer -> view<[%key_value_head_count]x[%key_value_block_count]x16x128xf16, #dense>
-  %query_stage = buffer.alloca %query_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
-  %score_stage = buffer.alloca %score_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
-  %probability_stage = buffer.alloca %probability_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
-  %product_stage = buffer.alloca %product_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
+  %query_stage = buffer.alloca<workgroup> align(16) %query_stage_bytes : buffer
+  %score_stage = buffer.alloca<workgroup> align(16) %score_stage_bytes : buffer
+  %probability_stage = buffer.alloca<workgroup> align(16) %probability_stage_bytes : buffer
+  %product_stage = buffer.alloca<workgroup> align(16) %product_stage_bytes : buffer
   %query_stage_view = buffer.view %query_stage[%c0_offset] : buffer -> view<16x136xf16, #dense>
   %query_transposed_view = buffer.view %query_stage[%c0_offset] : buffer -> view<128x16xf16, %query_transposed_layout>
   %score_stage_view = buffer.view %score_stage[%c0_offset] : buffer -> view<64x24xf32, #dense>
@@ -137,7 +137,7 @@ func.template<qwen3_moe.attention.decode_split.produce_partials.active> device @
     }
     view.store %query_value, %query_stage_view[%local_query_row, %query_channel] : f16, view<16x136xf16, #dense>
   }
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   %score_init_values = vector.constant 0.0 : vector<4xf32>
   %score_init = vector.fragment<init> %score_init_values shape [%m, %n] : vector<4xf32>
   %score_fragment = scf.if %is_full_block -> (vector<4xf32>) {
@@ -175,17 +175,17 @@ func.template<qwen3_moe.attention.decode_split.produce_partials.active> device @
         }
         view.store %key_value, %tail_key_stage_view[%key_row, %head_channel] : f16, view<64x16xf16, #dense>
       }
-      kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+      kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
       %key_fragment = vector.fragment.load<lhs> %tail_key_stage_view[%subgroup_score_column, %c0] shape [%m, %k] : view<64x16xf16, #dense> -> vector<16xf16>
       %query_fragment = vector.fragment.load<rhs> %query_transposed_view[%head_tile, %c0] shape [%k, %n] : view<128x16xf16, %query_transposed_layout> -> vector<16xf16>
       %next_score_accumulator = vector.mma %key_fragment, %query_fragment, %score_accumulator : vector<16xf16>, vector<16xf16>, vector<4xf32>
-      kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+      kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
       scf.yield %next_score_accumulator : vector<4xf32>
     }
     scf.yield %tail_score_fragment : vector<4xf32>
   }
   vector.fragment.store<result> %score_fragment, %score_stage_view[%subgroup_score_column, %c0] shape [%m, %n] : vector<4xf32>, view<64x24xf32, #dense>
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   %key_token = index.add %key_origin, %lane : index
   %raw_score0 = view.load %score_stage_view[%lane, %query_row0] : view<64x24xf32, #dense> -> f32
   %raw_score1 = view.load %score_stage_view[%lane, %query_row1] : view<64x24xf32, #dense> -> f32
@@ -235,7 +235,7 @@ func.template<qwen3_moe.attention.decode_split.produce_partials.active> device @
   view.store %probability1, %probability_stage_view[%query_row1, %lane] : f16, view<16x64xf16, %probability_transposed_layout>
   view.store %probability2, %probability_stage_view[%query_row2, %lane] : f16, view<16x64xf16, %probability_transposed_layout>
   view.store %probability3, %probability_stage_view[%query_row3, %lane] : f16, view<16x64xf16, %probability_transposed_layout>
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   // Keep both P*V halves live so the scheduler can interleave their independent
   // matrix chains. F16 accumulation and exchange preserve the Vulkan CM1
   // contract while halving the product LDS footprint.
@@ -278,20 +278,20 @@ func.template<qwen3_moe.attention.decode_split.produce_partials.active> device @
         }
         view.store %value_element, %tail_value_stage_view[%key_row, %value_channel] : f16, view<16x128xf16, #dense>
       }
-      kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+      kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
       %probability_fragment = vector.fragment.load<lhs> %probability_stage_view[%c0, %key_tile] shape [%m, %k] : view<16x64xf16, %probability_transposed_layout> -> vector<16xf16>
       %value_fragment0 = vector.fragment.load<rhs> %tail_value_stage_view[%c0, %subgroup_output_channel] shape [%k, %n] : view<16x128xf16, #dense> -> vector<16xf16>
       %value_fragment1 = vector.fragment.load<rhs> %tail_value_stage_view[%c0, %subgroup_output_channel1] shape [%k, %n] : view<16x128xf16, #dense> -> vector<16xf16>
       %next_product_accumulator0 = vector.mma %probability_fragment, %value_fragment0, %product_accumulator0 : vector<16xf16>, vector<16xf16>, vector<8xf16>
       %next_product_accumulator1 = vector.mma %probability_fragment, %value_fragment1, %product_accumulator1 : vector<16xf16>, vector<16xf16>, vector<8xf16>
-      kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+      kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
       scf.yield %next_product_accumulator0, %next_product_accumulator1 : vector<8xf16>, vector<8xf16>
     }
     scf.yield %tail_product_fragment0, %tail_product_fragment1 : vector<8xf16>, vector<8xf16>
   }
   vector.fragment.store<result> %product_fragment0, %product_stage_view[%c0, %subgroup_output_channel] shape [%m, %n] : vector<8xf16>, view<16x128xf16, #dense>
   vector.fragment.store<result> %product_fragment1, %product_stage_view[%c0, %subgroup_output_channel1] shape [%m, %n] : vector<8xf16>, view<16x128xf16, #dense>
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   scf.if %lane_has_output {
     %block_output0 = vector.load %product_stage_view[%query_row0, %lane_output_channel] : view<16x128xf16, #dense> -> vector<4xf16>
     %block_output1 = vector.load %product_stage_view[%query_row1, %lane_output_channel] : view<16x128xf16, #dense> -> vector<4xf16>
@@ -553,7 +553,7 @@ func.template<qwen3_moe.attention.decode_split.reduce_completed.cooperative> dev
   %partial_sum_view = buffer.view %partial_sum_aligned[%c0_offset] : buffer -> view<[%key_value_head_count]x[%key_value_block_count]x16xf32, #dense>
   %partial_output_view = buffer.view %partial_output_aligned[%c0_offset] : buffer -> view<[%key_value_head_count]x[%key_value_block_count]x16x128xf16, #dense>
   %output_view = buffer.view %output_aligned[%c0_offset] : buffer -> view<[%query_head_count]x128xf32, #dense>
-  %scale_stage = buffer.alloca %scale_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
+  %scale_stage = buffer.alloca<workgroup> align(16) %scale_stage_bytes : buffer
   %scale_stage_view = buffer.view %scale_stage[%c0_offset] : buffer -> view<4x32x2xf32, #dense>
   %padded_reduction_row_count = index.add %query_heads_per_key_value_head, %c7 : index
   %reduction_phase_count = index.div %padded_reduction_row_count, %c8 : index
@@ -615,7 +615,7 @@ func.template<qwen3_moe.attention.decode_split.reduce_completed.cooperative> dev
     %sums = kernel.subgroup.reduce<addf> %local_sums : vector<2xf32>
     %sum0 = vector.extract %sums[0] : vector<2xf32> -> f32
     %sum1 = vector.extract %sums[1] : vector<2xf32> -> f32
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     %unnormalized_output0, %unnormalized_output1 = scf.for %block = [%c0 to %key_value_block_count step %c1](%running_output0 = %c0_f32x2 : vector<2xf32>, %running_output1 = %c0_f32x2 : vector<2xf32>) -> (vector<2xf32>, vector<2xf32>) unroll(%c4) schedule(interleaved) {
       %scales = vector.load %scale_stage_view[%subgroup, %block, %c0] : view<4x32x2xf32, #dense> -> vector<2xf32>
       %scale0 = vector.extract %scales[0] : vector<2xf32> -> f32
@@ -678,7 +678,7 @@ func.template<qwen3_moe.attention.decode_split.pack_completed_q8> device @qwen3_
   %output_aligned = buffer.assume.alignment %output_noalias {minimum_alignment = 16} : buffer
   %q8_output_aligned = buffer.assume.alignment %q8_output_noalias {minimum_alignment = 16} : buffer
   %output_view = buffer.view %output_aligned[%c0_offset] : buffer -> view<[%query_head_count]x128xf32, #dense>
-  %scratch = buffer.alloca %scratch_bytes {base_alignment = 16, memory_space = workgroup} : buffer
+  %scratch = buffer.alloca<workgroup> align(16) %scratch_bytes : buffer
   %scratch_values = buffer.view %scratch[%c0_offset] : buffer -> view<256xf32, #dense>
   %scratch_d = buffer.view %scratch[%scratch_d_byte_add] : buffer -> view<32xf32, #dense>
   %group_in_phase = index.div %workitem, %c32 : index
@@ -710,7 +710,7 @@ func.template<qwen3_moe.attention.decode_split.pack_completed_q8> device @qwen3_
     %absolute_values = vector.absf %input_values : vector<4xf32>
     %thread_max = vector.reduce<maxnumf> %absolute_values, %c0_f32 : vector<4xf32>, f32
     view.store %thread_max, %scratch_values[%workitem] : f32, view<256xf32, #dense>
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     %is_cohort_leader = index.cmp eq, %word_in_block, %c0 : index
     %d_index0 = index.mul %group_in_phase, %c4 : index
     %d_index1 = index.add %d_index0, %block_in_group : index
@@ -724,7 +724,7 @@ func.template<qwen3_moe.attention.decode_split.pack_completed_q8> device @qwen3_
       %d = scalar.divf %amax, %c127 : f32
       view.store %d, %scratch_d[%d_index] : f32, view<32xf32, #dense>
     }
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     %d = view.load %scratch_d[%d_index] : view<32xf32, #dense> -> f32
     %d_nonzero = scalar.cmpf one, %d, %c0_f32 : f32
     %d_inverse = scf.if %d_nonzero -> (f32) {
@@ -750,7 +750,7 @@ func.template<qwen3_moe.attention.decode_split.pack_completed_q8> device @qwen3_
     }
     %thread_sum = vector.reduce<addf> %rounded_values, %c0_f32 : vector<4xf32>, f32
     view.store %thread_sum, %scratch_values[%workitem] : f32, view<256xf32, #dense>
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     scf.if %is_cohort_leader {
       %group_thread_base = index.mul %group_in_phase, %c32 : index
       %block_thread_add = index.mul %block_in_group, %c8 : index
@@ -767,7 +767,7 @@ func.template<qwen3_moe.attention.decode_split.pack_completed_q8> device @qwen3_
         view.store %s_f16, %group_ds[%s_index] : f16, view<8xf16, #dense>
       }
     }
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   }
   func.return
 }
@@ -793,31 +793,31 @@ func.template<qwen3_moe.attention.decode_split.reduce_fused> device priority(20)
   %partial_max_noalias, %partial_sum_noalias, %partial_output_noalias, %completion_counter_noalias, %output_noalias = buffer.assume.noalias %partial_max, %partial_sum, %partial_output, %completion_counter, %output : buffer, buffer, buffer, buffer, buffer
   %completion_counter_aligned = buffer.assume.alignment %completion_counter_noalias {minimum_alignment = 16} : buffer
   %completion_counter_view = buffer.view %completion_counter_aligned[%c0_offset] : buffer -> view<[%key_value_head_count]xi32, #dense>
-  %counter_scratch = buffer.alloca %counter_scratch_bytes {base_alignment = 4, memory_space = workgroup} : buffer
+  %counter_scratch = buffer.alloca<workgroup> align(4) %counter_scratch_bytes : buffer
   %counter_scratch_view = buffer.view %counter_scratch[%c0_offset] : buffer -> view<1xi32, #dense>
   %workitem_is_zero = index.cmp eq, %workitem, %c0 : index
   // Publish every producer's partial stores before the leader advances one
   // workgroup arrival. The last arrival then acquires every partial.
-  kernel.barrier<global> {ordering = release, scope = workgroup}
+  kernel.barrier<global> scope(workgroup) ordering(release)
   scf.if %workitem_is_zero {
     %old_counter = view.atomic.rmw<addi> %c1_i32, %completion_counter_view[%key_value_head] {ordering = acq_rel, scope = device} : i32, view<[%key_value_head_count]xi32, #dense> -> i32
     view.store %old_counter, %counter_scratch_view[%c0] : i32, view<1xi32, #dense>
   }
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   %old_counter = view.load %counter_scratch_view[%c0] : view<1xi32, #dense> -> i32
   %key_value_block_count_i32 = index.cast %key_value_block_count : index to i32
   %last_block_ordinal_i32 = scalar.subi %key_value_block_count_i32, %c1_i32 : i32
   %negative_key_value_block_count_i32 = scalar.subi %c0_i32, %key_value_block_count_i32 : i32
   %is_last_partition = scalar.cmpi eq, %old_counter, %last_block_ordinal_i32 : i32
   scf.if %is_last_partition {
-    kernel.barrier<global> {ordering = acquire, scope = workgroup}
+    kernel.barrier<global> scope(workgroup) ordering(acquire)
     func.call inline @qwen3_moe_flash_attention_decode_split_reduce_completed_direct_f32(%bounded_key_value_token_count, %partial_max_noalias, %partial_sum_noalias, %partial_output_noalias, %output_noalias) : (index, buffer, buffer, buffer, buffer)
     scf.if %publish_q8 {
-      kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+      kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
       func.apply<qwen3_moe.attention.decode_split.pack_completed_q8>(%key_value_head, %output_noalias, %q8_output) : (index, buffer, buffer)
     }
     // Do not expose the reset until every final F32 and Q8 store completes.
-    kernel.barrier<global> {ordering = release, scope = workgroup}
+    kernel.barrier<global> scope(workgroup) ordering(release)
     scf.if %workitem_is_zero {
       view.atomic.reduce<addi> %negative_key_value_block_count_i32, %completion_counter_view[%key_value_head] {ordering = release, scope = device} : i32, view<[%key_value_head_count]xi32, #dense>
     }
@@ -844,31 +844,31 @@ func.template<qwen3_moe.attention.decode_split.reduce_fused> device priority(10)
   %partial_max_noalias, %partial_sum_noalias, %partial_output_noalias, %completion_counter_noalias, %output_noalias = buffer.assume.noalias %partial_max, %partial_sum, %partial_output, %completion_counter, %output : buffer, buffer, buffer, buffer, buffer
   %completion_counter_aligned = buffer.assume.alignment %completion_counter_noalias {minimum_alignment = 16} : buffer
   %completion_counter_view = buffer.view %completion_counter_aligned[%c0_offset] : buffer -> view<[%key_value_head_count]xi32, #dense>
-  %counter_scratch = buffer.alloca %counter_scratch_bytes {base_alignment = 4, memory_space = workgroup} : buffer
+  %counter_scratch = buffer.alloca<workgroup> align(4) %counter_scratch_bytes : buffer
   %counter_scratch_view = buffer.view %counter_scratch[%c0_offset] : buffer -> view<1xi32, #dense>
   %workitem_is_zero = index.cmp eq, %workitem, %c0 : index
   // Publish every producer's partial stores before the leader advances one
   // workgroup arrival. The last arrival then acquires every partial.
-  kernel.barrier<global> {ordering = release, scope = workgroup}
+  kernel.barrier<global> scope(workgroup) ordering(release)
   scf.if %workitem_is_zero {
     %old_counter = view.atomic.rmw<addi> %c1_i32, %completion_counter_view[%key_value_head] {ordering = acq_rel, scope = device} : i32, view<[%key_value_head_count]xi32, #dense> -> i32
     view.store %old_counter, %counter_scratch_view[%c0] : i32, view<1xi32, #dense>
   }
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   %old_counter = view.load %counter_scratch_view[%c0] : view<1xi32, #dense> -> i32
   %key_value_block_count_i32 = index.cast %key_value_block_count : index to i32
   %last_block_ordinal_i32 = scalar.subi %key_value_block_count_i32, %c1_i32 : i32
   %negative_key_value_block_count_i32 = scalar.subi %c0_i32, %key_value_block_count_i32 : i32
   %is_last_partition = scalar.cmpi eq, %old_counter, %last_block_ordinal_i32 : i32
   scf.if %is_last_partition {
-    kernel.barrier<global> {ordering = acquire, scope = workgroup}
+    kernel.barrier<global> scope(workgroup) ordering(acquire)
     func.call inline @qwen3_moe_flash_attention_decode_split_reduce_completed_cooperative_f32(%bounded_key_value_token_count, %partial_max_noalias, %partial_sum_noalias, %partial_output_noalias, %output_noalias) : (index, buffer, buffer, buffer, buffer)
     scf.if %publish_q8 {
-      kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+      kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
       func.apply<qwen3_moe.attention.decode_split.pack_completed_q8>(%key_value_head, %output_noalias, %q8_output) : (index, buffer, buffer)
     }
     // Do not expose the reset until every final F32 and Q8 store completes.
-    kernel.barrier<global> {ordering = release, scope = workgroup}
+    kernel.barrier<global> scope(workgroup) ordering(release)
     scf.if %workitem_is_zero {
       view.atomic.reduce<addi> %negative_key_value_block_count_i32, %completion_counter_view[%key_value_head] {ordering = release, scope = device} : i32, view<[%key_value_head_count]xi32, #dense>
     }
@@ -985,7 +985,7 @@ kernel.def target(@qwen3_moe_decode_split_gfx11_wave64) @qwen3_moe_flash_attenti
   %partial_sum_view = buffer.view %partial_sum_aligned[%c0_offset] : buffer -> view<[%key_value_head_count]x[%key_value_block_count]x16xf32, #dense>
   %partial_output_view = buffer.view %partial_output_aligned[%c0_offset] : buffer -> view<[%key_value_head_count]x[%key_value_block_count]x16x128xf16, #dense>
   %output_view = buffer.view %output_aligned[%c0_offset] : buffer -> view<[%query_head_count]x128xf32, #dense>
-  %reduction_stage = buffer.alloca %reduction_stage_bytes {base_alignment = 8, memory_space = workgroup} : buffer
+  %reduction_stage = buffer.alloca<workgroup> align(8) %reduction_stage_bytes : buffer
   %reduction_stage_view = buffer.view %reduction_stage[%c0_offset] : buffer -> view<2xf32, #dense>
   %lane_maximum = scf.if %is_first_subgroup -> (f32) {
     %maximum = scf.for %block = [%lane to %key_value_block_count step %c64](%running_maximum = %negative_large : f32) -> (f32) {
@@ -1001,7 +1001,7 @@ kernel.def target(@qwen3_moe_decode_split_gfx11_wave64) @qwen3_moe_flash_attenti
   scf.if %workitem_is_zero {
     view.store %subgroup_maximum, %reduction_stage_view[%c0] : f32, view<2xf32, #dense>
   }
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   %maximum = view.load %reduction_stage_view[%c0] : view<2xf32, #dense> -> f32
   %lane_sum = scf.if %is_first_subgroup -> (f32) {
     %sum = scf.for %block = [%lane to %key_value_block_count step %c64](%running_sum = %c0_f32 : f32) -> (f32) {
@@ -1022,7 +1022,7 @@ kernel.def target(@qwen3_moe_decode_split_gfx11_wave64) @qwen3_moe_flash_attenti
   scf.if %workitem_is_zero {
     view.store %subgroup_sum, %reduction_stage_view[%c1] : f32, view<2xf32, #dense>
   }
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   %sum = view.load %reduction_stage_view[%c1] : view<2xf32, #dense> -> f32
   %unnormalized_output = scf.for %block = [%c0 to %key_value_block_count step %c1](%running_output = %c0_f32 : f32) -> (f32) unroll(%c4) schedule(interleaved) {
     %scale = view.load %partial_max_view[%key_value_head, %block, %query_row] : view<[%key_value_head_count]x[%key_value_block_count]x16xf32, #dense> -> f32

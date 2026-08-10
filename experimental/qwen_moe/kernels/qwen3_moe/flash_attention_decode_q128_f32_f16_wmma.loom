@@ -86,10 +86,10 @@ kernel.def target(@qwen3_moe_attention_decode_q128_gfx11_wave64) @qwen3_moe_flas
   %value_view = buffer.view %value_aligned[%c0_offset] : buffer -> view<128x[%key_value_width]xf16, #dense>
   %mask_view = buffer.view %mask_aligned[%c0_offset] : buffer -> view<128xf16, #dense>
   %output_view = buffer.view %output_aligned[%c0_offset] : buffer -> view<[%query_head_count]x128xf32, #dense>
-  %query_stage = buffer.alloca %query_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
-  %score_stage = buffer.alloca %score_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
-  %probability_stage = buffer.alloca %probability_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
-  %product_stage = buffer.alloca %product_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
+  %query_stage = buffer.alloca<workgroup> align(16) %query_stage_bytes : buffer
+  %score_stage = buffer.alloca<workgroup> align(16) %score_stage_bytes : buffer
+  %probability_stage = buffer.alloca<workgroup> align(16) %probability_stage_bytes : buffer
+  %product_stage = buffer.alloca<workgroup> align(16) %product_stage_bytes : buffer
   %query_stage_view = buffer.view %query_stage[%c0_offset] : buffer -> view<16x136xf16, #dense>
   %query_transposed_view = buffer.view %query_stage[%c0_offset] : buffer -> view<128x16xf16, %query_transposed_layout>
   %score_stage_view = buffer.view %score_stage[%c0_offset] : buffer -> view<128x24xf32, #dense>
@@ -114,7 +114,7 @@ kernel.def target(@qwen3_moe_attention_decode_q128_gfx11_wave64) @qwen3_moe_flas
     }
     view.store %query_value, %query_stage_view[%local_query_row, %query_channel] : f16, view<16x136xf16, #dense>
   }
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   // Each wave produces one 16x16 score slice, covering all 128 KV rows.
   %score_init_values = vector.constant 0.0 : vector<4xf32>
   %score_init = vector.fragment<init> %score_init_values shape [%m, %n] : vector<4xf32>
@@ -126,7 +126,7 @@ kernel.def target(@qwen3_moe_attention_decode_q128_gfx11_wave64) @qwen3_moe_flas
     scf.yield %next_score_accumulator : vector<4xf32>
   }
   vector.fragment.store<result> %score_fragment, %score_stage_view[%score_key_origin, %c0] shape [%m, %n] : vector<4xf32>, view<128x24xf32, #dense>
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   // Each wave normalizes two query rows. Every lane owns two KV columns, so a
   // vector reduction first combines its pair and the subgroup reduction then
   // spans the complete 128-token row.
@@ -192,7 +192,7 @@ kernel.def target(@qwen3_moe_attention_decode_q128_gfx11_wave64) @qwen3_moe_flas
   view.store %probability01, %probability_stage_view[%query_row0, %key_token1] : f16, view<16x128xf16, %probability_transposed_layout>
   view.store %probability10, %probability_stage_view[%query_row1, %key_token0] : f16, view<16x128xf16, %probability_transposed_layout>
   view.store %probability11, %probability_stage_view[%query_row1, %key_token1] : f16, view<16x128xf16, %probability_transposed_layout>
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   // Each wave owns one disjoint 16-channel output tile.
   %product_init_values = vector.constant 0.0 : vector<4xf32>
   %product_init = vector.fragment<init> %product_init_values shape [%m, %n] : vector<4xf32>
@@ -204,7 +204,7 @@ kernel.def target(@qwen3_moe_attention_decode_q128_gfx11_wave64) @qwen3_moe_flas
     scf.yield %next_product_accumulator : vector<4xf32>
   }
   vector.fragment.store<result> %product_fragment, %product_stage_view[%c0, %output_tile_channel] shape [%m, %n] : vector<4xf32>, view<16x128xf32, #dense>
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   // One vector packet per workitem drains the 16x128 result tile while
   // suppressing padded GQA rows.
   %output_row = index.div %workitem, %c32 : index

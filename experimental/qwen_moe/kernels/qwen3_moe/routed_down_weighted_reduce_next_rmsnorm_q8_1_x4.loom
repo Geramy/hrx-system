@@ -79,7 +79,7 @@ kernel.def target(@qwen3_moe_routed_down_next_norm_q8_gfx11_wave32) @qwen3_moe_r
   %routed_output_view = buffer.view %routed_output_noalias[%c0_offset] : buffer -> view<[%assignment_count]x[%output_size]xf16, #dense>
   %hidden_state_view = buffer.view %hidden_state_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32, #dense>
   %next_norm_weight_view = buffer.view %next_norm_weight_noalias[%c0_offset] : buffer -> view<[%hidden_size]xf32, #dense>
-  %scratch = buffer.alloca %scratch_bytes {base_alignment = 16, memory_space = workgroup} : buffer
+  %scratch = buffer.alloca<workgroup> align(16) %scratch_bytes : buffer
   %scratch_values = buffer.view %scratch[%c0_offset] : buffer -> view<512xf32, #dense>
   %scratch_d = buffer.view %scratch[%scratch_d_byte_add] : buffer -> view<64xf32, #dense>
   // The token predicate is workgroup-uniform, keeping every RMSNorm and Q8_1
@@ -106,7 +106,7 @@ kernel.def target(@qwen3_moe_routed_down_next_norm_q8_gfx11_wave32) @qwen3_moe_r
     scf.if %is_subgroup_leader {
       view.store %subgroup_sum, %scratch_values[%subgroup] : f32, view<512xf32, #dense>
     }
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     %is_reduction_subgroup = index.cmp eq, %subgroup, %c0 : index
     %is_reduction_lane = index.cmp ult, %lane, %c8 : index
     %loads_subgroup_sum = scalar.andi %is_reduction_subgroup, %is_reduction_lane : i1
@@ -124,12 +124,12 @@ kernel.def target(@qwen3_moe_routed_down_next_norm_q8_gfx11_wave32) @qwen3_moe_r
       %scale = scalar.rsqrtf<nnan|ninf|nsz|afn> %biased_mean : f32
       view.store %scale, %scratch_values[%c0] : f32, view<512xf32, #dense>
     }
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
 
     %row_scale = view.load %scratch_values[%c0] : view<512xf32, #dense> -> f32
     // All waves must capture the row scale before scratch is reused for the
     // independent Q8 block reductions.
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     %row_scale_vector = vector.splat %row_scale : vector<8xf32>
     %learned_weight = vector.load %next_norm_weight_view[%channel] : view<[%hidden_size]xf32, #dense> -> vector<8xf32>
     %normalized0 = vector.mulf<reassoc|nnan|ninf|nsz> %result, %row_scale_vector : vector<8xf32>
@@ -146,7 +146,7 @@ kernel.def target(@qwen3_moe_routed_down_next_norm_q8_gfx11_wave32) @qwen3_moe_r
     %partial_high = index.add %partial_base, %c1 : index
     view.store %low_max, %scratch_values[%partial_base] : f32, view<512xf32, #dense>
     view.store %high_max, %scratch_values[%partial_high] : f32, view<512xf32, #dense>
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
 
     %block_in_row = index.div %workitem, %c4 : index
     %workitem_in_block = index.rem %workitem, %c4 : index
@@ -158,7 +158,7 @@ kernel.def target(@qwen3_moe_routed_down_next_norm_q8_gfx11_wave32) @qwen3_moe_r
       %d = scalar.divf<reassoc|nnan|ninf|nsz|arcp> %amax, %c127 : f32
       view.store %d, %scratch_d[%block_in_row] : f32, view<64xf32, #dense>
     }
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
 
     %d = view.load %scratch_d[%block_in_row] : view<64xf32, #dense> -> f32
     %d_nonzero = scalar.cmpf one, %d, %c0_f32 : f32
@@ -192,7 +192,7 @@ kernel.def target(@qwen3_moe_routed_down_next_norm_q8_gfx11_wave32) @qwen3_moe_r
     %high_quantized_sum = vector.reduce<addf> %high_rounded_values, %c0_f32 : vector<4xf32>, f32
     view.store %low_quantized_sum, %scratch_values[%partial_base] : f32, view<512xf32, #dense>
     view.store %high_quantized_sum, %scratch_values[%partial_high] : f32, view<512xf32, #dense>
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     scf.if %is_block_leader {
       %block_partial_base = index.mul %block_in_row, %c8 : index
       %block_sums = vector.load %scratch_values[%block_partial_base] : view<512xf32, #dense> -> vector<8xf32>

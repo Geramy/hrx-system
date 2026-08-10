@@ -1036,30 +1036,30 @@ kernel.def @qwen3_moe_routed_gate_up_swiglu_q4k_q8_1_x4_next_q8(%token_count: in
   %counter_index, %bounded_completion_counter_count = index.assume %counter_index0, %completion_counter_count [lt(%counter_index0, %completion_counter_count)] : index, index
   %completion_counters_aligned = buffer.assume.alignment %completion_counters_noalias {minimum_alignment = 16} : buffer
   %completion_counters_view = buffer.view %completion_counters_aligned[%c0_offset] : buffer -> view<[%bounded_completion_counter_count]xi32, #dense>
-  %counter_scratch = buffer.alloca %counter_scratch_bytes {base_alignment = 4, memory_space = workgroup} : buffer
+  %counter_scratch = buffer.alloca<workgroup> align(4) %counter_scratch_bytes : buffer
   %counter_scratch_view = buffer.view %counter_scratch[%c0_offset] : buffer -> view<1xi32, #dense>
   %is_arrival_lane = index.cmp eq, %workitem, %c0 : index
   // Publish every producer lane's SwiGLU store before the leader advances one
   // workgroup arrival. The last arrival then acquires the physical group.
-  kernel.barrier<global> {ordering = release, scope = workgroup}
+  kernel.barrier<global> scope(workgroup) ordering(release)
   scf.if %is_arrival_lane {
     %old_counter = view.atomic.rmw<addi> %c4_i32, %completion_counters_view[%counter_index] {ordering = acq_rel, scope = device} : i32, view<[%bounded_completion_counter_count]xi32, #dense> -> i32
     view.store %old_counter, %counter_scratch_view[%c0] : i32, view<1xi32, #dense>
   }
-  kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+  kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   %old_counter = view.load %counter_scratch_view[%c0] : view<1xi32, #dense> -> i32
   %group_size_i32 = index.cast %c128 : index to i32
   %last_arrival_i32 = scalar.subi %group_size_i32, %c4_i32 : i32
   %negative_group_size_i32 = scalar.subi %c0_i32, %group_size_i32 : i32
   %is_last_arrival = scalar.cmpi eq, %old_counter, %last_arrival_i32 : i32
   scf.if %is_last_arrival {
-    kernel.barrier<global> {ordering = acquire, scope = workgroup}
+    kernel.barrier<global> scope(workgroup) ordering(acquire)
     %publish_output = scalar.constant true : i1
     %is_quantize_subgroup = index.cmp eq, %subgroup, %c0 : index
     scf.if %is_quantize_subgroup {
       func.apply<qwen3_moe.routed_gate_up.quantize_q8_1_x4.subgroup_body>(%publish_output, %bounded_completion_counter_count, %counter_index, %output_noalias, %next_q8_output_noalias) : (i1, index, index, buffer, buffer)
     }
-    kernel.barrier<global> {ordering = release, scope = workgroup}
+    kernel.barrier<global> scope(workgroup) ordering(release)
     scf.if %is_arrival_lane {
       view.atomic.reduce<addi> %negative_group_size_i32, %completion_counters_view[%counter_index] {ordering = release, scope = device} : i32, view<[%bounded_completion_counter_count]xi32, #dense>
     }
@@ -1133,10 +1133,10 @@ kernel.def @qwen3_moe_routed_gate_up_swiglu_q4k_q8_grouped(%token_count: index, 
   %gate_words = buffer.view %gate_noalias[%c0_offset] : buffer -> view<[%bounded_expert_count]x[%bounded_output_size]x[%q4_block_count]x36xi32, #dense>
   %up_words = buffer.view %up_noalias[%c0_offset] : buffer -> view<[%bounded_expert_count]x[%bounded_output_size]x[%q4_block_count]x36xi32, #dense>
   %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%output_route_count]x[%bounded_output_size]xf32, #dense>
-  %row_ids = buffer.alloca %row_id_bytes {base_alignment = 16, memory_space = workgroup} : buffer
-  %gate_stage = buffer.alloca %weight_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
-  %up_stage = buffer.alloca %weight_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
-  %q8_stage = buffer.alloca %q8_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
+  %row_ids = buffer.alloca<workgroup> align(16) %row_id_bytes : buffer
+  %gate_stage = buffer.alloca<workgroup> align(16) %weight_stage_bytes : buffer
+  %up_stage = buffer.alloca<workgroup> align(16) %weight_stage_bytes : buffer
+  %q8_stage = buffer.alloca<workgroup> align(16) %q8_stage_bytes : buffer
   %row_ids_view = buffer.view %row_ids[%c0_offset] : buffer -> view<32xi32, #dense>
   %gate_stage_words = buffer.view %gate_stage[%c0_offset] : buffer -> view<1152xi32, #dense>
   %up_stage_words = buffer.view %up_stage[%c0_offset] : buffer -> view<1152xi32, #dense>
@@ -1181,7 +1181,7 @@ kernel.def @qwen3_moe_routed_gate_up_swiglu_q4k_q8_grouped(%token_count: index, 
       %assignment_i32 = view.load %assignment_view[%expert, %expert_assignment_ordinal] : view<[%table_expert_count]x[%bounded_token_count]xi32, #dense> -> i32
       view.store %assignment_i32, %row_ids_view[%local_row] : i32, view<32xi32, #dense>
     }
-    kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+    kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     %gate_acc, %up_acc = scf.for %q4_block = [%c0 to %q4_block_count step %c1](%gate_block_acc = %c0_f32_rows : vector<4xf32>, %up_block_acc = %c0_f32_rows : vector<4xf32>) -> (vector<4xf32>, vector<4xf32>) {
       %bounded_q4_block, %body_q4_block_count = index.assume %q4_block, %q4_block_count [lt(%q4_block, %q4_block_count)] : index, index
       scf.for %stage_word = [%lane to %gate_stage_word_count step %c256] {
@@ -1221,7 +1221,7 @@ kernel.def @qwen3_moe_routed_gate_up_swiglu_q4k_q8_grouped(%token_count: index, 
         }
         view.store %q8_word, %q8_stage_words[%stage_word] : i32, view<2304xi32, #dense>
       }
-      kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+      kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
       %channel_byte_base = index.scale %channel0, %q4_block_bytes : index, offset -> offset
       %after_groups_gate, %after_groups_up = scf.for %q4_group = [%c0 to %c8 step %c1](%gate_group_acc = %gate_block_acc : vector<4xf32>, %up_group_acc = %up_block_acc : vector<4xf32>) -> (vector<4xf32>, vector<4xf32>) unroll {
         %row1 = index.add %row_base, %c8 : index
@@ -1271,7 +1271,7 @@ kernel.def @qwen3_moe_routed_gate_up_swiglu_q4k_q8_grouped(%token_count: index, 
         %up_next = vector.addf %up_group_acc, %up_pair : vector<4xf32>
         scf.yield %gate_next, %up_next : vector<4xf32>, vector<4xf32>
       }
-      kernel.barrier<workgroup> {ordering = acq_rel, scope = workgroup}
+      kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
       scf.yield %after_groups_gate, %after_groups_up : vector<4xf32>, vector<4xf32>
     }
     %gate_silu = vector.siluf %gate_acc : vector<4xf32>
