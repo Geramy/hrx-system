@@ -30,7 +30,7 @@ IREE_FLAG(string, tokens, "",
 IREE_FLAG(int32_t, expected_token, IREE_TOKENIZER_TOKEN_ID_INVALID,
           "Expected selected prefill token; omit to skip validation.");
 IREE_FLAG(bool, decode_one, false,
-          "Consume the device-published prefill token at position 512 and "
+          "Consume the device-published prefill token at the next position and "
           "execute one exact-count decode issue.");
 IREE_FLAG(int32_t, expected_decode_token, IREE_TOKENIZER_TOKEN_ID_INVALID,
           "Expected token selected by --decode_one; omit to report without "
@@ -64,8 +64,8 @@ static const char* const qwen_prefill_cli_usage =
     "  --command_capture_prefix=<first excluded canonical command>\n"
     "  --command_capture_transient=<transient root output path>\n"
     "\n"
-    "Decode-576 currently requires the 512-row prefill root. Both stages "
-    "execute reusable command programs from one compiled multi-root package. "
+    "Decode-576 accepts every exact prefill root. Both stages execute reusable "
+    "command programs from one compiled multi-root package. "
     "Profiling flags surround the prefill issue. Barrier-wave and "
     "prefix-capture modes are fault-localization only and invalidate timing."
     "\n";
@@ -183,33 +183,6 @@ static iree_status_t qwen_prefill_cli_load_tokens(
   return iree_ok_status();
 }
 
-static iree_status_t qwen_prefill_cli_select_program(
-    iree_host_size_t token_count, qwen_command_program_t* out_program) {
-  switch (token_count) {
-    case 32:
-      *out_program = QWEN_COMMAND_PROGRAM_PREFILL_32;
-      return iree_ok_status();
-    case 64:
-      *out_program = QWEN_COMMAND_PROGRAM_PREFILL_64;
-      return iree_ok_status();
-    case 128:
-      *out_program = QWEN_COMMAND_PROGRAM_PREFILL_128;
-      return iree_ok_status();
-    case 256:
-      *out_program = QWEN_COMMAND_PROGRAM_PREFILL_256;
-      return iree_ok_status();
-    case 512:
-      *out_program = QWEN_COMMAND_PROGRAM_PREFILL_512;
-      return iree_ok_status();
-    default:
-      return iree_make_status(
-          IREE_STATUS_INVALID_ARGUMENT,
-          "Qwen command prefill supports exactly 32, 64, 128, 256, or 512 "
-          "tokens; received %" PRIhsz,
-          token_count);
-  }
-}
-
 static iree_status_t qwen_prefill_cli_run(void) {
   iree_allocator_t host_allocator = iree_allocator_system();
   iree_status_t status = iree_ok_status();
@@ -256,17 +229,9 @@ static iree_status_t qwen_prefill_cli_run(void) {
                                         host_allocator, &token_contents,
                                         token_ids, &prefill_token_count);
   if (iree_status_is_ok(status)) {
-    status =
-        qwen_prefill_cli_select_program(prefill_token_count, &prefill_program);
+    status = qwen_command_select_prefill_program(prefill_token_count,
+                                                 &prefill_program);
   }
-  if (iree_status_is_ok(status) && FLAG_decode_one &&
-      prefill_program != QWEN_COMMAND_PROGRAM_PREFILL_512) {
-    status = iree_make_status(
-        IREE_STATUS_INVALID_ARGUMENT,
-        "--decode_one requires the 512-token prefill root until additional "
-        "decode context classes are available");
-  }
-
   qwen_tooling_runtime_context_t runtime_context;
   if (iree_status_is_ok(status)) {
     status = qwen_tooling_runtime_context_initialize_from_flags(
@@ -501,9 +466,10 @@ static iree_status_t qwen_prefill_cli_run(void) {
         command_package, QWEN_COMMAND_PROGRAM_DECODE_576, &decode_info);
     if (iree_status_is_ok(status)) {
       fprintf(stdout,
-              "Qwen command decode at context 513 selected token %" PRId32
-              ": %" PRIu64 " transient bytes\n",
-              decode_token, (uint64_t)decode_info.transient_byte_length);
+              "Qwen command decode at context %" PRIhsz
+              " selected token %" PRId32 ": %" PRIu64 " transient bytes\n",
+              prefill_token_count + 1, decode_token,
+              (uint64_t)decode_info.transient_byte_length);
     }
   }
 

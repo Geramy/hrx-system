@@ -25,7 +25,7 @@
 
 #define QWEN_COMMAND_MAXIMUM_PREFILL_TOKEN_COUNT 512
 #define QWEN_COMMAND_INITIAL_CONTEXT_BASE 0
-#define QWEN_COMMAND_DECODE_CONTEXT_BEGIN 512
+#define QWEN_COMMAND_MINIMUM_DECODE_CONTEXT_BASE 0
 #define QWEN_COMMAND_CONTEXT_CAPACITY 576
 #define QWEN_COMMAND_FIXED_BUFFER_COUNT 2
 #define QWEN_COMMAND_INITIAL_SEMAPHORE_CAPACITY 8
@@ -108,7 +108,8 @@ static const qwen_command_program_descriptor_t
                 .export_name = "qwen3_30b_decode_576",
                 .token_count = 1,
                 .context_count = QWEN_COMMAND_CONTEXT_CAPACITY,
-                .minimum_context_base = QWEN_COMMAND_DECODE_CONTEXT_BEGIN,
+                .minimum_context_base =
+                    QWEN_COMMAND_MINIMUM_DECODE_CONTEXT_BASE,
                 .maximum_context_base = QWEN_COMMAND_CONTEXT_CAPACITY,
             },
 };
@@ -279,6 +280,24 @@ void qwen_command_package_options_initialize(
       .compiler_worker_count = QWEN_LOOM_JIT_DEFAULT_WORKER_COUNT,
       .command_buffer_mode = IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT,
   };
+}
+
+iree_status_t qwen_command_select_prefill_program(
+    iree_host_size_t token_count, qwen_command_program_t* out_program) {
+  IREE_ASSERT_ARGUMENT(out_program);
+  *out_program = QWEN_COMMAND_PROGRAM_COUNT;
+  for (qwen_command_program_t program = QWEN_COMMAND_PROGRAM_PREFILL_32;
+       program <= QWEN_COMMAND_PROGRAM_PREFILL_512; ++program) {
+    if (qwen_command_program_descriptors[program].token_count == token_count) {
+      *out_program = program;
+      return iree_ok_status();
+    }
+  }
+  return iree_make_status(
+      IREE_STATUS_INVALID_ARGUMENT,
+      "Qwen command prefill supports exactly 32, 64, 128, 256, or 512 "
+      "tokens; received %" PRIhsz,
+      token_count);
 }
 
 void qwen_command_issue_options_initialize(
