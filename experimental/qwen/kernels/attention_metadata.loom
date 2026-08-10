@@ -8,19 +8,16 @@
 // pattern on device from the owned runtime's compact context-base control word.
 amdgpu.target<gfx11-generic> @qwen_attention_metadata_gfx11_wave64 {subgroup_size = 64}
 
-config.decl @qwen.attention.metadata_context_capacity : %value: index where [range(%value, 1, 32768)]
-
 kernel.def target(@qwen_attention_metadata_gfx11_wave64) export("qwen_attention_metadata") @qwen_attention_metadata(%token_count: index, %context_capacity: index) {
-  %configured_context_capacity = config.get @qwen.attention.metadata_context_capacity : index
+  %bounded_context_capacity = index.assume %context_capacity [range(%context_capacity, 1, 32768)] : index
   %c1 = index.constant 1 : index
   %c255 = index.constant 255 : index
   %c256 = index.constant 256 : index
-  %padded_context_capacity = index.add %configured_context_capacity, %c255 : index
+  %padded_context_capacity = index.add %bounded_context_capacity, %c255 : index
   %key_workgroup_count = index.div %padded_context_capacity, %c256 : index
   kernel.launch.config workgroups(%key_workgroup_count, %token_count, %c1) workgroup_size(%c256, %c1, %c1) : index
 } launch(%token_count: index, %context_capacity: index, %control: buffer, %positions: buffer, %key_cache_indices: buffer, %value_cache_indices: buffer, %attention_mask: buffer) where [range(%token_count, 1, 2048)] {
-  %configured_context_capacity = config.get @qwen.attention.metadata_context_capacity : index
-  %bounded_context_capacity = index.assume %context_capacity [range(%context_capacity, 1, 32768), le(%context_capacity, %configured_context_capacity)] : index
+  %bounded_context_capacity = index.assume %context_capacity [range(%context_capacity, 1, 32768)] : index
   %query0 = kernel.workgroup.id<y> : index
   %query, %launch_token_count = index.assume %query0, %token_count [lt(%query0, %token_count)] : index, index
   %key_workgroup = kernel.workgroup.id<x> : index
@@ -78,6 +75,29 @@ kernel.def target(@qwen_attention_metadata_gfx11_wave64) export("qwen_attention_
   kernel.return
 }
 
+// Publishes the single position and cache row needed by one decode issue.
+// Decode attention bounds itself with the same request control word and does
+// not need a materialized causal mask: every prior row is visible.
+kernel.def target(@qwen_attention_metadata_gfx11_wave64) export("qwen_decode_attention_metadata") @qwen_decode_attention_metadata() {
+  %c1 = index.constant 1 : index
+  kernel.launch.config workgroups(%c1, %c1, %c1) workgroup_size(%c1, %c1, %c1) : index
+} launch(%control: buffer, %positions: buffer, %key_cache_indices: buffer, %value_cache_indices: buffer) {
+  %c0 = index.constant 0 : index
+  %c0_offset = index.constant 0 : offset
+  %control_noalias, %positions_noalias, %key_cache_indices_noalias, %value_cache_indices_noalias = buffer.assume.noalias %control, %positions, %key_cache_indices, %value_cache_indices : buffer, buffer, buffer, buffer
+  %control_view = buffer.view %control_noalias[%c0_offset] : buffer -> view<1xi32, #dense>
+  %positions_view = buffer.view %positions_noalias[%c0_offset] : buffer -> view<1xi32, #dense>
+  %key_cache_indices_view = buffer.view %key_cache_indices_noalias[%c0_offset] : buffer -> view<1xi64, #dense>
+  %value_cache_indices_view = buffer.view %value_cache_indices_noalias[%c0_offset] : buffer -> view<1xi64, #dense>
+  %context_base_raw = view.load %control_view[%c0] : view<1xi32, #dense> -> i32
+  %context_base = scalar.assume %context_base_raw [range(%context_base_raw, 0, 32767)] : i32
+  %cache_index = scalar.extsi %context_base : i32 to i64
+  view.store %context_base, %positions_view[%c0] : i32, view<1xi32, #dense>
+  view.store %cache_index, %key_cache_indices_view[%c0] : i64, view<1xi64, #dense>
+  view.store %cache_index, %value_cache_indices_view[%c0] : i64, view<1xi64, #dense>
+  kernel.return
+}
+
 // Position zero exposes the causal edge directly as `[0, -inf]`. A second
 // invocation proves that a nonzero context base advances all three metadata
 // streams and makes every prior cache row visible.
@@ -127,6 +147,31 @@ check.case public @qwen_attention_metadata_benchmark_case {
   check.expect.equal actual(%positions) expected(%expected_positions) : tensor<[%token_count]xi32>
   check.expect.equal actual(%key_cache_indices) expected(%expected_cache_indices) : tensor<[%token_count]xi64>
   check.expect.equal actual(%value_cache_indices) expected(%expected_cache_indices) : tensor<[%token_count]xi64>
+  check.return
+}
+
+check.case public @qwen_decode_attention_metadata_sequence_case {
+  %control0 = check.generate.fill value(0) : tensor<1xi32>
+  %positions0 = check.generate.fill value(-1) : tensor<1xi32>
+  %key_indices0 = check.generate.fill value(-1) : tensor<1xi64>
+  %value_indices0 = check.generate.fill value(-1) : tensor<1xi64>
+  %expected_position0 = check.generate.fill value(0) : tensor<1xi32>
+  %expected_indices0 = check.generate.fill value(0) : tensor<1xi64>
+  kernel.launch @qwen_decode_attention_metadata(%control0, %positions0, %key_indices0, %value_indices0) : (tensor<1xi32>, tensor<1xi32>, tensor<1xi64>, tensor<1xi64>)
+  check.expect.equal actual(%positions0) expected(%expected_position0) : tensor<1xi32>
+  check.expect.equal actual(%key_indices0) expected(%expected_indices0) : tensor<1xi64>
+  check.expect.equal actual(%value_indices0) expected(%expected_indices0) : tensor<1xi64>
+
+  %control575 = check.generate.fill value(575) : tensor<1xi32>
+  %positions575 = check.generate.fill value(-1) : tensor<1xi32>
+  %key_indices575 = check.generate.fill value(-1) : tensor<1xi64>
+  %value_indices575 = check.generate.fill value(-1) : tensor<1xi64>
+  %expected_position575 = check.generate.fill value(575) : tensor<1xi32>
+  %expected_indices575 = check.generate.fill value(575) : tensor<1xi64>
+  kernel.launch @qwen_decode_attention_metadata(%control575, %positions575, %key_indices575, %value_indices575) : (tensor<1xi32>, tensor<1xi32>, tensor<1xi64>, tensor<1xi64>)
+  check.expect.equal actual(%positions575) expected(%expected_position575) : tensor<1xi32>
+  check.expect.equal actual(%key_indices575) expected(%expected_indices575) : tensor<1xi64>
+  check.expect.equal actual(%value_indices575) expected(%expected_indices575) : tensor<1xi64>
   check.return
 }
 

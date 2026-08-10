@@ -204,7 +204,6 @@ iree_executable_test(
     args = [
         "$(location :attention_metadata_linked)",
         "--benchmark=@qwen_attention_metadata_prefill_512",
-        "--config=qwen.attention.metadata_context_capacity=512",
         "--config=qwen3_moe.workload.token_capacity=512",
         "--dry-run",
         "--output-format=jsonl",
@@ -219,8 +218,28 @@ iree_executable_test(
     args = [
         "$(location :attention_metadata_linked)",
         "--case=@qwen_attention_metadata_causal_and_nonzero_base_case",
-        "--config=qwen.attention.metadata_context_capacity=5",
         "--config=qwen3_moe.workload.token_capacity=1",
+        "--device=amdgpu://0",
+        "--sanitizer=access",
+    ],
+    data = [":attention_metadata_linked"],
+    tags = [
+        "iree-run-requirement=runtime.resource.amd_gpu",
+        "manual",
+        "requires-gpu-amd",
+        "runtime-resource=amd-gpu",
+    ],
+    target_compatible_with = loom_config_compatible_with([
+        "//loom/config/execute:amdgpu_hal",
+    ]),
+)
+
+iree_executable_test(
+    name = "decode_attention_metadata_hal_test",
+    src = "//loom/src/loom/tools/iree-test-loom",
+    args = [
+        "$(location :attention_metadata_linked)",
+        "--case=@qwen_decode_attention_metadata_sequence_case",
         "--device=amdgpu://0",
         "--sanitizer=access",
     ],
@@ -241,7 +260,10 @@ loom_link_module(
     srcs = ["attention_metadata.loom"],
     mode = "selective",
     output = "qwen_attention_metadata.loom",
-    roots = ["@qwen_attention_metadata"],
+    roots = [
+        "@qwen_attention_metadata",
+        "@qwen_decode_attention_metadata",
+    ],
     strip_check = True,
 )
 
@@ -321,6 +343,49 @@ loom_link_module(
     mode = "selective",
     output = "qwen3_moe_flash_attention_decode_split_f32_f16.loom",
     roots = ["@qwen3_moe_flash_attention_decode_split_f32_f16_wmma_next_q8"],
+    strip_check = True,
+)
+
+loom_link_module(
+    name = "flash_attention_decode_dynamic_linked",
+    srcs = ["flash_attention_decode_dynamic.loom"],
+    libraries = [
+        "//experimental/qwen_moe/kernels:qwen3_moe/flash_attention_decode_split_f32_f16_wmma.loom",
+    ],
+)
+
+iree_executable_test(
+    name = "flash_attention_decode_dynamic_hal_test",
+    src = "//loom/src/loom/tools/iree-test-loom",
+    args = [
+        "$(location :flash_attention_decode_dynamic_linked)",
+        "--case=@qwen_flash_attention_decode_dynamic_sequence_case",
+        "--config=qwen3_moe.attention.query_head_count=32",
+        "--config=qwen3_moe.attention.key_value_head_count=4",
+        "--config=qwen3_moe.attention.key_value_token_capacity=577",
+        "--device=amdgpu://0",
+    ],
+    data = [":flash_attention_decode_dynamic_linked"],
+    tags = [
+        "iree-run-requirement=runtime.resource.amd_gpu",
+        "manual",
+        "requires-gpu-amd",
+        "runtime-resource=amd-gpu",
+    ],
+    target_compatible_with = loom_config_compatible_with([
+        "//loom/config/execute:amdgpu_hal",
+    ]),
+)
+
+loom_link_module(
+    name = "flash_attention_decode_dynamic_runtime_module",
+    srcs = ["flash_attention_decode_dynamic.loom"],
+    libraries = [
+        "//experimental/qwen_moe/kernels:qwen3_moe/flash_attention_decode_split_f32_f16_wmma.loom",
+    ],
+    mode = "selective",
+    output = "qwen_flash_attention_decode_dynamic.loom",
+    roots = ["@qwen_flash_attention_decode_dynamic_f32_f16_wmma_next_q8"],
     strip_check = True,
 )
 
@@ -602,6 +667,7 @@ iree_c_embed_data(
         ":attention_qkv_quantized_runtime_module",
         ":dense_linear_quantized_f16_runtime_module",
         ":expert_table_partition_fused_runtime_module",
+        ":flash_attention_decode_dynamic_runtime_module",
         ":flash_attention_decode_split_f32_f16_runtime_module",
         ":flash_attention_prefill_f32_f16_runtime_module",
         ":greedy_argmax_partials_runtime_module",
@@ -630,6 +696,8 @@ test_suite(
     tests = [
         ":attention_metadata_hal_test",
         ":attention_metadata_plan_test",
+        ":decode_attention_metadata_hal_test",
+        ":flash_attention_decode_dynamic_hal_test",
         ":greedy_argmax_hal_test",
         ":greedy_argmax_partials_hal_test",
         ":greedy_argmax_partials_tie_hal_test",
