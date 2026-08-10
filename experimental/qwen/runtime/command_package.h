@@ -28,12 +28,20 @@ typedef struct qwen_command_package_t qwen_command_package_t;
 
 // Program identities available in a prepared package.
 typedef enum qwen_command_program_e {
+  // Exact 32-row initial prefill with a 64-row attention extent.
+  QWEN_COMMAND_PROGRAM_PREFILL_32 = 0,
+  // Exact 64-row initial prefill with a 64-row attention extent.
+  QWEN_COMMAND_PROGRAM_PREFILL_64 = 1,
+  // Exact 128-row initial prefill with a 128-row attention extent.
+  QWEN_COMMAND_PROGRAM_PREFILL_128 = 2,
+  // Exact 256-row initial prefill with a 256-row attention extent.
+  QWEN_COMMAND_PROGRAM_PREFILL_256 = 3,
   // Exact 512-row initial prefill with a 512-row attention extent.
-  QWEN_COMMAND_PROGRAM_PREFILL_512 = 0,
+  QWEN_COMMAND_PROGRAM_PREFILL_512 = 4,
   // One-token decode over the 576-row context class.
-  QWEN_COMMAND_PROGRAM_DECODE_576 = 1,
+  QWEN_COMMAND_PROGRAM_DECODE_576 = 5,
   // Number of known command programs.
-  QWEN_COMMAND_PROGRAM_COUNT = 2,
+  QWEN_COMMAND_PROGRAM_COUNT = 6,
 } qwen_command_program_t;
 
 // Options controlling package compilation and command recording.
@@ -140,7 +148,7 @@ typedef struct qwen_command_issue_options_t {
   qwen_command_barrier_wave_observer_t barrier_wave_observer;
 } qwen_command_issue_options_t;
 
-// Initializes |out_options| for Prefill-512 followed by Decode-576.
+// Initializes |out_options| for the exact prefill family and Decode-576.
 IREE_API_EXPORT void qwen_command_package_options_initialize(
     qwen_command_package_options_t* out_options);
 
