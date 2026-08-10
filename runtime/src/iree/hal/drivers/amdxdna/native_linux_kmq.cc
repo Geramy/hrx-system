@@ -7,8 +7,6 @@
 #include <errno.h>
 #include <unistd.h>
 
-#include <algorithm>
-#include <cctype>
 #include <cinttypes>
 #include <cstdlib>
 #include <cstring>
@@ -152,16 +150,6 @@ struct driver_stack_info_t {
   bool has_revision = false;
 };
 
-bool env_flag_enabled(const char* name) {
-  const char* raw_value = std::getenv(name);
-  if (!raw_value || raw_value[0] == '\0') return false;
-  std::string value(raw_value);
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char c) { return (char)std::tolower(c); });
-  return value != "0" && value != "false" && value != "off" &&
-         value != "no";
-}
-
 std::string read_first_line(const std::filesystem::path& path) {
   std::ifstream file(path);
   std::string line;
@@ -264,34 +252,39 @@ bool has_known_bad_amdxdna_srcversion(const driver_stack_info_t& info) {
 
 iree_hal_amdxdna_native_c_command_chain_status_t select_command_chain_status(
     const driver_stack_info_t& info) {
-  if (env_flag_enabled("IREE_HAL_AMDXDNA_DISABLE_COMMAND_CHAIN")) {
-    return IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_DISABLED_BY_USER;
-  }
-  if (env_flag_enabled("IREE_HAL_AMDXDNA_ENABLE_COMMAND_CHAIN")) {
-    return IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_ENABLED_BY_USER;
-  }
-
+  iree_hal_amdxdna_native_c_command_chain_status_t status =
+      IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_ENABLED_BY_DEFAULT;
   if (has_known_bad_amdxdna_srcversion(info)) {
-    return IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_DISABLED_KNOWN_BAD_STACK;
-  }
-
-  // There is no ordered kernel-module srcversion. Firmware is the ordered local
-  // signal; only enable native parent chains by default once firmware reaches
-  // the command-chain-capable floor. Older 1.0.x stock firmware has now failed
-  // on multiple Ubuntu amdxdna stacks.
-  if (is_xdna2_pci_revision(info)) {
+    status =
+        IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_DISABLED_KNOWN_BAD_STACK;
+  } else if (is_xdna2_pci_revision(info)) {
+    // There is no ordered kernel-module srcversion. Firmware is the ordered
+    // local signal; only enable native parent chains by default once firmware
+    // reaches the command-chain-capable floor. Older 1.0.x stock firmware has
+    // now failed on multiple Ubuntu amdxdna stacks.
     if (info.firmware.valid) {
       if (firmware_compare(info.firmware, kCommandChainFirmwareMinMajor,
                            kCommandChainFirmwareMinMinor,
                            kCommandChainFirmwareMinPatch,
                            kCommandChainFirmwareMinBuild) < 0) {
-        return IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_DISABLED_OLD_FIRMWARE;
+        status =
+            IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_DISABLED_OLD_FIRMWARE;
       }
     } else if (info.module_version.empty()) {
-      return IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_DISABLED_UNIDENTIFIED_STACK;
+      status =
+          IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_DISABLED_UNIDENTIFIED_STACK;
     }
   }
-  return IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_ENABLED_BY_DEFAULT;
+
+  switch (IREE_HAL_AMDXDNA_COMMAND_CHAIN_OVERRIDE) {
+    case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_OVERRIDE_FORCE_ENABLED:
+      return IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_ENABLED_FOR_TESTING;
+    case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_OVERRIDE_FORCE_DISABLED:
+      return IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_DISABLED_FOR_TESTING;
+    case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_OVERRIDE_AUTO:
+    default:
+      return status;
+  }
 }
 
 bool command_chain_enabled(
@@ -299,7 +292,7 @@ bool command_chain_enabled(
   return status ==
              IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_ENABLED_BY_DEFAULT ||
          status ==
-             IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_ENABLED_BY_USER;
+             IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_ENABLED_FOR_TESTING;
 }
 
 void record_driver_stack_info(iree_hal_amdxdna_native_device_t* device,
