@@ -56,8 +56,8 @@ kernel.def target(@qwen3_moe_routed_down_next_norm_q8_gfx11_wave32) @qwen3_moe_r
   %c4 = index.constant 4 : index
   %c8 = index.constant 8 : index
   %c128 = index.constant 128 : index
-  %group_bytes = index.constant 144 : index
-  %payload_byte_add = index.constant 16 : index
+  %group_bytes = index.constant 144 : offset
+  %payload_byte_add = index.constant 16 : offset
   %scratch_d_byte_add = index.constant 2048 : offset
   %scratch_bytes = index.constant 2304 : offset
   %c0_offset = index.constant 0 : offset
@@ -72,8 +72,8 @@ kernel.def target(@qwen3_moe_routed_down_next_norm_q8_gfx11_wave32) @qwen3_moe_r
   %hidden_size_f32 = scalar.sitofp %hidden_size_i32 : i32 to f32
   %assignment_count = index.mul %launch_token_count, %route_count : index
   %physical_group_count = index.div %hidden_size, %c128 : index
-  %row_byte_count = index.mul %physical_group_count, %group_bytes : index
-  %token_output_byte_base = index.mul %token, %row_byte_count : index
+  %row_bytes = index.scale %physical_group_count, %group_bytes : index, offset -> offset
+  %token_output_byte_base = index.scale %token, %row_bytes : index, offset -> offset
   %route_weights_noalias, %routed_output_noalias, %hidden_state_noalias, %next_norm_weight_noalias, %next_projection_input_noalias = buffer.assume.noalias %route_weights, %routed_output, %hidden_state, %next_norm_weight, %next_projection_input : buffer, buffer, buffer, buffer, buffer
   %route_weights_view = buffer.view %route_weights_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%route_count]xf32, #dense>
   %routed_output_view = buffer.view %routed_output_noalias[%c0_offset] : buffer -> view<[%assignment_count]x[%output_size]xf16, #dense>
@@ -175,11 +175,9 @@ kernel.def target(@qwen3_moe_routed_down_next_norm_q8_gfx11_wave32) @qwen3_moe_r
     %packed_words = vector.bitcast %quantized_values : vector<8xi8> to vector<2xi32>
     %physical_group = index.div %block_in_row, %c4 : index
     %block_in_group = index.rem %block_in_row, %c4 : index
-    %group_byte_add = index.mul %physical_group, %group_bytes : index
-    %group_byte_index = index.add %token_output_byte_base, %group_byte_add : index
-    %payload_byte_index = index.add %group_byte_index, %payload_byte_add : index
-    %group_byte_offset = index.cast %group_byte_index : index to offset
-    %payload_byte_offset = index.cast %payload_byte_index : index to offset
+    %group_byte_add = index.scale %physical_group, %group_bytes : index, offset -> offset
+    %group_byte_offset = index.add %token_output_byte_base, %group_byte_add : offset
+    %payload_byte_offset = index.add %group_byte_offset, %payload_byte_add : offset
     %group_ds = buffer.view %next_projection_input_noalias[%group_byte_offset] : buffer -> view<8xf16, #dense>
     %group_qs = buffer.view %next_projection_input_noalias[%payload_byte_offset] : buffer -> view<32xi32, #dense>
     %block_word_base = index.mul %block_in_group, %c8 : index

@@ -921,8 +921,8 @@ func.template<qwen3_moe.routed_gate_up.quantize_q8_1_x4.subgroup_body> device @q
   %c4 = index.constant 4 : index
   %c8 = index.constant 8 : index
   %c128 = index.constant 128 : index
-  %group_bytes = index.constant 144 : index
-  %payload_byte_add = index.constant 16 : index
+  %group_bytes = index.constant 144 : offset
+  %payload_byte_add = index.constant 16 : offset
   %c0_f32 = scalar.constant 0.0 : f32
   %c1_f32 = scalar.constant 1.0 : f32
   %c127_f32 = scalar.constant 127.0 : f32
@@ -955,10 +955,8 @@ func.template<qwen3_moe.routed_gate_up.quantize_q8_1_x4.subgroup_body> device @q
   %rounded_values = vector.roundf %scaled_values : vector<4xf32>
   %quantized_values = vector.fptosi %rounded_values : vector<4xf32> to vector<4xi8>
   %packed_word = vector.bitcast %quantized_values : vector<4xi8> to vector<1xi32>
-  %group_byte_index = index.mul %group, %group_bytes : index
-  %group_byte_offset = index.cast %group_byte_index : index to offset
-  %payload_byte_index = index.add %group_byte_index, %payload_byte_add : index
-  %payload_byte_offset = index.cast %payload_byte_index : index to offset
+  %group_byte_offset = index.scale %group, %group_bytes : index, offset -> offset
+  %payload_byte_offset = index.add %group_byte_offset, %payload_byte_add : offset
   %group_ds = buffer.view %output_noalias[%group_byte_offset] : buffer -> view<8xf16, #dense>
   %group_qs = buffer.view %output_noalias[%payload_byte_offset] : buffer -> view<32xi32, #dense>
   scf.if %publish_output {
@@ -1036,8 +1034,7 @@ kernel.def @qwen3_moe_routed_gate_up_swiglu_q4k_q8_1_x4_next_q8(%token_count: in
   %group_in_row = index.div %channel_base, %c128 : index
   %counter_index0 = index.add %row_group_base, %group_in_row : index
   %counter_index, %bounded_completion_counter_count = index.assume %counter_index0, %completion_counter_count [lt(%counter_index0, %completion_counter_count)] : index, index
-  %completion_counters_global = buffer.assume.memory_space<global> %completion_counters_noalias : buffer
-  %completion_counters_aligned = buffer.assume.alignment %completion_counters_global {minimum_alignment = 16} : buffer
+  %completion_counters_aligned = buffer.assume.alignment %completion_counters_noalias {minimum_alignment = 16} : buffer
   %completion_counters_view = buffer.view %completion_counters_aligned[%c0_offset] : buffer -> view<[%bounded_completion_counter_count]xi32, #dense>
   %counter_scratch = buffer.alloca %counter_scratch_bytes {base_alignment = 4, memory_space = workgroup} : buffer
   %counter_scratch_view = buffer.view %counter_scratch[%c0_offset] : buffer -> view<1xi32, #dense>
@@ -1129,14 +1126,13 @@ kernel.def @qwen3_moe_routed_gate_up_swiglu_q4k_q8_grouped(%token_count: index, 
   %assignment_table_byte_base = index.scale %table_expert_count, %c4_bytes : index, offset -> offset
   %q4_block_count = index.div %input_size, %c256 : index
   %output_route_count = index.mul %bounded_token_count, %bounded_route_count : index
-  %output_element_count = index.mul %output_route_count, %bounded_output_size : index
   %q8_noalias, %expert_table_noalias, %gate_noalias, %up_noalias, %output_noalias = buffer.assume.noalias %q8_input, %expert_table, %gate_weight, %up_weight, %output : buffer, buffer, buffer, buffer, buffer
   %q8_words = buffer.view %q8_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x[%q4_block_count]x72xi32, #dense>
   %count_view = buffer.view %expert_table_noalias[%c0_offset] : buffer -> view<[%table_expert_count]xi32, #dense>
   %assignment_view = buffer.view %expert_table_noalias[%assignment_table_byte_base] : buffer -> view<[%table_expert_count]x[%bounded_token_count]xi32, #dense>
   %gate_words = buffer.view %gate_noalias[%c0_offset] : buffer -> view<[%bounded_expert_count]x[%bounded_output_size]x[%q4_block_count]x36xi32, #dense>
   %up_words = buffer.view %up_noalias[%c0_offset] : buffer -> view<[%bounded_expert_count]x[%bounded_output_size]x[%q4_block_count]x36xi32, #dense>
-  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%output_element_count]xf32, #dense>
+  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%output_route_count]x[%bounded_output_size]xf32, #dense>
   %row_ids = buffer.alloca %row_id_bytes {base_alignment = 16, memory_space = workgroup} : buffer
   %gate_stage = buffer.alloca %weight_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
   %up_stage = buffer.alloca %weight_stage_bytes {base_alignment = 16, memory_space = workgroup} : buffer
@@ -1292,10 +1288,8 @@ kernel.def @qwen3_moe_routed_gate_up_swiglu_q4k_q8_grouped(%token_count: index, 
         %assignment0 = index.cast %assignment_i32 : i32 to index
         %assignment = index.assume %assignment0 [range(%assignment0, 0, 4095)] : index
         %bounded_assignment, %bounded_assignment_count = index.assume %assignment, %assignment_count [lt(%assignment, %assignment_count)] : index, index
-        %assignment_output_base = index.mul %bounded_assignment, %bounded_output_size : index
-        %output_index = index.add %assignment_output_base, %channel : index
         %result = vector.extract %result_rows[%row_variant] : vector<4xf32> -> f32
-        view.store %result, %output_view[%output_index] : f32, view<[%output_element_count]xf32, #dense>
+        view.store %result, %output_view[%bounded_assignment, %channel] : f32, view<[%output_route_count]x[%bounded_output_size]xf32, #dense>
       }
     }
   }

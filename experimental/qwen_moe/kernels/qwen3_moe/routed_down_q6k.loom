@@ -58,8 +58,8 @@ func.template<qwen3_moe.routed_down.q6k_q8_1_x4.body> device @qwen3_moe_routed_d
   %c1 = index.constant 1 : index
   %c8 = index.constant 8 : index
   %c128 = index.constant 128 : index
-  %c144 = index.constant 144 : index
-  %c210 = index.constant 210 : index
+  %c144_bytes = index.constant 144 : offset
+  %c210_bytes = index.constant 210 : offset
   %c256 = index.constant 256 : index
   %c0_i32 = scalar.constant 0 : i32
   %c0_f32 = scalar.constant 0.0 : f32
@@ -71,9 +71,9 @@ func.template<qwen3_moe.routed_down.q6k_q8_1_x4.body> device @qwen3_moe_routed_d
   %lane_i32 = index.cast %lane : index to i32
   %is_lane_zero = scalar.cmpi eq, %lane_i32, %c0_i32 : i32
   %q6_block_count = index.div %bounded_input_size, %c256 : index
-  %weight_row_byte_count = index.mul %q6_block_count, %c210 : index
+  %weight_row_bytes = index.scale %q6_block_count, %c210_bytes : index, offset -> offset
   %q8_group_count = index.div %bounded_input_size, %c128 : index
-  %q8_row_byte_count = index.mul %q8_group_count, %c144 : index
+  %q8_row_bytes = index.scale %q8_group_count, %c144_bytes : index, offset -> offset
   %q8_noalias, %route_id_noalias, %route_weight_noalias, %weight_noalias, %output_noalias = buffer.assume.noalias %q8_input, %route_ids, %route_weights, %weight, %output : buffer, buffer, buffer, buffer, buffer
   %route_id_view = buffer.view %route_id_noalias[%c0_offset] : buffer -> view<[%body_token_count]x[%bounded_route_id_stride]xi32, #dense>
   %route_weight_view = buffer.view %route_weight_noalias[%c0_offset] : buffer -> view<[%body_token_count]x[%bounded_route_count]xf32, #dense>
@@ -101,12 +101,10 @@ func.template<qwen3_moe.routed_down.q6k_q8_1_x4.body> device @qwen3_moe_routed_d
       %expert, %weight_expert_count = index.assume %expert1, %bounded_expert_count [lt(%expert1, %bounded_expert_count)] : index, index
       %expert_output_base = index.mul %expert, %bounded_output_size : index
       %expert_channel = index.add %expert_output_base, %channel : index
-      %weight_row_byte_index = index.mul %expert_channel, %weight_row_byte_count : index
-      %weight_row_byte_base = index.cast %weight_row_byte_index : index to offset
+      %weight_row_byte_base = index.scale %expert_channel, %weight_row_bytes : index, offset -> offset
       %q8_row_base0 = index.mul %bounded_token, %bounded_route_count : index
       %q8_row = index.add %q8_row_base0, %route : index
-      %q8_row_byte_index = index.mul %q8_row, %q8_row_byte_count : index
-      %q8_row_byte_base = index.cast %q8_row_byte_index : index to offset
+      %q8_row_byte_base = index.scale %q8_row, %q8_row_bytes : index, offset -> offset
       %lane_acc = func.call @ggml_q6k_q8_1_x4_row_lane(%bounded_input_size, %weight_noalias, %weight_row_byte_base, %q8_noalias, %q8_row_byte_base, %lane) : (index, buffer, offset, buffer, offset, index) -> (f32)
       %route_weight = kernel.subgroup.broadcast %lane_route_weight from %route_i32 : f32, i32
       %weighted_lane = scalar.mulf<reassoc|nnan|ninf|nsz> %lane_acc, %route_weight : f32

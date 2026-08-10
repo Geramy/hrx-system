@@ -63,6 +63,84 @@ epsilon. Source modules own target selection, tiles, workgroup geometry, and
 schedule alternatives. A host integration should select a semantic kernel root;
 it should not duplicate those authored launch decisions.
 
+## Modern Loom authoring contract
+
+This corpus is intended to be read and reused as production-shaped Loom, not
+only as a collection of generated GPU artifacts. The source keeps model
+semantics, implementation choice, local transform intent, correctness cases,
+and benchmark workloads in one optimization scope.
+
+Facts are stated at the boundary that owns them. `config.decl` and `where`
+clauses describe public configuration and provider contracts; consumers use
+those SSA values directly. `index.assume` remains important after a guard,
+remainder, clamp, or derived calculation establishes a new fact that the
+boundary could not have known. For example, the split-attention providers in
+`kernels/qwen3_moe/flash_attention_decode_split_f32_f16_wmma.loom` select on a
+bounded context capacity through `where`, then refine the block count derived
+from that capacity inside the provider.
+
+Logical coordinates and byte addresses use different types. Rows, channels,
+blocks, and tensor extents remain `index`; byte strides and buffer offsets are
+`offset`. `index.scale` is the explicit transition between the two domains:
+
+```loom
+%group_bytes = index.constant 144 : offset
+%group_byte_offset = index.scale %group, %group_bytes
+    : index, offset -> offset
+%payload_byte_offset = index.add %group_byte_offset, %payload_byte_add : offset
+%payload = buffer.view %packed[%payload_byte_offset]
+    : buffer -> view<32xi32, #dense>
+```
+
+`kernels/ggml/quantize_q8_1_x4.loom` is the compact reference for this packed
+layout style. The complete prefill and decode programs apply the same rule to
+dynamic transient sizes, packed request state, and per-layer cache views.
+
+Kernel ABI buffers already carry global-memory facts. Device code refines only
+the information it actually adds, such as non-aliasing or alignment, before
+forming a view. A target-selected descriptor provider is different: the three
+`buffer.assume.memory_space<descriptor>` results in
+`kernels/qwen3_moe/router_projection_f32.loom` express a real gfx1151 storage
+choice and flow through the same model-facing kernel root.
+
+Reusable code distinguishes identity from policy:
+
+- `func.call` names an exact helper whose implementation is part of the call
+  contract, such as packed Q4_K or Q6_K decoding.
+- `func.apply<...>` asks for an implementation contract. `func.template`
+  providers may select by value facts, typed target requirements, or an exact
+  target when the algorithm genuinely changes.
+- `target.subgroup.size` derives subgroup-dependent geometry inside the source;
+  typed `requires [#target.subgroup.size<...>]` clauses keep provider
+  eligibility synchronized with the launch and device body.
+
+`kernels/qwen3_moe/router_projection_top8_fused_f32.loom` demonstrates that
+selection boundary. One semantic root chooses a gfx1151 two-expert storage and
+projection provider or the portable four-expert provider, while both require
+the wave64 contract they implement. The host never branches on an architecture
+name or reconstructs the workgroup geometry.
+
+Structured control flow is retained until specialization can resolve it.
+`scf.for`, `scf.if`, loop-carried values, `unroll`, and schedule annotations
+describe the algorithm and local transform intent without expanding the source
+into generated statements. Semantic SSA names preserve the role of values;
+literal-only values use the `%c<literal>` convention.
+
+Every production family carries its witnesses with the implementation.
+`check.case` roots exercise numerical behavior and access sanitization, while
+`check.param.choice` and `check.benchmark` describe reusable workload families
+such as decode and Prefill-32/128/512. The same source therefore drives
+correctness, compiler reports, and performance experiments without a separate
+kernel-generation script.
+
+Whole-model composition follows the same contracts. The
+[decode command program](../qwen/programs/decode.loom) and
+[prefill command program](../qwen/programs/prefill.loom) use
+`command.program.def`, `command.parameter`, `buffer.pack`, structured layer
+loops, and semantic `kernel.launch` roots to specialize a complete model graph.
+They own parameter placement and transient lifetimes while kernels continue to
+own schedules and target-specific implementation choices.
+
 ## Kernel harvest map
 
 The table identifies the production boundaries to harvest into another graph

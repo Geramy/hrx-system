@@ -42,9 +42,10 @@ kernel.def target(@qwen3_moe_attention_qkv_same_format_prefill_gfx11_wave64) @qw
   %token_tile = kernel.workgroup.id<y> : index
   %c2 = index.constant 2 : index
   %q4 = index.constant 4 : index
+  %overwrite = index.constant 0 : index
   %key_value_output_size = index.mul %key_value_size, %c2 : index
   %combined_output_size = index.add %query_size, %key_value_output_size : index
-  func.apply<qwen3_moe.dense_quantized.body>(%q4, %token_count, %hidden_size, %combined_output_size, %channel_tile, %token_tile, %input, %combined_weight, %combined_output) : (index, index, index, index, index, index, buffer, buffer, buffer)
+  func.apply<qwen3_moe.dense_quantized.body>(%q4, %token_count, %hidden_size, %combined_output_size, %overwrite, %channel_tile, %token_tile, %input, %combined_weight, %combined_output) : (index, index, index, index, index, index, index, buffer, buffer, buffer)
   kernel.return
 }
 
@@ -73,9 +74,10 @@ kernel.def target(@qwen3_moe_attention_qkv_same_format_prefill_gfx11_wave64) @qw
   %token_tile = kernel.workgroup.id<y> : index
   %c2 = index.constant 2 : index
   %q4 = index.constant 4 : index
+  %overwrite = index.constant 0 : index
   %key_value_output_size = index.mul %key_value_size, %c2 : index
   %combined_output_size = index.add %query_size, %key_value_output_size : index
-  func.apply<qwen3_moe.dense_quantized.body>(%q4, %token_count, %hidden_size, %combined_output_size, %channel_tile, %token_tile, %input, %combined_weight, %combined_output) : (index, index, index, index, index, index, buffer, buffer, buffer)
+  func.apply<qwen3_moe.dense_quantized.body>(%q4, %token_count, %hidden_size, %combined_output_size, %overwrite, %channel_tile, %token_tile, %input, %combined_weight, %combined_output) : (index, index, index, index, index, index, index, buffer, buffer, buffer)
   kernel.return
 }
 
@@ -102,11 +104,12 @@ kernel.def target(@qwen3_moe_attention_qkv_same_format_prefill_gfx11_wave64) @qw
   %c2 = index.constant 2 : index
   %q4 = index.constant 4 : index
   %c64 = index.constant 64 : index
+  %overwrite = index.constant 0 : index
   %query_channel_tile_count = index.div %query_size, %c64 : index
   %channel_tile = index.add %query_channel_tile_count, %local_channel_tile : index
   %key_value_output_size = index.mul %key_value_size, %c2 : index
   %combined_output_size = index.add %query_size, %key_value_output_size : index
-  func.apply<qwen3_moe.dense_quantized.body>(%q4, %token_count, %hidden_size, %combined_output_size, %channel_tile, %token_tile, %input, %combined_weight, %combined_output) : (index, index, index, index, index, index, buffer, buffer, buffer)
+  func.apply<qwen3_moe.dense_quantized.body>(%q4, %token_count, %hidden_size, %combined_output_size, %overwrite, %channel_tile, %token_tile, %input, %combined_weight, %combined_output) : (index, index, index, index, index, index, index, buffer, buffer, buffer)
   kernel.return
 }
 
@@ -133,13 +136,14 @@ kernel.def target(@qwen3_moe_attention_qkv_same_format_prefill_gfx11_wave64) @qw
   %c2 = index.constant 2 : index
   %q4 = index.constant 4 : index
   %c64 = index.constant 64 : index
+  %overwrite = index.constant 0 : index
   %query_channel_tile_count = index.div %query_size, %c64 : index
   %key_value_channel_tile_count = index.div %key_value_size, %c64 : index
   %key_channel_tile_end = index.add %query_channel_tile_count, %key_value_channel_tile_count : index
   %channel_tile = index.add %key_channel_tile_end, %local_channel_tile : index
   %key_value_output_size = index.mul %key_value_size, %c2 : index
   %combined_output_size = index.add %query_size, %key_value_output_size : index
-  func.apply<qwen3_moe.dense_quantized.body>(%q4, %token_count, %hidden_size, %combined_output_size, %channel_tile, %token_tile, %input, %combined_weight, %combined_output) : (index, index, index, index, index, index, buffer, buffer, buffer)
+  func.apply<qwen3_moe.dense_quantized.body>(%q4, %token_count, %hidden_size, %combined_output_size, %overwrite, %channel_tile, %token_tile, %input, %combined_weight, %combined_output) : (index, index, index, index, index, index, index, buffer, buffer, buffer)
   kernel.return
 }
 

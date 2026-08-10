@@ -17,10 +17,8 @@ kernel.def target(@qwen3_moe_attention_decode_q128_gfx11_wave64) @qwen3_moe_flas
   %c512 = index.constant 512 : index
   kernel.launch.config workgroups(%key_value_head_count, %c1, %c1) workgroup_size(%c512, %c1, %c1) : index
 } launch(%key_value_token_count: index, %query: buffer, %key: buffer, %value: buffer, %mask: buffer, %output: buffer) {
-  %query_head_count0 = config.get @qwen3_moe.attention.query_head_count : index
-  %key_value_head_count0 = config.get @qwen3_moe.attention.key_value_head_count : index
-  %query_head_count = index.assume %query_head_count0 [range(%query_head_count0, 1, 64)] : index
-  %key_value_head_count = index.assume %key_value_head_count0 [range(%key_value_head_count0, 1, 64)] : index
+  %query_head_count = config.get @qwen3_moe.attention.query_head_count : index
+  %key_value_head_count = config.get @qwen3_moe.attention.key_value_head_count : index
   %workgroup_x0 = kernel.workgroup.id<x> : index
   %key_value_head = index.assume %workgroup_x0 [range(%workgroup_x0, 0, 63)] : index
   %workitem0 = kernel.workitem.id<x> : index
@@ -78,16 +76,11 @@ kernel.def target(@qwen3_moe_attention_decode_q128_gfx11_wave64) @qwen3_moe_flas
   %query_transposed_layout = encoding.layout.strided [1, 136] : encoding<layout>
   %probability_transposed_layout = encoding.layout.strided [1, 24] : encoding<layout>
   %query_noalias, %key_noalias, %value_noalias, %mask_noalias, %output_noalias = buffer.assume.noalias %query, %key, %value, %mask, %output : buffer, buffer, buffer, buffer, buffer
-  %query_global = buffer.assume.memory_space<global> %query_noalias : buffer
-  %key_global = buffer.assume.memory_space<global> %key_noalias : buffer
-  %value_global = buffer.assume.memory_space<global> %value_noalias : buffer
-  %mask_global = buffer.assume.memory_space<global> %mask_noalias : buffer
-  %output_global = buffer.assume.memory_space<global> %output_noalias : buffer
-  %query_aligned = buffer.assume.alignment %query_global {minimum_alignment = 16} : buffer
-  %key_aligned = buffer.assume.alignment %key_global {minimum_alignment = 16} : buffer
-  %value_aligned = buffer.assume.alignment %value_global {minimum_alignment = 16} : buffer
-  %mask_aligned = buffer.assume.alignment %mask_global {minimum_alignment = 16} : buffer
-  %output_aligned = buffer.assume.alignment %output_global {minimum_alignment = 16} : buffer
+  %query_aligned = buffer.assume.alignment %query_noalias {minimum_alignment = 16} : buffer
+  %key_aligned = buffer.assume.alignment %key_noalias {minimum_alignment = 16} : buffer
+  %value_aligned = buffer.assume.alignment %value_noalias {minimum_alignment = 16} : buffer
+  %mask_aligned = buffer.assume.alignment %mask_noalias {minimum_alignment = 16} : buffer
+  %output_aligned = buffer.assume.alignment %output_noalias {minimum_alignment = 16} : buffer
   %query_view = buffer.view %query_aligned[%c0_offset] : buffer -> view<[%query_head_count]x128xf32, #dense>
   %key_view = buffer.view %key_aligned[%c0_offset] : buffer -> view<128x[%key_value_width]xf16, #dense>
   %value_view = buffer.view %value_aligned[%c0_offset] : buffer -> view<128x[%key_value_width]xf16, #dense>

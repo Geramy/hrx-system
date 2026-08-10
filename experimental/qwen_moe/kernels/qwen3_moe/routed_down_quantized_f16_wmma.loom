@@ -170,8 +170,8 @@ func.template<qwen3_moe.routed_down.quantized_prefill.body> device @qwen3_moe_ro
   %c256 = index.constant 256 : index
   %c0_offset = index.constant 0 : offset
   %c4_bytes = index.constant 4 : offset
-  %q4_block_bytes = index.constant 144 : index
-  %q6_block_bytes = index.constant 210 : index
+  %q4_block_bytes = index.constant 144 : offset
+  %q6_block_bytes = index.constant 210 : offset
   %weight_stage_bytes = index.constant 5120 : offset
   %activation_stage_bytes = index.constant 2560 : offset
   %route_stage_bytes = index.constant 128 : offset
@@ -190,10 +190,10 @@ func.template<qwen3_moe.routed_down.quantized_prefill.body> device @qwen3_moe_ro
   %assignment_table_byte_base = index.scale %bounded_expert_count, %c4_bytes : index, offset -> offset
   %is_q4 = index.cmp eq, %weight_format, %c4 : index
   %is_q6 = index.cmp eq, %weight_format, %c6 : index
-  %quant_block_bytes = scf.select %is_q6, %q6_block_bytes, %q4_block_bytes : index
+  %quant_block_bytes = scf.select %is_q6, %q6_block_bytes, %q4_block_bytes : offset
   %quant_block_count = index.div %input_size, %c256 : index
-  %weight_row_bytes = index.mul %quant_block_count, %quant_block_bytes : index
-  %weight_expert_bytes = index.mul %bounded_output_size, %weight_row_bytes : index
+  %weight_row_bytes = index.scale %quant_block_count, %quant_block_bytes : index, offset -> offset
+  %weight_expert_bytes = index.scale %bounded_output_size, %weight_row_bytes : index, offset -> offset
   %input_noalias, %expert_table_noalias, %weight_noalias, %output_noalias = buffer.assume.noalias %input, %expert_table, %weight, %output : buffer, buffer, buffer, buffer
   %input_view = buffer.view %input_noalias[%c0_offset] : buffer -> view<[%assignment_count]x[%input_size]xf16, #dense>
   %count_view = buffer.view %expert_table_noalias[%c0_offset] : buffer -> view<[%bounded_expert_count]xi32, #dense>
@@ -253,7 +253,7 @@ func.template<qwen3_moe.routed_down.quantized_prefill.body> device @qwen3_moe_ro
     %load_k = index.mul %load_packet, %c4 : index
     %load_row0 = index.div %workitem, %c8 : index
     %load_row = index.assume %load_row0 [range(%load_row0, 0, 15)] : index
-    %expert_byte_base = index.mul %bounded_expert, %weight_expert_bytes : index
+    %expert_byte_base = index.scale %bounded_expert, %weight_expert_bytes : index, offset -> offset
     %subgroup_channel_add = index.mul %subgroup, %c32 : index
     %subgroup_channel1 = index.add %subgroup_channel_add, %c16 : index
     %init00 = vector.fragment<init> %zero_accumulator shape [%m, %n] : vector<8xf16>
@@ -271,9 +271,8 @@ func.template<qwen3_moe.routed_down.quantized_prefill.body> device @qwen3_moe_ro
         %valid_header_channel = index.cmp ult, %header_channel, %bounded_output_size : index
         %loads_q4_header = scalar.andi %is_q4, %valid_header_channel : i1
         %loaded_header = scf.if %loads_q4_header -> (vector<4xi32>) {
-          %header_channel_byte_add = index.mul %header_channel, %weight_row_bytes : index
-          %header_row_byte_index = index.add %expert_byte_base, %header_channel_byte_add : index
-          %header_row_byte_base = index.cast %header_row_byte_index : index to offset
+          %header_channel_byte_add = index.scale %header_channel, %weight_row_bytes : index, offset -> offset
+          %header_row_byte_base = index.add %expert_byte_base, %header_channel_byte_add : offset
           %header_words = func.call @qwen3_moe_q4k_wmma_load_header(%weight_noalias, %header_row_byte_base, %quant_block) : (buffer, offset, index) -> (vector<4xi32>)
           scf.yield %header_words : vector<4xi32>
         } else {
@@ -302,9 +301,8 @@ func.template<qwen3_moe.routed_down.quantized_prefill.body> device @qwen3_moe_ro
           %loads_q4_code = scalar.andi %is_q4, %valid_code_channel : i1
           %loaded_q_word = scf.if %loads_q4_code -> (vector<1xi32>) {
             %q4_group_pair = index.assume %quant_group_outer [range(%quant_group_outer, 0, 3)] : index
-            %code_channel_byte_add = index.mul %code_channel, %weight_row_bytes : index
-            %code_row_byte_index = index.add %expert_byte_base, %code_channel_byte_add : index
-            %code_row_byte_base = index.cast %code_row_byte_index : index to offset
+            %code_channel_byte_add = index.scale %code_channel, %weight_row_bytes : index, offset -> offset
+            %code_row_byte_base = index.add %expert_byte_base, %code_channel_byte_add : offset
             %q_word = func.call @qwen3_moe_q4k_wmma_load_code(%weight_noalias, %code_row_byte_base, %quant_block, %q4_group_pair, %load_packet) : (buffer, offset, index, index, index) -> (vector<1xi32>)
             scf.yield %q_word : vector<1xi32>
           } else {
@@ -331,9 +329,8 @@ func.template<qwen3_moe.routed_down.quantized_prefill.body> device @qwen3_moe_ro
           %loads_q6_code = scalar.andi %is_q6, %valid_q6_code_channel : i1
           %loaded_q6_ql0, %loaded_q6_ql1, %loaded_q6_qh = scf.if %loads_q6_code -> (vector<1xi32>, vector<1xi32>, vector<1xi32>) {
             %q6_half = index.assume %quant_group_outer [range(%quant_group_outer, 0, 1)] : index
-            %q6_code_channel_byte_add = index.mul %q6_code_channel, %weight_row_bytes : index
-            %q6_code_row_byte_index = index.add %expert_byte_base, %q6_code_channel_byte_add : index
-            %q6_code_row_byte_base = index.cast %q6_code_row_byte_index : index to offset
+            %q6_code_channel_byte_add = index.scale %q6_code_channel, %weight_row_bytes : index, offset -> offset
+            %q6_code_row_byte_base = index.add %expert_byte_base, %q6_code_channel_byte_add : offset
             %ql0_word, %ql1_word, %qh_word = func.call @qwen3_moe_q6k_wmma_load_half_codes(%weight_noalias, %q6_code_row_byte_base, %quant_block, %q6_half, %load_packet) : (buffer, offset, index, index, index) -> (vector<1xi32>, vector<1xi32>, vector<1xi32>)
             scf.yield %ql0_word, %ql1_word, %qh_word : vector<1xi32>, vector<1xi32>, vector<1xi32>
           } else {
@@ -389,9 +386,8 @@ func.template<qwen3_moe.routed_down.quantized_prefill.body> device @qwen3_moe_ro
             %valid_channel = index.cmp ult, %channel, %bounded_output_size : index
             %weight_values = scf.if %valid_channel -> (vector<4xf16>) {
               %decoded = scf.if %is_q6 -> (vector<4xf16>) {
-                %channel_byte_add = index.mul %channel, %weight_row_bytes : index
-                %row_byte_index = index.add %expert_byte_base, %channel_byte_add : index
-                %row_byte_base = index.cast %row_byte_index : index to offset
+                %channel_byte_add = index.scale %channel, %weight_row_bytes : index, offset -> offset
+                %row_byte_base = index.add %expert_byte_base, %channel_byte_add : offset
                 %q6_values = func.call @qwen3_moe_q6k_wmma_vector4_from_half_codes(%weight_noalias, %row_byte_base, %quant_block, %quant_group, %load_packet, %selected_q6_ql0, %selected_q6_ql1, %selected_q6_qh) : (buffer, offset, index, index, index, vector<1xi32>, vector<1xi32>, vector<1xi32>) -> (vector<4xf16>)
                 scf.yield %q6_values : vector<4xf16>
               } else {
