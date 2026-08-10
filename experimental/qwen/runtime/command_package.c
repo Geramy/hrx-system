@@ -1354,6 +1354,107 @@ static iree_status_t qwen_command_execute_barrier_waves(
   return status;
 }
 
+static iree_status_t qwen_command_validate_program_request(
+    qwen_command_package_t* package, qwen_command_program_t program,
+    qwen_request_t* request, qwen_command_program_state_t** out_program_state) {
+  *out_program_state = NULL;
+  if (!package || !request) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "Qwen command package and request are required");
+  }
+  if ((uint32_t)program >= QWEN_COMMAND_PROGRAM_COUNT) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "Qwen command program %d is unknown", program);
+  }
+  if (qwen_request_model(request) != package->model ||
+      qwen_request_token_capacity(request) != package->request_token_capacity ||
+      qwen_request_context_capacity(request) != package->context_capacity ||
+      qwen_request_flags(request) != package->request_flags) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "Qwen request model, storage capacities, and flags must match the "
+        "prepared command package");
+  }
+  const iree_host_size_t context_base = qwen_request_context_base(request);
+  const iree_host_size_t active_token_count =
+      qwen_request_active_token_count(request);
+  if (program == QWEN_COMMAND_PROGRAM_PREFILL_512 &&
+      (active_token_count != QWEN_COMMAND_PREFILL_TOKEN_COUNT ||
+       context_base != 0)) {
+    return iree_make_status(
+        IREE_STATUS_FAILED_PRECONDITION,
+        "Qwen prefill command requires %d tokens at context base zero",
+        QWEN_COMMAND_PREFILL_TOKEN_COUNT);
+  }
+  if (program == QWEN_COMMAND_PROGRAM_DECODE_576 &&
+      (active_token_count != 1 ||
+       context_base < QWEN_COMMAND_PREFILL_TOKEN_COUNT ||
+       context_base >= QWEN_COMMAND_CONTEXT_CAPACITY)) {
+    return iree_make_status(
+        IREE_STATUS_FAILED_PRECONDITION,
+        "Qwen decode command requires one token in context class [%d, %d)",
+        QWEN_COMMAND_PREFILL_TOKEN_COUNT, QWEN_COMMAND_CONTEXT_CAPACITY);
+  }
+  if (qwen_request_input_kind(request) != QWEN_REQUEST_INPUT_KIND_TOKEN_IDS) {
+    return iree_make_status(
+        IREE_STATUS_FAILED_PRECONDITION,
+        "Qwen command programs require token-ID request state");
+  }
+
+  qwen_command_program_state_t* program_state = &package->programs[program];
+  uint64_t completed_program_value = 0;
+  IREE_RETURN_IF_ERROR(iree_hal_semaphore_query(
+      program_state->timeline_semaphore, &completed_program_value));
+  if (completed_program_value < program_state->timeline_value) {
+    return iree_make_status(
+        IREE_STATUS_FAILED_PRECONDITION,
+        "Qwen command program already has an in-flight issue at value %" PRIu64,
+        program_state->timeline_value);
+  }
+
+  *out_program_state = program_state;
+  return iree_ok_status();
+}
+
+static iree_hal_buffer_binding_table_t qwen_command_build_binding_table(
+    qwen_request_t* request, iree_hal_buffer_t* transient_buffer,
+    iree_device_size_t transient_byte_length,
+    iree_hal_buffer_binding_t out_bindings[QWEN_COMMAND_BINDING_COUNT]) {
+  const qwen_request_storage_layout_t* request_layout =
+      qwen_request_storage_layout(request);
+  out_bindings[QWEN_COMMAND_BINDING_KEY_CACHE] = (iree_hal_buffer_binding_t){
+      .buffer = qwen_request_storage_buffer(request),
+      .offset = request_layout->key_cache.offset,
+      .length = request_layout->key_cache.length,
+  };
+  out_bindings[QWEN_COMMAND_BINDING_VALUE_CACHE] = (iree_hal_buffer_binding_t){
+      .buffer = qwen_request_storage_buffer(request),
+      .offset = request_layout->value_cache.offset,
+      .length = request_layout->value_cache.length,
+  };
+  out_bindings[QWEN_COMMAND_BINDING_REQUEST_STATE] =
+      (iree_hal_buffer_binding_t){
+          .buffer = qwen_request_storage_buffer(request),
+          .offset = 0,
+          .length = request_layout->dispatch_state_byte_length,
+      };
+  out_bindings[QWEN_COMMAND_BINDING_OUTPUT_STAGING] =
+      (iree_hal_buffer_binding_t){
+          .buffer = qwen_request_output_staging_buffer(request),
+          .offset = 0,
+          .length = sizeof(int32_t),
+      };
+  out_bindings[QWEN_COMMAND_BINDING_TRANSIENT] = (iree_hal_buffer_binding_t){
+      .buffer = transient_buffer,
+      .offset = 0,
+      .length = transient_byte_length,
+  };
+  return (iree_hal_buffer_binding_table_t){
+      .count = QWEN_COMMAND_BINDING_COUNT,
+      .bindings = out_bindings,
+  };
+}
+
 iree_status_t qwen_command_package_query_program(
     const qwen_command_package_t* package, qwen_command_program_t program,
     qwen_command_program_info_t* out_info) {
@@ -1383,65 +1484,210 @@ iree_status_t qwen_command_package_query_program(
   return iree_ok_status();
 }
 
+iree_status_t qwen_command_package_capture_transient_prefix(
+    qwen_command_package_t* package, qwen_command_program_t program,
+    qwen_request_t* request, uint32_t first_excluded_command,
+    iree_byte_span_t transient_capture) {
+  qwen_command_program_state_t* program_state = NULL;
+  IREE_RETURN_IF_ERROR(qwen_command_validate_program_request(
+      package, program, request, &program_state));
+  if (program_state->transient_byte_length > IREE_HOST_SIZE_MAX ||
+      transient_capture.data_length != program_state->transient_byte_length) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "Qwen transient capture has %" PRIhsz
+                            " bytes; expected %" PRIu64,
+                            transient_capture.data_length,
+                            (uint64_t)program_state->transient_byte_length);
+  }
+  if (transient_capture.data_length != 0 && !transient_capture.data) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "Qwen transient capture storage is required");
+  }
+
+  const loomc_cmd_program_range_options_t range_options = {
+      .type = LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_RANGE_OPTIONS,
+      .structure_size = sizeof(range_options),
+      .next = NULL,
+      .command_range =
+          {
+              .first_command = 0,
+              .command_count = first_excluded_command,
+          },
+  };
+  const loomc_cmd_iree_hal_program_options_t program_options = {
+      .type = LOOMC_STRUCTURE_TYPE_CMD_IREE_HAL_PROGRAM_OPTIONS,
+      .structure_size = sizeof(program_options),
+      .next = &range_options,
+      .command_buffer_mode = package->command_buffer_mode,
+      .queue_affinity = qwen_model_queue_affinity(package->model),
+      .fixed_buffers = program_state->fixed_buffers,
+      .fixed_buffer_count = IREE_ARRAYSIZE(program_state->fixed_buffers),
+      .flags = LOOMC_CMD_IREE_HAL_PROGRAM_FLAG_RETAIN_RECORDED_OPERATIONS,
+  };
+  loomc_cmd_iree_hal_program_t* prefix_program = NULL;
+  IREE_RETURN_IF_ERROR(iree_status_from_loomc(loomc_cmd_iree_hal_program_create(
+      package->hal_package, program_state->command_program, &program_options,
+      loomc_allocator_from_iree(package->host_allocator), &prefix_program)));
+
+  iree_hal_device_t* device = qwen_model_device(package->model);
+  iree_hal_allocator_t* device_allocator = iree_hal_device_allocator(device);
+  const iree_hal_queue_affinity_t queue_affinity =
+      qwen_model_queue_affinity(package->model);
+  iree_hal_semaphore_t* timeline_semaphore = NULL;
+  iree_hal_buffer_t* staging_buffer = NULL;
+  iree_hal_buffer_t* transient_buffer = NULL;
+  bool transient_dealloca_submitted = false;
+  uint64_t cleanup_wait_value = 0;
+
+  iree_status_t status = iree_hal_semaphore_create(
+      device, queue_affinity, /*initial_value=*/0,
+      IREE_HAL_SEMAPHORE_FLAG_DEFAULT, &timeline_semaphore);
+  const iree_hal_buffer_params_t staging_params = {
+      .usage = IREE_HAL_BUFFER_USAGE_TRANSFER_TARGET |
+               IREE_HAL_BUFFER_USAGE_MAPPING_SCOPED,
+      .access = IREE_HAL_MEMORY_ACCESS_READ | IREE_HAL_MEMORY_ACCESS_WRITE,
+      .type =
+          IREE_HAL_MEMORY_TYPE_HOST_LOCAL | IREE_HAL_MEMORY_TYPE_DEVICE_VISIBLE,
+      .queue_affinity = queue_affinity,
+  };
+  if (iree_status_is_ok(status)) {
+    status = iree_hal_allocator_allocate_buffer(
+        device_allocator, staging_params, program_state->transient_byte_length,
+        &staging_buffer);
+  }
+
+  iree_hal_semaphore_list_t alloca_waits = iree_hal_semaphore_list_empty();
+  if (iree_status_is_ok(status)) {
+    status = qwen_command_build_issue_wait_list(package, program_state, request,
+                                                iree_hal_semaphore_list_empty(),
+                                                &alloca_waits);
+  }
+
+  uint64_t scratch_ready_value = 1;
+  uint64_t execute_ready_value = 2;
+  uint64_t execute_complete_value = 3;
+  uint64_t capture_complete_value = 4;
+  uint64_t dealloca_complete_value = 5;
+  const iree_hal_semaphore_list_t scratch_ready = {
+      .count = 1,
+      .semaphores = &timeline_semaphore,
+      .payload_values = &scratch_ready_value,
+  };
+  const iree_hal_semaphore_list_t execute_ready = {
+      .count = 1,
+      .semaphores = &timeline_semaphore,
+      .payload_values = &execute_ready_value,
+  };
+  const iree_hal_semaphore_list_t execute_complete = {
+      .count = 1,
+      .semaphores = &timeline_semaphore,
+      .payload_values = &execute_complete_value,
+  };
+  const iree_hal_semaphore_list_t capture_complete = {
+      .count = 1,
+      .semaphores = &timeline_semaphore,
+      .payload_values = &capture_complete_value,
+  };
+  const iree_hal_semaphore_list_t dealloca_complete = {
+      .count = 1,
+      .semaphores = &timeline_semaphore,
+      .payload_values = &dealloca_complete_value,
+  };
+
+  const iree_hal_buffer_params_t transient_params = {
+      .usage = IREE_HAL_BUFFER_USAGE_DISPATCH_STORAGE |
+               IREE_HAL_BUFFER_USAGE_TRANSFER,
+      .access = IREE_HAL_MEMORY_ACCESS_READ | IREE_HAL_MEMORY_ACCESS_WRITE,
+      .type = IREE_HAL_MEMORY_TYPE_DEVICE_LOCAL,
+      .queue_affinity = queue_affinity,
+      .min_alignment = program_state->transient_minimum_alignment,
+  };
+  if (iree_status_is_ok(status)) {
+    status = iree_hal_device_queue_alloca(
+        device, queue_affinity, alloca_waits, scratch_ready, /*pool=*/NULL,
+        transient_params, program_state->transient_byte_length,
+        IREE_HAL_ALLOCA_FLAG_NONE, &transient_buffer);
+    if (iree_status_is_ok(status)) cleanup_wait_value = scratch_ready_value;
+  }
+  const uint32_t zero_pattern = 0;
+  if (iree_status_is_ok(status)) {
+    status = iree_hal_device_queue_fill(
+        device, queue_affinity, scratch_ready, execute_ready, transient_buffer,
+        /*target_offset=*/0, program_state->transient_byte_length,
+        &zero_pattern, sizeof(zero_pattern), IREE_HAL_FILL_FLAG_NONE);
+    if (iree_status_is_ok(status)) cleanup_wait_value = execute_ready_value;
+  }
+
+  iree_hal_buffer_binding_t bindings[QWEN_COMMAND_BINDING_COUNT];
+  const iree_hal_buffer_binding_table_t binding_table =
+      qwen_command_build_binding_table(request, transient_buffer,
+                                       program_state->transient_byte_length,
+                                       bindings);
+  if (iree_status_is_ok(status)) {
+    status = iree_hal_device_queue_execute(
+        device, queue_affinity, execute_ready, execute_complete,
+        loomc_cmd_iree_hal_program_command_buffer(prefix_program),
+        binding_table, IREE_HAL_EXECUTE_FLAG_NONE);
+    if (iree_status_is_ok(status)) cleanup_wait_value = execute_complete_value;
+  }
+  if (iree_status_is_ok(status)) {
+    status = iree_hal_device_queue_copy(
+        device, queue_affinity, execute_complete, capture_complete,
+        transient_buffer, /*source_offset=*/0, staging_buffer,
+        /*target_offset=*/0, program_state->transient_byte_length,
+        IREE_HAL_COPY_FLAG_NONE);
+    if (iree_status_is_ok(status)) cleanup_wait_value = capture_complete_value;
+  }
+  if (iree_status_is_ok(status)) {
+    status = iree_hal_device_queue_dealloca(
+        device, queue_affinity, capture_complete, dealloca_complete,
+        transient_buffer, IREE_HAL_DEALLOCA_FLAG_NONE);
+    transient_dealloca_submitted = iree_status_is_ok(status);
+  }
+  if (iree_status_is_ok(status)) {
+    status = iree_hal_semaphore_wait(
+        timeline_semaphore, dealloca_complete_value, iree_infinite_timeout(),
+        IREE_ASYNC_WAIT_FLAG_NONE);
+  }
+  if (iree_status_is_ok(status)) {
+    status = iree_hal_buffer_map_read(staging_buffer, /*source_offset=*/0,
+                                      transient_capture.data,
+                                      transient_capture.data_length);
+  }
+
+  if (transient_buffer && !transient_dealloca_submitted) {
+    const iree_hal_semaphore_list_t cleanup_wait = {
+        .count = 1,
+        .semaphores = &timeline_semaphore,
+        .payload_values = &cleanup_wait_value,
+    };
+    iree_status_t cleanup_status = iree_hal_device_queue_dealloca(
+        device, queue_affinity, cleanup_wait, dealloca_complete,
+        transient_buffer, IREE_HAL_DEALLOCA_FLAG_NONE);
+    if (iree_status_is_ok(cleanup_status)) {
+      cleanup_status = iree_hal_semaphore_wait(
+          timeline_semaphore, dealloca_complete_value, iree_infinite_timeout(),
+          IREE_ASYNC_WAIT_FLAG_NONE);
+    }
+    status = iree_status_join(status, cleanup_status);
+  }
+  iree_hal_buffer_release(transient_buffer);
+  iree_hal_buffer_release(staging_buffer);
+  iree_hal_semaphore_release(timeline_semaphore);
+  loomc_cmd_iree_hal_program_release(prefix_program);
+  return status;
+}
+
 iree_status_t qwen_command_package_issue(
     qwen_command_package_t* package, qwen_command_program_t program,
     qwen_request_t* request, const qwen_command_issue_options_t* options,
     iree_hal_semaphore_list_t wait_semaphore_list,
     iree_hal_semaphore_list_t signal_semaphore_list) {
-  if (!package || !request) {
-    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                            "Qwen command package and request are required");
-  }
   IREE_RETURN_IF_ERROR(qwen_command_validate_issue_options(options));
-  if ((uint32_t)program >= QWEN_COMMAND_PROGRAM_COUNT) {
-    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                            "Qwen command program %d is unknown", program);
-  }
-  if (qwen_request_model(request) != package->model ||
-      qwen_request_token_capacity(request) != package->request_token_capacity ||
-      qwen_request_context_capacity(request) != package->context_capacity ||
-      qwen_request_flags(request) != package->request_flags) {
-    return iree_make_status(
-        IREE_STATUS_INVALID_ARGUMENT,
-        "Qwen request model, storage capacities, and flags must match the "
-        "prepared command package");
-  }
-  qwen_command_program_state_t* program_state = &package->programs[program];
+  qwen_command_program_state_t* program_state = NULL;
+  IREE_RETURN_IF_ERROR(qwen_command_validate_program_request(
+      package, program, request, &program_state));
   const iree_host_size_t context_base = qwen_request_context_base(request);
-  const iree_host_size_t active_token_count =
-      qwen_request_active_token_count(request);
-  if (program == QWEN_COMMAND_PROGRAM_PREFILL_512 &&
-      (active_token_count != QWEN_COMMAND_PREFILL_TOKEN_COUNT ||
-       context_base != 0)) {
-    return iree_make_status(
-        IREE_STATUS_FAILED_PRECONDITION,
-        "Qwen prefill command requires %d tokens at context base zero",
-        QWEN_COMMAND_PREFILL_TOKEN_COUNT);
-  }
-  if (program == QWEN_COMMAND_PROGRAM_DECODE_576 &&
-      (active_token_count != 1 ||
-       context_base < QWEN_COMMAND_PREFILL_TOKEN_COUNT ||
-       context_base >= QWEN_COMMAND_CONTEXT_CAPACITY)) {
-    return iree_make_status(
-        IREE_STATUS_FAILED_PRECONDITION,
-        "Qwen decode command requires one token in context class [%d, %d)",
-        QWEN_COMMAND_PREFILL_TOKEN_COUNT, QWEN_COMMAND_CONTEXT_CAPACITY);
-  }
-  if (qwen_request_input_kind(request) != QWEN_REQUEST_INPUT_KIND_TOKEN_IDS) {
-    return iree_make_status(
-        IREE_STATUS_FAILED_PRECONDITION,
-        "Qwen command programs require token-ID request state");
-  }
-
-  uint64_t completed_program_value = 0;
-  IREE_RETURN_IF_ERROR(iree_hal_semaphore_query(
-      program_state->timeline_semaphore, &completed_program_value));
-  if (completed_program_value < program_state->timeline_value) {
-    return iree_make_status(
-        IREE_STATUS_FAILED_PRECONDITION,
-        "Qwen command program already has an in-flight issue at value %" PRIu64,
-        program_state->timeline_value);
-  }
 
   const bool issue_barrier_waves =
       options &&
@@ -1545,44 +1791,11 @@ iree_status_t qwen_command_package_issue(
     return iree_status_join(status, cleanup_status);
   }
 
-  const qwen_request_storage_layout_t* request_layout =
-      qwen_request_storage_layout(request);
-  const iree_hal_buffer_binding_t bindings[QWEN_COMMAND_BINDING_COUNT] = {
-      [QWEN_COMMAND_BINDING_KEY_CACHE] =
-          {
-              .buffer = qwen_request_storage_buffer(request),
-              .offset = request_layout->key_cache.offset,
-              .length = request_layout->key_cache.length,
-          },
-      [QWEN_COMMAND_BINDING_VALUE_CACHE] =
-          {
-              .buffer = qwen_request_storage_buffer(request),
-              .offset = request_layout->value_cache.offset,
-              .length = request_layout->value_cache.length,
-          },
-      [QWEN_COMMAND_BINDING_REQUEST_STATE] =
-          {
-              .buffer = qwen_request_storage_buffer(request),
-              .offset = 0,
-              .length = request_layout->dispatch_state_byte_length,
-          },
-      [QWEN_COMMAND_BINDING_OUTPUT_STAGING] =
-          {
-              .buffer = qwen_request_output_staging_buffer(request),
-              .offset = 0,
-              .length = sizeof(int32_t),
-          },
-      [QWEN_COMMAND_BINDING_TRANSIENT] =
-          {
-              .buffer = transient_buffer,
-              .offset = 0,
-              .length = program_state->transient_byte_length,
-          },
-  };
-  const iree_hal_buffer_binding_table_t binding_table = {
-      .count = IREE_ARRAYSIZE(bindings),
-      .bindings = bindings,
-  };
+  iree_hal_buffer_binding_t bindings[QWEN_COMMAND_BINDING_COUNT];
+  const iree_hal_buffer_binding_table_t binding_table =
+      qwen_command_build_binding_table(request, transient_buffer,
+                                       program_state->transient_byte_length,
+                                       bindings);
   if (issue_barrier_waves) {
     status = qwen_command_execute_barrier_waves(
         package, program, program_state, options, segments, segment_count,
