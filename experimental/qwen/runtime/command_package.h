@@ -170,6 +170,23 @@ IREE_API_EXPORT iree_status_t qwen_command_package_query_program(
     const qwen_command_package_t* package, qwen_command_program_t program,
     qwen_command_program_info_t* out_info);
 
+// Executes a canonical program prefix and captures its transient backing root.
+//
+// The prefix is the half-open command range [0, |first_excluded_command|).
+// The function uses the package's original fixed buffers, issue-time binding
+// table, transient layout, and command-buffer mode. It waits synchronously for
+// the prefix and root readback, but does not commit a model result or advance
+// request state. The caller must not issue the same program concurrently and
+// should discard the diagnostically mutated request after capture.
+//
+// |transient_capture| must have exactly the selected program's transient byte
+// length. Capturing the complete backing root preserves the alias and offset
+// relationships of every transient view for later replay.
+IREE_API_EXPORT iree_status_t qwen_command_package_capture_transient_prefix(
+    qwen_command_package_t* package, qwen_command_program_t program,
+    qwen_request_t* request, uint32_t first_excluded_command,
+    iree_byte_span_t transient_capture);
+
 // Issues one prepared program against compatible request state.
 //
 // A normal issue waits for model residency, request readiness, and caller

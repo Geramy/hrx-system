@@ -42,6 +42,12 @@ IREE_FLAG(bool, command_access_sanitizer, false,
 IREE_FLAG(bool, command_barrier_waves, false,
           "Diagnostically issue Prefill-512 one barrier wave at a time and "
           "report each completed canonical command range.");
+IREE_FLAG(int32_t, command_capture_prefix, -1,
+          "Execute canonical commands [0, N) and capture the complete "
+          "transient backing root without issuing command N.");
+IREE_FLAG(string, command_capture_transient, "",
+          "Path receiving the transient backing-root bytes produced by "
+          "--command_capture_prefix.");
 
 static const char* const qwen_prefill_cli_usage =
     "Runs complete Qwen prefill-512 and optional exact-count one-token "
@@ -57,10 +63,13 @@ static const char* const qwen_prefill_cli_usage =
     "  --decode_one\n"
     "  --expected_decode_token=<decode-selected token ID>\n"
     "  --command_barrier_waves\n"
+    "  --command_capture_prefix=<first excluded canonical command>\n"
+    "  --command_capture_transient=<transient root output path>\n"
     "\n"
     "Both stages execute reusable command programs from one compiled "
     "multi-root package. Profiling flags surround the prefill issue. "
-    "Barrier-wave mode is fault-localization only and invalidates timing.\n";
+    "Barrier-wave and prefix-capture modes are fault-localization only and "
+    "invalidate timing.\n";
 
 typedef struct qwen_prefill_cli_timepoint_t {
   // Timeline semaphore carrying this timepoint.
@@ -152,6 +161,8 @@ static iree_status_t qwen_prefill_cli_load_tokens(
 static iree_status_t qwen_prefill_cli_run(void) {
   iree_allocator_t host_allocator = iree_allocator_system();
   iree_status_t status = iree_ok_status();
+  const bool capture_prefix_requested =
+      FLAG_command_capture_prefix >= 0 || FLAG_command_capture_transient[0];
 
   if (FLAG_expected_token < IREE_TOKENIZER_TOKEN_ID_INVALID) {
     return iree_make_status(
@@ -168,6 +179,22 @@ static iree_status_t qwen_prefill_cli_run(void) {
       FLAG_expected_decode_token != IREE_TOKENIZER_TOKEN_ID_INVALID) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "--expected_decode_token requires --decode_one");
+  }
+  if (capture_prefix_requested && (FLAG_command_capture_prefix <= 0 ||
+                                   !FLAG_command_capture_transient[0])) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "prefix capture requires a positive --command_capture_prefix and "
+        "--command_capture_transient path");
+  }
+  if (capture_prefix_requested &&
+      (FLAG_command_barrier_waves || FLAG_decode_one ||
+       FLAG_expected_token != IREE_TOKENIZER_TOKEN_ID_INVALID ||
+       FLAG_expected_decode_token != IREE_TOKENIZER_TOKEN_ID_INVALID)) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "prefix capture cannot be combined with barrier-wave issue, decode, "
+        "or selected-token validation");
   }
   iree_tokenizer_token_id_t token_ids[QWEN_PREFILL_TOKEN_COUNT];
   iree_io_file_contents_t* token_contents = NULL;
@@ -264,9 +291,57 @@ static iree_status_t qwen_prefill_cli_run(void) {
                                      IREE_ASYNC_WAIT_FLAG_NONE);
   }
 
+  qwen_command_program_info_t prefill_info = {
+      .structure_size = sizeof(prefill_info),
+      .next = NULL,
+  };
+  if (iree_status_is_ok(status)) {
+    status = qwen_command_package_query_program(
+        command_package, QWEN_COMMAND_PROGRAM_PREFILL_512, &prefill_info);
+  }
+
+  uint8_t* transient_capture = NULL;
+  if (iree_status_is_ok(status) && capture_prefix_requested) {
+    if (prefill_info.transient_byte_length > IREE_HOST_SIZE_MAX) {
+      status = iree_make_status(IREE_STATUS_OUT_OF_RANGE,
+                                "Qwen transient capture length %" PRIu64
+                                " exceeds host addressable memory",
+                                (uint64_t)prefill_info.transient_byte_length);
+    } else {
+      status = iree_allocator_malloc(
+          host_allocator, (iree_host_size_t)prefill_info.transient_byte_length,
+          (void**)&transient_capture);
+    }
+  }
+  if (iree_status_is_ok(status) && capture_prefix_requested) {
+    status = qwen_command_package_capture_transient_prefix(
+        command_package, QWEN_COMMAND_PROGRAM_PREFILL_512, request,
+        (uint32_t)FLAG_command_capture_prefix,
+        iree_make_byte_span(
+            transient_capture,
+            (iree_host_size_t)prefill_info.transient_byte_length));
+  }
+  if (iree_status_is_ok(status) && capture_prefix_requested) {
+    status = iree_io_file_contents_write(
+        iree_make_cstring_view(FLAG_command_capture_transient),
+        iree_make_const_byte_span(
+            transient_capture,
+            (iree_host_size_t)prefill_info.transient_byte_length),
+        host_allocator);
+  }
+  if (iree_status_is_ok(status) && capture_prefix_requested) {
+    fprintf(stderr,
+            "Qwen command prefix [0, %" PRId32 ") captured %" PRIu64
+            " transient bytes to %s\n",
+            FLAG_command_capture_prefix,
+            (uint64_t)prefill_info.transient_byte_length,
+            FLAG_command_capture_transient);
+  }
+  iree_allocator_free(host_allocator, transient_capture);
+
   // Profiling surrounds only the issue and host-visible completion wait.
   iree_hal_profiling_from_flags_t* profiling = NULL;
-  if (iree_status_is_ok(status)) {
+  if (iree_status_is_ok(status) && !capture_prefix_requested) {
     status = iree_hal_begin_device_group_profiling_from_flags(
         runtime_context.device_group, host_allocator, &profiling);
   }
@@ -285,14 +360,14 @@ static iree_status_t qwen_prefill_cli_run(void) {
         qwen_prefill_cli_barrier_wave_callback;
     prefill_issue_options_ptr = &prefill_issue_options;
   }
-  if (iree_status_is_ok(status)) {
+  if (iree_status_is_ok(status) && !capture_prefix_requested) {
     status = qwen_command_package_issue(
         command_package, QWEN_COMMAND_PROGRAM_PREFILL_512, request,
         prefill_issue_options_ptr,
         qwen_prefill_cli_timepoint_list(&tokens_ready),
         qwen_prefill_cli_timepoint_list(&issue_complete));
   }
-  if (iree_status_is_ok(status)) {
+  if (iree_status_is_ok(status) && !capture_prefix_requested) {
     status = iree_hal_semaphore_wait(timeline, issue_complete.value,
                                      iree_infinite_timeout(),
                                      IREE_ASYNC_WAIT_FLAG_NONE);
@@ -303,10 +378,10 @@ static iree_status_t qwen_prefill_cli_run(void) {
   }
 
   iree_tokenizer_token_id_t selected_token = IREE_TOKENIZER_TOKEN_ID_INVALID;
-  if (iree_status_is_ok(status)) {
+  if (iree_status_is_ok(status) && !capture_prefix_requested) {
     status = qwen_request_read_selected_token(request, &selected_token);
   }
-  if (iree_status_is_ok(status) &&
+  if (iree_status_is_ok(status) && !capture_prefix_requested &&
       FLAG_expected_token != IREE_TOKENIZER_TOKEN_ID_INVALID &&
       selected_token != FLAG_expected_token) {
     status = iree_make_status(IREE_STATUS_DATA_LOSS,
@@ -314,15 +389,7 @@ static iree_status_t qwen_prefill_cli_run(void) {
                               " differs from expected token %" PRId32,
                               selected_token, FLAG_expected_token);
   }
-  qwen_command_program_info_t prefill_info = {
-      .structure_size = sizeof(prefill_info),
-      .next = NULL,
-  };
-  if (iree_status_is_ok(status)) {
-    status = qwen_command_package_query_program(
-        command_package, QWEN_COMMAND_PROGRAM_PREFILL_512, &prefill_info);
-  }
-  if (iree_status_is_ok(status)) {
+  if (iree_status_is_ok(status) && !capture_prefix_requested) {
     const qwen_model_statistics_t model_statistics =
         qwen_model_statistics(model);
     fprintf(stdout,
