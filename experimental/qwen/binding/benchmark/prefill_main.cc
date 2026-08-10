@@ -11,6 +11,7 @@
 #include <string>
 
 #include "benchmark/benchmark.h"
+#include "experimental/qwen/runtime/command_package.h"
 #include "experimental/qwen/runtime/model.h"
 #include "experimental/qwen/runtime/model_shape.h"
 #include "experimental/qwen/runtime/program.h"
@@ -29,12 +30,13 @@ IREE_FLAG(string, tokens, "",
           "Raw prefill token IDs: exactly 512 little-endian I32 values; the "
           "selected prefill shape consumes its leading values.");
 IREE_FLAG(int32_t, prefill_token_count, QWEN_PREFILL_FIXTURE_TOKEN_COUNT,
-          "Leading fixture token count to prefill in [1, 512].");
+          "Exact leading fixture token count: 32, 64, 128, 256, or 512.");
 IREE_FLAG(int32_t, expected_prefill_token, IREE_TOKENIZER_TOKEN_ID_INVALID,
           "Required token expected from the configured prefill shape.");
 IREE_FLAG(int32_t, expected_decode_token, IREE_TOKENIZER_TOKEN_ID_INVALID,
           "Expected token selected after appending the prefill-selected token. "
-          "Providing this enables the exact one-token decode row.");
+          "Providing this with a 512-token prefill enables matched Decode-513 "
+          "rows.");
 
 namespace {
 
@@ -44,6 +46,22 @@ typedef struct QwenBenchmarkTimepoint {
   // Monotonically increasing timeline value.
   uint64_t value;
 } QwenBenchmarkTimepoint;
+
+typedef enum QwenBenchmarkProgramKind {
+  QWEN_BENCHMARK_PROGRAM_KIND_OWNED = 0,
+  QWEN_BENCHMARK_PROGRAM_KIND_COMMAND = 1,
+} QwenBenchmarkProgramKind;
+
+typedef struct QwenBenchmarkProgram {
+  // Runtime implementation owning this benchmark row.
+  QwenBenchmarkProgramKind kind;
+  // Legacy owned recorder handle when |kind| is OWNED.
+  qwen_program_t* owned_program;
+  // Prepared command-program identity when |kind| is COMMAND.
+  qwen_command_program_t command_program;
+  // Packed transient requirement for the selected implementation.
+  iree_device_size_t transient_byte_length;
+} QwenBenchmarkProgram;
 
 typedef struct QwenPrefillBenchmarkEnvironment {
   // Allocator used for all process-global host objects.
@@ -64,10 +82,16 @@ typedef struct QwenPrefillBenchmarkEnvironment {
   iree_tokenizer_token_id_t token_ids[QWEN_PREFILL_FIXTURE_TOKEN_COUNT];
   // Resident fixed Qwen model.
   qwen_model_t* model;
-  // Reusable full-model prefill program.
-  qwen_program_t* prefill_program;
-  // Exact-count one-token decode program, when requested.
-  qwen_program_t* decode_program;
+  // Shared package containing every reusable command-program root.
+  qwen_command_package_t* command_package;
+  // Legacy owned-recorder prefill oracle.
+  QwenBenchmarkProgram owned_prefill_program;
+  // Command-program prefill candidate matched to |prefill_token_count|.
+  QwenBenchmarkProgram command_prefill_program;
+  // Legacy owned-recorder decode oracle, when requested.
+  QwenBenchmarkProgram owned_decode_program;
+  // Reusable Decode-576 command-program candidate, when requested.
+  QwenBenchmarkProgram command_decode_program;
   // Persistent full-model request state.
   qwen_request_t* request;
   // First or joined terminal error from setup, a row, or profiling.
@@ -129,7 +153,8 @@ static void QwenBenchmarkRecordFailure(
       iree_status_join(environment->terminal_status, status);
   if (benchmark_state) {
     benchmark_state->SkipWithError(
-        "Qwen prefill failed; the process exits nonzero with details");
+        "Qwen full-model benchmark failed; the process exits nonzero with "
+        "details");
   }
 }
 
@@ -222,19 +247,56 @@ static iree_status_t QwenBenchmarkPublishInput(
              : QwenBenchmarkPublishDecodeToken(environment);
 }
 
+static QwenBenchmarkProgram QwenBenchmarkOwnedProgram(
+    qwen_program_t* owned_program) {
+  return QwenBenchmarkProgram{
+      /*.kind=*/QWEN_BENCHMARK_PROGRAM_KIND_OWNED,
+      /*.owned_program=*/owned_program,
+      /*.command_program=*/QWEN_COMMAND_PROGRAM_COUNT,
+      /*.transient_byte_length=*/
+      qwen_program_transient_byte_length(owned_program),
+  };
+}
+
+static iree_status_t QwenBenchmarkCommandProgram(
+    QwenPrefillBenchmarkEnvironment* environment,
+    qwen_command_program_t command_program, QwenBenchmarkProgram* out_program) {
+  qwen_command_program_info_t program_info = {
+      /*.structure_size=*/sizeof(program_info),
+      /*.next=*/nullptr,
+  };
+  IREE_RETURN_IF_ERROR(qwen_command_package_query_program(
+      environment->command_package, command_program, &program_info));
+  *out_program = QwenBenchmarkProgram{
+      /*.kind=*/QWEN_BENCHMARK_PROGRAM_KIND_COMMAND,
+      /*.owned_program=*/nullptr,
+      /*.command_program=*/command_program,
+      /*.transient_byte_length=*/program_info.transient_byte_length,
+  };
+  return iree_ok_status();
+}
+
 static iree_status_t QwenBenchmarkIssueAndWait(
-    QwenPrefillBenchmarkEnvironment* environment, qwen_program_t* program,
-    iree_time_t* out_elapsed_time) {
+    QwenPrefillBenchmarkEnvironment* environment,
+    const QwenBenchmarkProgram* program, iree_time_t* out_elapsed_time) {
   QwenBenchmarkTimepoint wait_timepoint =
       QwenBenchmarkCurrentTimepoint(environment);
   QwenBenchmarkTimepoint signal_timepoint =
       QwenBenchmarkNextTimepoint(environment);
 
   const iree_time_t start_time = iree_time_now();
-  IREE_RETURN_IF_ERROR(
-      qwen_program_issue(program, environment->request,
-                         QwenBenchmarkTimepointList(&wait_timepoint),
-                         QwenBenchmarkTimepointList(&signal_timepoint)));
+  if (program->kind == QWEN_BENCHMARK_PROGRAM_KIND_OWNED) {
+    IREE_RETURN_IF_ERROR(
+        qwen_program_issue(program->owned_program, environment->request,
+                           QwenBenchmarkTimepointList(&wait_timepoint),
+                           QwenBenchmarkTimepointList(&signal_timepoint)));
+  } else {
+    IREE_RETURN_IF_ERROR(qwen_command_package_issue(
+        environment->command_package, program->command_program,
+        environment->request, /*options=*/nullptr,
+        QwenBenchmarkTimepointList(&wait_timepoint),
+        QwenBenchmarkTimepointList(&signal_timepoint)));
+  }
   IREE_RETURN_IF_ERROR(iree_hal_semaphore_wait(
       environment->timeline, signal_timepoint.value, iree_infinite_timeout(),
       IREE_ASYNC_WAIT_FLAG_NONE));
@@ -256,12 +318,27 @@ static iree_status_t QwenBenchmarkReadAndValidate(
   return iree_ok_status();
 }
 
+static iree_status_t QwenBenchmarkWarmAndValidate(
+    QwenPrefillBenchmarkEnvironment* environment,
+    const QwenBenchmarkProgram* program, QwenBenchmarkInputKind input_kind,
+    iree_tokenizer_token_id_t expected_token, const char* operation_name) {
+  IREE_RETURN_IF_ERROR(QwenBenchmarkPublishInput(environment, input_kind));
+  iree_time_t warmup_time = 0;
+  IREE_RETURN_IF_ERROR(
+      QwenBenchmarkIssueAndWait(environment, program, &warmup_time));
+  return QwenBenchmarkReadAndValidate(environment, expected_token,
+                                      operation_name);
+}
+
 static iree_status_t QwenBenchmarkEnvironmentInitialize(
     QwenPrefillBenchmarkEnvironment* environment) {
   environment->host_allocator = iree_allocator_system();
   environment->terminal_status = iree_ok_status();
 
   iree_status_t status = iree_ok_status();
+  qwen_command_program_t command_prefill_program = QWEN_COMMAND_PROGRAM_COUNT;
+  const bool decode_is_enabled =
+      FLAG_expected_decode_token != IREE_TOKENIZER_TOKEN_ID_INVALID;
   if (FLAG_prefill_token_count <= 0 ||
       FLAG_prefill_token_count > QWEN_PREFILL_FIXTURE_TOKEN_COUNT) {
     status = iree_make_status(
@@ -289,6 +366,16 @@ static iree_status_t QwenBenchmarkEnvironmentInitialize(
     environment->prefill_token_count =
         (iree_host_size_t)FLAG_prefill_token_count;
     environment->expected_prefill_token = FLAG_expected_prefill_token;
+  }
+  if (iree_status_is_ok(status)) {
+    status = qwen_command_select_prefill_program(
+        environment->prefill_token_count, &command_prefill_program);
+  }
+  if (iree_status_is_ok(status) && decode_is_enabled &&
+      environment->prefill_token_count != QWEN_COMMAND_PREFILL_TOKEN_CAPACITY) {
+    status = iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "matched owned and command decode rows require a 512-token prefill");
   }
   if (iree_status_is_ok(status)) {
     status = QwenBenchmarkLoadTokens(environment);
@@ -324,19 +411,15 @@ static iree_status_t QwenBenchmarkEnvironmentInitialize(
         environment->host_allocator, &environment->model);
   }
 
-  const bool decode_is_enabled =
-      FLAG_expected_decode_token != IREE_TOKENIZER_TOKEN_ID_INVALID;
-  const iree_host_size_t decode_context_class =
-      decode_is_enabled
-          ? qwen_program_decode_context_class(environment->prefill_token_count)
-          : 0;
-  const iree_host_size_t prefill_context_capacity =
-      iree_host_align(environment->prefill_token_count,
-                      QWEN_PROGRAM_ATTENTION_CONTEXT_ALIGNMENT);
+  // Both implementations use the command package's shared request layout so
+  // row comparisons differ only in recording/materialization ownership.
+  const iree_host_size_t request_token_capacity =
+      QWEN_COMMAND_PREFILL_TOKEN_CAPACITY;
   const iree_host_size_t request_context_capacity =
-      decode_is_enabled ? decode_context_class : prefill_context_capacity;
+      QWEN_COMMAND_CONTEXT_CAPACITY;
 
-  // Host-side program preparation overlaps the asynchronous model gather.
+  // Host-side owned-program and package preparation overlap the asynchronous
+  // model gather. None of this work enters a benchmark row.
   if (iree_status_is_ok(status)) {
     qwen_program_options_t program_options;
     qwen_program_options_initialize(&program_options);
@@ -344,13 +427,13 @@ static iree_status_t QwenBenchmarkEnvironmentInitialize(
     program_options.layer_index = 0;
     program_options.token_count = environment->prefill_token_count;
     program_options.context_count = environment->prefill_token_count;
-    program_options.token_capacity = environment->prefill_token_count;
+    program_options.token_capacity = request_token_capacity;
     program_options.context_capacity = request_context_capacity;
     program_options.command_buffer_mode =
         environment->runtime_context.command_buffer_mode;
-    status = qwen_program_prepare(environment->model, &program_options,
-                                  environment->host_allocator,
-                                  &environment->prefill_program);
+    status = qwen_program_prepare(
+        environment->model, &program_options, environment->host_allocator,
+        &environment->owned_prefill_program.owned_program);
   }
   if (iree_status_is_ok(status) && decode_is_enabled) {
     qwen_program_options_t program_options;
@@ -358,14 +441,40 @@ static iree_status_t QwenBenchmarkEnvironmentInitialize(
     program_options.kind = QWEN_PROGRAM_KIND_DECODE;
     program_options.layer_index = 0;
     program_options.token_count = 1;
-    program_options.context_count = decode_context_class;
-    program_options.token_capacity = environment->prefill_token_count;
+    program_options.context_count = request_context_capacity;
+    program_options.token_capacity = request_token_capacity;
     program_options.context_capacity = request_context_capacity;
     program_options.command_buffer_mode =
         environment->runtime_context.command_buffer_mode;
-    status = qwen_program_prepare(environment->model, &program_options,
-                                  environment->host_allocator,
-                                  &environment->decode_program);
+    status = qwen_program_prepare(
+        environment->model, &program_options, environment->host_allocator,
+        &environment->owned_decode_program.owned_program);
+  }
+  if (iree_status_is_ok(status)) {
+    qwen_command_package_options_t package_options;
+    qwen_command_package_options_initialize(&package_options);
+    if (environment->runtime_context.jit_worker_count != 0) {
+      package_options.compiler_worker_count =
+          environment->runtime_context.jit_worker_count;
+    }
+    package_options.command_buffer_mode =
+        environment->runtime_context.command_buffer_mode;
+    status = qwen_command_package_prepare(environment->model, &package_options,
+                                          environment->host_allocator,
+                                          &environment->command_package);
+  }
+  if (iree_status_is_ok(status)) {
+    environment->owned_prefill_program = QwenBenchmarkOwnedProgram(
+        environment->owned_prefill_program.owned_program);
+    status = QwenBenchmarkCommandProgram(environment, command_prefill_program,
+                                         &environment->command_prefill_program);
+  }
+  if (iree_status_is_ok(status) && decode_is_enabled) {
+    environment->owned_decode_program = QwenBenchmarkOwnedProgram(
+        environment->owned_decode_program.owned_program);
+    status = QwenBenchmarkCommandProgram(environment,
+                                         QWEN_COMMAND_PROGRAM_DECODE_576,
+                                         &environment->command_decode_program);
   }
 
   QwenBenchmarkTimepoint request_ready =
@@ -373,7 +482,7 @@ static iree_status_t QwenBenchmarkEnvironmentInitialize(
   if (iree_status_is_ok(status)) {
     qwen_request_options_t request_options;
     qwen_request_options_initialize(&request_options);
-    request_options.token_capacity = environment->prefill_token_count;
+    request_options.token_capacity = request_token_capacity;
     request_options.context_capacity = request_context_capacity;
     status = qwen_request_create(
         environment->model, &request_options,
@@ -382,19 +491,19 @@ static iree_status_t QwenBenchmarkEnvironmentInitialize(
         &environment->request);
   }
 
-  // Upload the external fixture once, then warm and validate a complete issue
-  // before Google Benchmark controls the repeated program issues.
+  // Warm and validate both ownership paths before Google Benchmark controls
+  // the repeated program issues. Each path receives the same fixture reset.
   if (iree_status_is_ok(status)) {
-    status = QwenBenchmarkPublishPrefillTokens(environment);
-  }
-  iree_time_t warmup_time = 0;
-  if (iree_status_is_ok(status)) {
-    status = QwenBenchmarkIssueAndWait(
-        environment, environment->prefill_program, &warmup_time);
+    status = QwenBenchmarkWarmAndValidate(
+        environment, &environment->owned_prefill_program,
+        QWEN_BENCHMARK_INPUT_KIND_PREFILL, environment->expected_prefill_token,
+        "owned full-model prefill");
   }
   if (iree_status_is_ok(status)) {
-    status = QwenBenchmarkReadAndValidate(
-        environment, environment->expected_prefill_token, "full-model prefill");
+    status = QwenBenchmarkWarmAndValidate(
+        environment, &environment->command_prefill_program,
+        QWEN_BENCHMARK_INPUT_KIND_PREFILL, environment->expected_prefill_token,
+        "command full-model prefill");
   }
   return status;
 }
@@ -403,18 +512,19 @@ static void QwenBenchmarkEnvironmentDeinitialize(
     QwenPrefillBenchmarkEnvironment* environment) {
   qwen_wait_for_model_ready_bringup_workaround(environment);
   qwen_request_release(environment->request);
-  qwen_program_release(environment->decode_program);
-  qwen_program_release(environment->prefill_program);
+  qwen_command_package_release(environment->command_package);
+  qwen_program_release(environment->owned_decode_program.owned_program);
+  qwen_program_release(environment->owned_prefill_program.owned_program);
   qwen_model_release(environment->model);
   iree_hal_semaphore_release(environment->timeline);
   qwen_tooling_runtime_context_deinitialize(&environment->runtime_context);
 }
 
 static void QwenBenchmarkMeasureProgram(
-    QwenPrefillBenchmarkEnvironment* environment, qwen_program_t* program,
-    QwenBenchmarkInputKind input_kind, iree_tokenizer_token_id_t expected_token,
-    const char* operation_name, iree_host_size_t logical_token_count,
-    benchmark::State& benchmark_state) {
+    QwenPrefillBenchmarkEnvironment* environment,
+    const QwenBenchmarkProgram* program, QwenBenchmarkInputKind input_kind,
+    iree_tokenizer_token_id_t expected_token, const char* operation_name,
+    iree_host_size_t logical_token_count, benchmark::State& benchmark_state) {
   for (auto _ : benchmark_state) {
     (void)_;
 
@@ -459,8 +569,10 @@ static void QwenBenchmarkMeasureProgram(
         qwen_model_statistics(environment->model);
     benchmark_state.SetItemsProcessed(benchmark_state.iterations() *
                                       logical_token_count);
-    benchmark_state.counters["dispatches"] =
-        (double)qwen_program_dispatch_count(program);
+    if (program->kind == QWEN_BENCHMARK_PROGRAM_KIND_OWNED) {
+      benchmark_state.counters["dispatches"] =
+          (double)qwen_program_dispatch_count(program->owned_program);
+    }
     benchmark_state.counters["encoded_parameter_bytes"] =
         (double)model_statistics.encoded_parameter_bytes;
     benchmark_state.counters["persistent_bytes"] =
@@ -470,37 +582,44 @@ static void QwenBenchmarkMeasureProgram(
     benchmark_state.counters["submissions"] = 1;
     benchmark_state.counters["tokens"] = (double)logical_token_count;
     benchmark_state.counters["transient_bytes"] =
-        (double)qwen_program_transient_byte_length(program);
+        (double)program->transient_byte_length;
   }
 }
 
-static void QwenFullModelPrefill(QwenPrefillBenchmarkEnvironment* environment,
-                                 benchmark::State& benchmark_state) {
+static void QwenFullModelOwnedPrefill(
+    QwenPrefillBenchmarkEnvironment* environment,
+    benchmark::State& benchmark_state) {
   QwenBenchmarkMeasureProgram(
-      environment, environment->prefill_program,
+      environment, &environment->owned_prefill_program,
       QWEN_BENCHMARK_INPUT_KIND_PREFILL, environment->expected_prefill_token,
-      "full-model prefill", environment->prefill_token_count, benchmark_state);
+      "owned full-model prefill", environment->prefill_token_count,
+      benchmark_state);
+}
+
+static void QwenFullModelCommandPrefill(
+    QwenPrefillBenchmarkEnvironment* environment,
+    benchmark::State& benchmark_state) {
+  QwenBenchmarkMeasureProgram(
+      environment, &environment->command_prefill_program,
+      QWEN_BENCHMARK_INPUT_KIND_PREFILL, environment->expected_prefill_token,
+      "command full-model prefill", environment->prefill_token_count,
+      benchmark_state);
 }
 
 static void QwenFullModelDecode(QwenPrefillBenchmarkEnvironment* environment,
+                                const QwenBenchmarkProgram* program,
+                                const char* operation_name,
                                 benchmark::State& benchmark_state) {
-  iree_status_t status = QwenBenchmarkPublishDecodeToken(environment);
-  iree_time_t warmup_time = 0;
-  if (iree_status_is_ok(status)) {
-    status = QwenBenchmarkIssueAndWait(environment, environment->decode_program,
-                                       &warmup_time);
-  }
-  if (iree_status_is_ok(status)) {
-    status = QwenBenchmarkReadAndValidate(
-        environment, FLAG_expected_decode_token, "full-model decode");
-  }
+  iree_status_t status = QwenBenchmarkWarmAndValidate(
+      environment, program, QWEN_BENCHMARK_INPUT_KIND_DECODE,
+      FLAG_expected_decode_token, operation_name);
   if (!iree_status_is_ok(status)) {
     QwenBenchmarkRecordFailure(environment, status, &benchmark_state);
     return;
   }
-  QwenBenchmarkMeasureProgram(environment, environment->decode_program,
+  QwenBenchmarkMeasureProgram(environment, program,
                               QWEN_BENCHMARK_INPUT_KIND_DECODE,
-                              FLAG_expected_decode_token, "full-model decode",
+                              FLAG_expected_decode_token, operation_name,
                               /*logical_token_count=*/1, benchmark_state);
 }
 
@@ -509,8 +628,8 @@ static void QwenFullModelDecode(QwenPrefillBenchmarkEnvironment* environment,
 int main(int argc, char** argv) {
   iree_flags_set_usage(
       "qwen-prefill-benchmark",
-      "Benchmarks one selected resident Qwen full-model prefill shape and its "
-      "optional exact-count decode issue.");
+      "Compares matched owned-recorder and command-program issues for one "
+      "resident Qwen full-model prefill shape and optional Decode-513.");
   iree_flags_parse_checked(IREE_FLAGS_PARSE_MODE_UNDEFINED_OK |
                                IREE_FLAGS_PARSE_MODE_CONTINUE_AFTER_HELP,
                            &argc, &argv);
@@ -528,28 +647,50 @@ int main(int argc, char** argv) {
                              /*benchmark_state=*/nullptr);
 
   if (iree_status_is_ok(environment.terminal_status)) {
-    const std::string prefill_name =
-        "Qwen/FullModel/Prefill/" +
-        std::to_string(environment.prefill_token_count);
+    const std::string prefill_suffix =
+        "/Prefill/" + std::to_string(environment.prefill_token_count);
+    const std::string owned_prefill_name =
+        "Qwen/FullModel/Owned" + prefill_suffix;
+    const std::string command_prefill_name =
+        "Qwen/FullModel/Command" + prefill_suffix;
     benchmark::RegisterBenchmark(
-        prefill_name.c_str(),
+        owned_prefill_name.c_str(),
         [&environment](benchmark::State& benchmark_state) {
-          QwenFullModelPrefill(&environment, benchmark_state);
+          QwenFullModelOwnedPrefill(&environment, benchmark_state);
+        })
+        ->UseManualTime()
+        ->Unit(benchmark::kMillisecond);
+    benchmark::RegisterBenchmark(
+        command_prefill_name.c_str(),
+        [&environment](benchmark::State& benchmark_state) {
+          QwenFullModelCommandPrefill(&environment, benchmark_state);
         })
         ->UseManualTime()
         ->Unit(benchmark::kMillisecond);
     if (FLAG_expected_decode_token != IREE_TOKENIZER_TOKEN_ID_INVALID) {
-      const std::string decode_name =
-          "Qwen/FullModel/Decode/" +
-          std::to_string(environment.prefill_token_count + 1);
+      const std::string decode_suffix =
+          "/Decode/" + std::to_string(environment.prefill_token_count + 1);
+      const std::string owned_decode_name =
+          "Qwen/FullModel/Owned" + decode_suffix;
+      const std::string command_decode_name =
+          "Qwen/FullModel/Command" + decode_suffix;
       benchmark::RegisterBenchmark(
-          decode_name.c_str(),
+          owned_decode_name.c_str(),
           [&environment](benchmark::State& benchmark_state) {
-            QwenFullModelDecode(&environment, benchmark_state);
+            QwenFullModelDecode(&environment, &environment.owned_decode_program,
+                                "owned full-model decode", benchmark_state);
           })
           ->UseManualTime()
-          ->Unit(benchmark::kMillisecond)
-          ->Iterations(1);
+          ->Unit(benchmark::kMillisecond);
+      benchmark::RegisterBenchmark(
+          command_decode_name.c_str(),
+          [&environment](benchmark::State& benchmark_state) {
+            QwenFullModelDecode(&environment,
+                                &environment.command_decode_program,
+                                "command full-model decode", benchmark_state);
+          })
+          ->UseManualTime()
+          ->Unit(benchmark::kMillisecond);
     }
     benchmark::RunSpecifiedBenchmarks();
   }
