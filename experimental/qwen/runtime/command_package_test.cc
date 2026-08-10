@@ -47,6 +47,8 @@ using ResultPtr = HandlePtr<loomc_result_t, loomc_result_release>;
 using SourcePtr = HandlePtr<loomc_source_t, loomc_source_release>;
 using TargetEnvironmentPtr =
     HandlePtr<loomc_target_environment_t, loomc_target_environment_release>;
+using TargetProfilePtr =
+    HandlePtr<loomc_target_profile_t, loomc_target_profile_release>;
 using WorkspacePtr = HandlePtr<loomc_workspace_t, loomc_workspace_release>;
 
 static std::string ToString(loomc_string_view_t value) {
@@ -75,6 +77,70 @@ static TargetEnvironmentPtr CreateTargetEnvironment() {
   LOOMC_EXPECT_OK(loomc_target_environment_create_amdgpu(
       loomc_allocator_system(), &target_environment));
   return TargetEnvironmentPtr(target_environment);
+}
+
+static TargetProfilePtr CreateGfx1100TargetProfile(
+    loomc_target_environment_t* target_environment) {
+  const loomc_amdgpu_profile_options_t options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_AMDGPU_PROFILE_OPTIONS,
+      /*.structure_size=*/sizeof(options),
+      /*.next=*/nullptr,
+      /*.identifier=*/loomc_make_cstring_view("qwen-test-gfx1100"),
+      /*.identity=*/
+      {
+          /*.target=*/loomc_make_cstring_view("gfx1100"),
+      },
+  };
+  loomc_target_profile_t* target_profile = nullptr;
+  LOOMC_EXPECT_OK(loomc_target_profile_create_amdgpu(
+      target_environment, &options, loomc_allocator_system(), &target_profile));
+  EXPECT_NE(target_profile, nullptr);
+  return TargetProfilePtr(target_profile);
+}
+
+static std::vector<loomc_target_specialization_t> CreateKernelSpecializations(
+    const loomc_module_t* module, loomc_target_profile_t* target_profile) {
+  const loomc_module_function_query_options_t options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_MODULE_FUNCTION_QUERY_OPTIONS,
+      /*.structure_size=*/sizeof(options),
+      /*.next=*/nullptr,
+      /*.function_symbol=*/loomc_string_view_empty(),
+      /*.kind=*/LOOMC_MODULE_FUNCTION_KIND_KERNEL,
+  };
+  loomc_host_size_t function_count = 0;
+  loomc_result_t* raw_result = nullptr;
+  loomc_status_t status =
+      loomc_module_query_functions(module, &options, loomc_allocator_system(),
+                                   0, nullptr, &function_count, &raw_result);
+  LOOMC_EXPECT_OK(status);
+  ResultPtr count_result(raw_result);
+  if (!loomc_status_is_ok(status) ||
+      !ResultSucceeded(count_result.get(), "kernel count query")) {
+    return {};
+  }
+
+  std::vector<loomc_module_function_t> functions(function_count);
+  raw_result = nullptr;
+  status = loomc_module_query_functions(
+      module, &options, loomc_allocator_system(), functions.size(),
+      functions.data(), &function_count, &raw_result);
+  LOOMC_EXPECT_OK(status);
+  ResultPtr query_result(raw_result);
+  if (!loomc_status_is_ok(status) ||
+      !ResultSucceeded(query_result.get(), "kernel query")) {
+    return {};
+  }
+  functions.resize(function_count);
+
+  std::vector<loomc_target_specialization_t> specializations;
+  specializations.reserve(functions.size());
+  for (const loomc_module_function_t& function : functions) {
+    specializations.push_back({
+        /*.function_symbol=*/function.symbol_name,
+        /*.target_profile=*/target_profile,
+    });
+  }
+  return specializations;
 }
 
 static ContextPtr CreateContext(
@@ -239,6 +305,11 @@ TEST(QwenCommandPackageTest, SpecializesExactDenseProjectionShapes) {
   SourcePtr source = CreateDenseProjectionSpecializationSource();
   ModulePtr module = DeserializeModule(
       context.get(), coordinator_workspace.get(), source.get());
+  TargetProfilePtr target_profile =
+      CreateGfx1100TargetProfile(target_environment.get());
+  std::vector<loomc_target_specialization_t> specializations =
+      CreateKernelSpecializations(module.get(), target_profile.get());
+  ASSERT_FALSE(specializations.empty());
   CompilerPtr compiler = CreateCompiler(context.get());
   PassProgramPtr preparation_pass_program =
       CreatePreparationPassProgram(context.get());
@@ -251,6 +322,13 @@ TEST(QwenCommandPackageTest, SpecializesExactDenseProjectionShapes) {
       /*.dependency_artifact_format=*/
       loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_AMDGPU_HSACO),
   };
+  const loomc_target_specialization_options_t target_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_TARGET_SPECIALIZATION_OPTIONS,
+      /*.structure_size=*/sizeof(target_options),
+      /*.next=*/nullptr,
+      /*.specializations=*/specializations.data(),
+      /*.specialization_count=*/specializations.size(),
+  };
   const loomc_program_plan_options_t plan_options = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_OPTIONS,
       /*.structure_size=*/sizeof(plan_options),
@@ -262,6 +340,7 @@ TEST(QwenCommandPackageTest, SpecializesExactDenseProjectionShapes) {
           /*.json_object=*/loomc_string_view_empty(),
           /*.flags=*/LOOMC_CONFIG_POLICY_FLAG_REQUIRE_RESOLVED,
       },
+      /*.target_specialization=*/&target_options,
   };
   loomc_program_plan_t* raw_plan = nullptr;
   loomc_result_t* raw_result = nullptr;
@@ -326,6 +405,11 @@ TEST(QwenCommandPackageTest, CompilesCompleteProductionPlan) {
   SourcePtr source = CreateDecodeSource();
   ModulePtr module = DeserializeModule(
       context.get(), coordinator_workspace.get(), source.get());
+  TargetProfilePtr target_profile =
+      CreateGfx1100TargetProfile(target_environment.get());
+  std::vector<loomc_target_specialization_t> specializations =
+      CreateKernelSpecializations(module.get(), target_profile.get());
+  ASSERT_FALSE(specializations.empty());
   CompilerPtr compiler = CreateCompiler(context.get());
   PassProgramPtr preparation_pass_program =
       CreatePreparationPassProgram(context.get());
@@ -344,6 +428,13 @@ TEST(QwenCommandPackageTest, CompilesCompleteProductionPlan) {
           /*.value=*/loomc_make_cstring_view("512"),
       },
   };
+  const loomc_target_specialization_options_t target_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_TARGET_SPECIALIZATION_OPTIONS,
+      /*.structure_size=*/sizeof(target_options),
+      /*.next=*/nullptr,
+      /*.specializations=*/specializations.data(),
+      /*.specialization_count=*/specializations.size(),
+  };
   const loomc_program_plan_options_t plan_options = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_OPTIONS,
       /*.structure_size=*/sizeof(plan_options),
@@ -355,6 +446,7 @@ TEST(QwenCommandPackageTest, CompilesCompleteProductionPlan) {
           /*.json_object=*/loomc_string_view_empty(),
           /*.flags=*/LOOMC_CONFIG_POLICY_FLAG_REQUIRE_RESOLVED,
       },
+      /*.target_specialization=*/&target_options,
   };
   loomc_program_plan_t* raw_plan = nullptr;
   loomc_result_t* raw_result = nullptr;
@@ -479,6 +571,11 @@ TEST(QwenCommandPackageTest, CompilesExactPrefill512Plan) {
   SourcePtr source = CreatePrefillSource();
   ModulePtr module = DeserializeModule(
       context.get(), coordinator_workspace.get(), source.get());
+  TargetProfilePtr target_profile =
+      CreateGfx1100TargetProfile(target_environment.get());
+  std::vector<loomc_target_specialization_t> specializations =
+      CreateKernelSpecializations(module.get(), target_profile.get());
+  ASSERT_FALSE(specializations.empty());
   CompilerPtr compiler = CreateCompiler(context.get());
   PassProgramPtr preparation_pass_program =
       CreatePreparationPassProgram(context.get());
@@ -491,6 +588,13 @@ TEST(QwenCommandPackageTest, CompilesExactPrefill512Plan) {
       /*.dependency_artifact_format=*/
       loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_AMDGPU_HSACO),
   };
+  const loomc_target_specialization_options_t target_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_TARGET_SPECIALIZATION_OPTIONS,
+      /*.structure_size=*/sizeof(target_options),
+      /*.next=*/nullptr,
+      /*.specializations=*/specializations.data(),
+      /*.specialization_count=*/specializations.size(),
+  };
   const loomc_program_plan_options_t plan_options = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_OPTIONS,
       /*.structure_size=*/sizeof(plan_options),
@@ -502,6 +606,7 @@ TEST(QwenCommandPackageTest, CompilesExactPrefill512Plan) {
           /*.json_object=*/loomc_string_view_empty(),
           /*.flags=*/LOOMC_CONFIG_POLICY_FLAG_REQUIRE_RESOLVED,
       },
+      /*.target_specialization=*/&target_options,
   };
   loomc_program_plan_t* raw_plan = nullptr;
   loomc_result_t* raw_result = nullptr;
@@ -603,6 +708,11 @@ TEST(QwenCommandPackageTest, CompilesSharedPrefillAndDecodePlan) {
   SourcePtr source = CreateCommandPackageSource();
   ModulePtr module = DeserializeModule(
       context.get(), coordinator_workspace.get(), source.get());
+  TargetProfilePtr target_profile =
+      CreateGfx1100TargetProfile(target_environment.get());
+  std::vector<loomc_target_specialization_t> specializations =
+      CreateKernelSpecializations(module.get(), target_profile.get());
+  ASSERT_FALSE(specializations.empty());
   CompilerPtr compiler = CreateCompiler(context.get());
   PassProgramPtr preparation_pass_program =
       CreatePreparationPassProgram(context.get());
@@ -615,6 +725,13 @@ TEST(QwenCommandPackageTest, CompilesSharedPrefillAndDecodePlan) {
       /*.dependency_artifact_format=*/
       loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_AMDGPU_HSACO),
   };
+  const loomc_target_specialization_options_t target_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_TARGET_SPECIALIZATION_OPTIONS,
+      /*.structure_size=*/sizeof(target_options),
+      /*.next=*/nullptr,
+      /*.specializations=*/specializations.data(),
+      /*.specialization_count=*/specializations.size(),
+  };
   const loomc_program_plan_options_t plan_options = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_OPTIONS,
       /*.structure_size=*/sizeof(plan_options),
@@ -626,6 +743,7 @@ TEST(QwenCommandPackageTest, CompilesSharedPrefillAndDecodePlan) {
           /*.json_object=*/loomc_string_view_empty(),
           /*.flags=*/LOOMC_CONFIG_POLICY_FLAG_REQUIRE_RESOLVED,
       },
+      /*.target_specialization=*/&target_options,
   };
   loomc_program_plan_t* raw_plan = nullptr;
   loomc_result_t* raw_result = nullptr;
