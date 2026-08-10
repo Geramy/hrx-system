@@ -26,6 +26,12 @@ extern "C" {
 // issue operations selecting the same program.
 typedef struct qwen_command_package_t qwen_command_package_t;
 
+// Minimum request token-storage capacity needed by the prefill root family.
+#define QWEN_COMMAND_PREFILL_TOKEN_CAPACITY 512
+
+// Request K/V and attention capacity specialized into Decode-576.
+#define QWEN_COMMAND_CONTEXT_CAPACITY 576
+
 // Program identities available in a prepared package.
 typedef enum qwen_command_program_e {
   // Exact 32-row initial prefill with a 64-row attention extent.

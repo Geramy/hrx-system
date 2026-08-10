@@ -21,8 +21,6 @@
 #include "iree/tooling/device_util.h"
 
 #define QWEN_PREFILL_MIN_TOKEN_COUNT 32
-#define QWEN_PREFILL_MAX_TOKEN_COUNT 512
-#define QWEN_CONTEXT_CAPACITY 576
 
 IREE_FLAG(string, tokens, "",
           "Raw token IDs: exactly 32, 64, 128, 256, or 512 little-endian I32 "
@@ -143,7 +141,8 @@ static iree_status_t qwen_wait_for_model_ready_bringup_workaround(
 static iree_status_t qwen_prefill_cli_load_tokens(
     iree_string_view_t path, iree_allocator_t host_allocator,
     iree_io_file_contents_t** out_contents,
-    iree_tokenizer_token_id_t out_token_ids[QWEN_PREFILL_MAX_TOKEN_COUNT],
+    iree_tokenizer_token_id_t
+        out_token_ids[QWEN_COMMAND_PREFILL_TOKEN_CAPACITY],
     iree_host_size_t* out_token_count) {
   *out_contents = NULL;
   *out_token_count = 0;
@@ -159,8 +158,8 @@ static iree_status_t qwen_prefill_cli_load_tokens(
   if (byte_length <
           QWEN_PREFILL_MIN_TOKEN_COUNT * sizeof(iree_tokenizer_token_id_t) ||
       byte_length % sizeof(iree_tokenizer_token_id_t) != 0 ||
-      byte_length >
-          QWEN_PREFILL_MAX_TOKEN_COUNT * sizeof(iree_tokenizer_token_id_t)) {
+      byte_length > QWEN_COMMAND_PREFILL_TOKEN_CAPACITY *
+                        sizeof(iree_tokenizer_token_id_t)) {
     const iree_host_size_t actual_byte_length =
         (*out_contents)->const_buffer.data_length;
     iree_io_file_contents_free(*out_contents);
@@ -170,7 +169,7 @@ static iree_status_t qwen_prefill_cli_load_tokens(
         "token-ID file '%.*s' has %" PRIhsz
         " bytes; expected %d to %d complete little-endian I32 values",
         (int)path.size, path.data, actual_byte_length,
-        QWEN_PREFILL_MIN_TOKEN_COUNT, QWEN_PREFILL_MAX_TOKEN_COUNT);
+        QWEN_PREFILL_MIN_TOKEN_COUNT, QWEN_COMMAND_PREFILL_TOKEN_CAPACITY);
   }
 
   *out_token_count = byte_length / sizeof(iree_tokenizer_token_id_t);
@@ -221,7 +220,7 @@ static iree_status_t qwen_prefill_cli_run(void) {
         "prefix capture cannot be combined with barrier-wave issue, decode, "
         "or selected-token validation");
   }
-  iree_tokenizer_token_id_t token_ids[QWEN_PREFILL_MAX_TOKEN_COUNT];
+  iree_tokenizer_token_id_t token_ids[QWEN_COMMAND_PREFILL_TOKEN_CAPACITY];
   iree_host_size_t prefill_token_count = 0;
   qwen_command_program_t prefill_program = QWEN_COMMAND_PROGRAM_COUNT;
   iree_io_file_contents_t* token_contents = NULL;
@@ -296,8 +295,8 @@ static iree_status_t qwen_prefill_cli_run(void) {
   if (iree_status_is_ok(status)) {
     qwen_request_options_t request_options;
     qwen_request_options_initialize(&request_options);
-    request_options.token_capacity = QWEN_PREFILL_MAX_TOKEN_COUNT;
-    request_options.context_capacity = QWEN_CONTEXT_CAPACITY;
+    request_options.token_capacity = QWEN_COMMAND_PREFILL_TOKEN_CAPACITY;
+    request_options.context_capacity = QWEN_COMMAND_CONTEXT_CAPACITY;
     status = qwen_request_create(
         model, &request_options, qwen_prefill_cli_timepoint_list(&model_ready),
         qwen_prefill_cli_timepoint_list(&request_ready), host_allocator,

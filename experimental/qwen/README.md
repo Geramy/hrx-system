@@ -59,19 +59,23 @@ build_tools/bin/iree-bazel-run //experimental/qwen/binding/cli:qwen-cli -- \
   --device=amdgpu://0 \
   --parameters=/path/to/Qwen3-30B-A3B-Q4_K_M.gguf \
   --tokenizer=/path/to/Qwen3-30B-A3B/tokenizer.json \
-  --prompt='Reply with one word: hello' \
+  --prompt='Explain why the sky is blue in one short sentence. Please use simple language and include no more than twenty words.' \
   --max_tokens=16
 ```
 
-The generation lane prepares an exact decode program for every 64-row shape
-class reachable within the requested output budget before it submits prefill.
+The generation lane prepares one command-program package while the asynchronous
+model gather is in flight. The package contains exact PP32, PP64, PP128, PP256,
+and PP512 roots over one authored prefill body plus one reusable Decode-576
+root. A formatted prompt must currently encode to one of those exact prefill
+sizes, and the prompt plus generated continuation must fit the 576-row command
+capacity. Unsupported shapes fail before program issue without entering the
+owned recorder.
+
 The active position lives only in device request control and advances at the
-greedy endpoint, so every position in one class reuses the same recorded
-command buffer without host-side compilation or recording between tokens. The
-canonical split decode-attention kernel binds the smallest 64-row capacity
-containing each active extent and currently bounds this scheme to 2048 rows.
-Additional classes requested by `--max_tokens` add cold preparation work while
-the asynchronous model gather is already in flight.
+greedy endpoint. Decode-576 treats 576 as its compiled attention and cache
+capacity; device-produced metadata masks the inactive suffix, so every
+continuation position reuses the same recorded command buffer without
+host-side compilation, launch evaluation, or recording between tokens.
 
 ## Qwen-owned endpoints and attention-tail workaround
 
