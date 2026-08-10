@@ -69,13 +69,13 @@ command.program.def public @qwen3_30b_decode_576() launch(%parameters: buffer, %
   %hidden_size = index.constant 2048 : index
 
   // The GGUF stores these three roots before the transformer layers.
-  %output_weight = command.parameter %parameters, "output.weight"[] : view<255252480xi8, #dense>
-  %output_norm = command.parameter %parameters, "output_norm.weight"[] : view<8192xi8, #dense>
-  %token_embedding = command.parameter %parameters, "token_embd.weight"[] : view<175030272xi8, #dense>
+  %output_weight = command.parameter %parameters, "output.weight" : view<255252480xi8, #dense>
+  %output_norm = command.parameter %parameters, "output_norm.weight" : view<8192xi8, #dense>
+  %token_embedding = command.parameter %parameters, "token_embd.weight" : view<175030272xi8, #dense>
 
   // Runtime-derived immutable model data occupies an independent fixed root.
   // The host may bind this as a subrange of its existing model allocation.
-  %rope_inverse_frequencies = command.parameter %auxiliary_parameters, "rope.inverse_frequencies"[] : view<64xf32, #dense>
+  %rope_inverse_frequencies = command.parameter %auxiliary_parameters, "rope.inverse_frequencies" : view<64xf32, #dense>
 
   // Request-local persistent state retains the allocation shape selected by
   // the host even though decode consumes only its first row. The source

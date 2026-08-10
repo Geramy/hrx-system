@@ -113,7 +113,7 @@ check.case public @qwen_greedy_argmax_nontrivial_winner_case {
   %logits = check.generate.iota offset(0.0) step(1.0) period(1009) : tensor<151936xf32>
   %token_id = check.generate.fill value(-1) : tensor<1xi32>
   %expected = check.generate.fill value(1008) : tensor<1xi32>
-  kernel.launch @qwen_greedy_argmax[](%logits, %token_id) : [](tensor<151936xf32>, tensor<1xi32>)
+  kernel.launch @qwen_greedy_argmax(%logits, %token_id) : (tensor<151936xf32>, tensor<1xi32>)
   check.expect.equal actual(%token_id) expected(%expected) : tensor<1xi32>
   check.return
 }
@@ -124,7 +124,7 @@ check.case public @qwen_greedy_argmax_equal_logit_tie_case {
   %logits = check.generate.fill value(7.0) : tensor<151936xf32>
   %token_id = check.generate.fill value(-1) : tensor<1xi32>
   %expected = check.generate.fill value(0) : tensor<1xi32>
-  kernel.launch @qwen_greedy_argmax[](%logits, %token_id) : [](tensor<151936xf32>, tensor<1xi32>)
+  kernel.launch @qwen_greedy_argmax(%logits, %token_id) : (tensor<151936xf32>, tensor<1xi32>)
   check.expect.equal actual(%token_id) expected(%expected) : tensor<1xi32>
   check.return
 }

@@ -695,7 +695,7 @@ check.case public @qwen3_moe_flash_attention_f32_f16_wmma_multirow_differential_
   %actual1 = check.generate.fill value(-1.0) : tensor<1x32x128xf32>
   %actual2 = check.generate.fill value(-1.0) : tensor<1x32x128xf32>
   %actual3 = check.generate.fill value(-1.0) : tensor<1x32x128xf32>
-  kernel.launch @qwen3_moe_flash_attention_test_make_causal_mask[](%mask) : [](tensor<14x14xf16>)
+  kernel.launch @qwen3_moe_flash_attention_test_make_causal_mask(%mask) : (tensor<14x14xf16>)
   kernel.launch @qwen3_moe_flash_attention_f32_f16_wmma[%query_token_count, %key_value_token_count](%query_token_count, %key_value_token_count, %query, %key, %value, %mask, %actual) : [index, index](index, index, tensor<14x32x128xf32>, tensor<14x4x128xf16>, tensor<14x4x128xf16>, tensor<14x14xf16>, tensor<14x32x128xf32>)
   kernel.launch @qwen3_moe_flash_attention_test_extract_row[%query_token_count, %key_value_token_count, %row0](%query_token_count, %key_value_token_count, %row0, %query, %mask, %row_query, %row_mask) : [index, index, index](index, index, index, tensor<14x32x128xf32>, tensor<14x14xf16>, tensor<1x32x128xf32>, tensor<1x14xf16>)
   kernel.launch @qwen3_moe_flash_attention_f32_f16_wmma[%c1, %key_value_token_count](%c1, %key_value_token_count, %row_query, %key, %value, %row_mask, %expected0) : [index, index](index, index, tensor<1x32x128xf32>, tensor<14x4x128xf16>, tensor<14x4x128xf16>, tensor<1x14xf16>, tensor<1x32x128xf32>)

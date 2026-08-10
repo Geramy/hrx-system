@@ -103,10 +103,10 @@ command.program.def @qwen3_30b_prefill(%token_count: index) launch(%parameters: 
   %accumulate = index.constant 1 : index
 
   // The GGUF stores these three roots before the transformer layers.
-  %output_weight = command.parameter %parameters, "output.weight"[] : view<255252480xi8, #dense>
-  %output_norm = command.parameter %parameters, "output_norm.weight"[] : view<8192xi8, #dense>
-  %token_embedding = command.parameter %parameters, "token_embd.weight"[] : view<175030272xi8, #dense>
-  %rope_inverse_frequencies = command.parameter %auxiliary_parameters, "rope.inverse_frequencies"[] : view<64xf32, #dense>
+  %output_weight = command.parameter %parameters, "output.weight" : view<255252480xi8, #dense>
+  %output_norm = command.parameter %parameters, "output_norm.weight" : view<8192xi8, #dense>
+  %token_embedding = command.parameter %parameters, "token_embd.weight" : view<175030272xi8, #dense>
+  %rope_inverse_frequencies = command.parameter %auxiliary_parameters, "rope.inverse_frequencies" : view<64xf32, #dense>
 
   // Request state is one stable allocation shared with decode. Buffer packing
   // owns field placement; the program only names logical extents/alignment.
