@@ -11,6 +11,7 @@
 #include "iree/base/api.h"
 #include "iree/hal/api.h"
 #include "loomc/sanitizer.h"
+#include "loomc/target/cmd/program.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -71,9 +72,81 @@ typedef struct qwen_command_program_info_t {
   iree_device_size_t transient_minimum_alignment;
 } qwen_command_program_info_t;
 
+// Command-program issue behavior flag bits.
+typedef enum qwen_command_issue_flag_bits_e {
+  // Materializes the selected program as barrier-wave command buffers and
+  // waits for each wave before issuing the next. Commands inside one wave
+  // retain their original concurrent recording.
+  // Stops immediately on a submission or completion failure without issuing
+  // any later wave.
+  QWEN_COMMAND_ISSUE_FLAG_DIAGNOSTIC_BARRIER_WAVES = 1u << 0,
+} qwen_command_issue_flag_bits_t;
+
+// Bitmask of qwen_command_issue_flag_bits_t values.
+typedef uint32_t qwen_command_issue_flags_t;
+
+// Progress event emitted by barrier-wave issue.
+typedef enum qwen_command_barrier_wave_event_e {
+  // The wave is about to be submitted to the device queue.
+  QWEN_COMMAND_BARRIER_WAVE_EVENT_BEFORE_EXECUTE = 0,
+  // Queue completion for the wave was observed successfully.
+  QWEN_COMMAND_BARRIER_WAVE_EVENT_COMPLETED = 1,
+} qwen_command_barrier_wave_event_t;
+
+// One synchronous barrier-wave progress event.
+typedef struct qwen_command_barrier_wave_event_info_t {
+  // Size of this structure in bytes.
+  iree_host_size_t structure_size;
+  // Reserved extension chain; must be NULL.
+  const void* next;
+  // Semantic command program being issued.
+  qwen_command_program_t program;
+  // Progress event for this wave.
+  qwen_command_barrier_wave_event_t event;
+  // Zero-based position among the materialized non-empty waves.
+  iree_host_size_t wave_index;
+  // Number of materialized non-empty waves in the issue.
+  iree_host_size_t wave_count;
+  // Canonical barrier-wave ordinal carried by operation metadata.
+  uint32_t barrier_wave_ordinal;
+  // Canonical command range recorded into this wave command buffer.
+  loomc_cmd_program_command_range_t command_range;
+} qwen_command_barrier_wave_event_info_t;
+
+// Synchronous barrier-wave progress callback.
+//
+// The callback runs on the issuing thread immediately before submission and
+// after successful queue completion. It must not reenter the package.
+typedef void(IREE_API_PTR* qwen_command_barrier_wave_callback_t)(
+    void* user_data, const qwen_command_barrier_wave_event_info_t* event_info);
+
+// Optional observer invoked during a barrier-wave issue.
+typedef struct qwen_command_barrier_wave_observer_t {
+  // Callback function, or NULL to disable progress notifications.
+  qwen_command_barrier_wave_callback_t callback;
+  // Opaque value passed to |callback|.
+  void* user_data;
+} qwen_command_barrier_wave_observer_t;
+
+// Options controlling one command-program issue.
+typedef struct qwen_command_issue_options_t {
+  // Size of this structure in bytes.
+  iree_host_size_t structure_size;
+  // Optional extension chain; must be NULL.
+  const void* next;
+  // Flags selecting issue behavior.
+  qwen_command_issue_flags_t flags;
+  // Synchronous progress observer used by barrier-wave issue.
+  qwen_command_barrier_wave_observer_t barrier_wave_observer;
+} qwen_command_issue_options_t;
+
 // Initializes |out_options| for Prefill-512 followed by Decode-576.
 IREE_API_EXPORT void qwen_command_package_options_initialize(
     qwen_command_package_options_t* out_options);
+
+// Initializes |out_options| for a normal whole-program issue.
+IREE_API_EXPORT void qwen_command_issue_options_initialize(
+    qwen_command_issue_options_t* out_options);
 
 // Compiles and materializes all command programs in one shared package.
 //
@@ -99,14 +172,17 @@ IREE_API_EXPORT iree_status_t qwen_command_package_query_program(
 
 // Issues one prepared program against compatible request state.
 //
-// The issue waits for model residency, request readiness, and caller waits;
-// allocates and initializes the program's packed transient slab; executes its
-// reusable command buffer; and deallocates the slab before publishing request
-// and caller completion. It performs no compilation, linking, parameter
-// lookup, launch evaluation, allocation planning, or command recording.
+// A normal issue waits for model residency, request readiness, and caller
+// waits; allocates and initializes the program's packed transient slab;
+// executes its reusable command buffer; and deallocates the slab before
+// publishing request and caller completion. It performs no compilation,
+// linking, parameter lookup, launch evaluation, allocation planning, or
+// command recording. Diagnostic barrier-wave issue temporarily records the
+// selected root in barrier-aligned segments and host-waits between them.
 IREE_API_EXPORT iree_status_t qwen_command_package_issue(
     qwen_command_package_t* package, qwen_command_program_t program,
-    qwen_request_t* request, iree_hal_semaphore_list_t wait_semaphore_list,
+    qwen_request_t* request, const qwen_command_issue_options_t* options,
+    iree_hal_semaphore_list_t wait_semaphore_list,
     iree_hal_semaphore_list_t signal_semaphore_list);
 
 #ifdef __cplusplus

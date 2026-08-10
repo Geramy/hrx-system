@@ -39,6 +39,9 @@ IREE_FLAG(int32_t, expected_decode_token, IREE_TOKENIZER_TOKEN_ID_INVALID,
 IREE_FLAG(bool, command_access_sanitizer, false,
           "Compile command-program kernels with report-only access checks; "
           "requires --amdgpu_asan=true.");
+IREE_FLAG(bool, command_barrier_waves, false,
+          "Diagnostically issue Prefill-512 one barrier wave at a time and "
+          "report each completed canonical command range.");
 
 static const char* const qwen_prefill_cli_usage =
     "Runs complete Qwen prefill-512 and optional exact-count one-token "
@@ -53,9 +56,11 @@ static const char* const qwen_prefill_cli_usage =
     "  --expected_token=<prefill-selected token ID; pinned oracle is 264>\n"
     "  --decode_one\n"
     "  --expected_decode_token=<decode-selected token ID>\n"
+    "  --command_barrier_waves\n"
     "\n"
     "Both stages execute reusable command programs from one compiled "
-    "multi-root package. Profiling flags surround the prefill issue.\n";
+    "multi-root package. Profiling flags surround the prefill issue. "
+    "Barrier-wave mode is fault-localization only and invalidates timing.\n";
 
 typedef struct qwen_prefill_cli_timepoint_t {
   // Timeline semaphore carrying this timepoint.
@@ -72,6 +77,27 @@ static iree_hal_semaphore_list_t qwen_prefill_cli_timepoint_list(
       .payload_values = &timepoint->value,
   };
   return list;
+}
+
+static void qwen_prefill_cli_barrier_wave_callback(
+    void* user_data, const qwen_command_barrier_wave_event_info_t* event_info) {
+  (void)user_data;
+  const char* program_name =
+      event_info->program == QWEN_COMMAND_PROGRAM_PREFILL_512 ? "prefill"
+                                                              : "decode";
+  const char* event_name =
+      event_info->event == QWEN_COMMAND_BARRIER_WAVE_EVENT_BEFORE_EXECUTE
+          ? "issuing"
+          : "completed";
+  const uint32_t end_command = event_info->command_range.first_command +
+                               event_info->command_range.command_count;
+  fprintf(stderr,
+          "Qwen command %s barrier wave %" PRIhsz "/%" PRIhsz
+          " ordinal %" PRIu32 " commands [%" PRIu32 ", %" PRIu32 ") %s\n",
+          program_name, event_info->wave_index + 1, event_info->wave_count,
+          event_info->barrier_wave_ordinal,
+          event_info->command_range.first_command, end_command, event_name);
+  fflush(stderr);
 }
 
 // Transient, non-sanctioned containment for an AMDGPU async file-action
@@ -249,9 +275,20 @@ static iree_status_t qwen_prefill_cli_run(void) {
       .semaphore = timeline,
       .value = 4,
   };
+  qwen_command_issue_options_t prefill_issue_options;
+  const qwen_command_issue_options_t* prefill_issue_options_ptr = NULL;
+  if (FLAG_command_barrier_waves) {
+    qwen_command_issue_options_initialize(&prefill_issue_options);
+    prefill_issue_options.flags |=
+        QWEN_COMMAND_ISSUE_FLAG_DIAGNOSTIC_BARRIER_WAVES;
+    prefill_issue_options.barrier_wave_observer.callback =
+        qwen_prefill_cli_barrier_wave_callback;
+    prefill_issue_options_ptr = &prefill_issue_options;
+  }
   if (iree_status_is_ok(status)) {
     status = qwen_command_package_issue(
         command_package, QWEN_COMMAND_PROGRAM_PREFILL_512, request,
+        prefill_issue_options_ptr,
         qwen_prefill_cli_timepoint_list(&tokens_ready),
         qwen_prefill_cli_timepoint_list(&issue_complete));
   }
@@ -302,7 +339,7 @@ static iree_status_t qwen_prefill_cli_run(void) {
   if (iree_status_is_ok(status) && FLAG_decode_one) {
     status = qwen_command_package_issue(
         command_package, QWEN_COMMAND_PROGRAM_DECODE_576, request,
-        qwen_prefill_cli_timepoint_list(&issue_complete),
+        /*options=*/NULL, qwen_prefill_cli_timepoint_list(&issue_complete),
         qwen_prefill_cli_timepoint_list(&decode_complete));
   }
   if (iree_status_is_ok(status) && FLAG_decode_one) {

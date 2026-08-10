@@ -25,6 +25,7 @@
 
 #define QWEN_COMMAND_PREFILL_TOKEN_COUNT 512
 #define QWEN_COMMAND_CONTEXT_CAPACITY 576
+#define QWEN_COMMAND_FIXED_BUFFER_COUNT 2
 #define QWEN_COMMAND_INITIAL_SEMAPHORE_CAPACITY 8
 
 typedef enum qwen_command_binding_e {
@@ -77,8 +78,12 @@ static const qwen_command_program_descriptor_t
 typedef struct qwen_command_program_state_t {
   // Static descriptor for this materialized root.
   const qwen_command_program_descriptor_t* descriptor;
+  // Selected portable command-program root retained for diagnostic ranges.
+  loomc_cmd_program_t* command_program;
   // Materialized reusable command program.
   loomc_cmd_iree_hal_program_t* hal_program;
+  // Immutable parameter buffer ranges used by every materialization.
+  iree_hal_buffer_ref_t fixed_buffers[QWEN_COMMAND_FIXED_BUFFER_COUNT];
   // Internal allocation, execution, and completion timeline.
   iree_hal_semaphore_t* timeline_semaphore;
   // Latest timeline value reserved by a submitted issue.
@@ -114,9 +119,20 @@ struct qwen_command_package_t {
   iree_host_size_t context_capacity;
   // Request flags accepted by the compiled binding layout.
   qwen_request_flags_t request_flags;
+  // Loaded executable package shared by full and diagnostic materializations.
+  loomc_cmd_iree_hal_package_t* hal_package;
+  // HAL recording mode used by every materialized command buffer.
+  iree_hal_command_buffer_mode_t command_buffer_mode;
   // Materialized program state indexed by qwen_command_program_t.
   qwen_command_program_state_t programs[QWEN_COMMAND_PROGRAM_COUNT];
 };
+
+typedef struct qwen_command_program_segment_t {
+  // Canonical barrier wave recorded into this segment.
+  loomc_cmd_program_barrier_wave_t barrier_wave;
+  // Materialized command buffer containing exactly |barrier_wave|.
+  loomc_cmd_iree_hal_program_t* hal_program;
+} qwen_command_program_segment_t;
 
 typedef struct qwen_command_compile_batch_t {
   // Immutable production plan shared by every independent job.
@@ -205,7 +221,9 @@ static void qwen_command_package_destroy(qwen_command_package_t* package) {
     iree_allocator_free(host_allocator, program->wait_semaphores);
     iree_hal_semaphore_release(program->timeline_semaphore);
     loomc_cmd_iree_hal_program_release(program->hal_program);
+    loomc_cmd_program_release(program->command_program);
   }
+  loomc_cmd_iree_hal_package_release(package->hal_package);
   qwen_model_release(package->model);
   iree_allocator_free(host_allocator, package);
 }
@@ -223,6 +241,54 @@ void qwen_command_package_options_initialize(
       .compiler_worker_count = QWEN_LOOM_JIT_DEFAULT_WORKER_COUNT,
       .command_buffer_mode = IREE_HAL_COMMAND_BUFFER_MODE_DEFAULT,
   };
+}
+
+void qwen_command_issue_options_initialize(
+    qwen_command_issue_options_t* out_options) {
+  IREE_ASSERT_ARGUMENT(out_options);
+  *out_options = (qwen_command_issue_options_t){
+      .structure_size = sizeof(*out_options),
+      .next = NULL,
+      .flags = 0,
+      .barrier_wave_observer = {0},
+  };
+}
+
+static iree_status_t qwen_command_validate_issue_options(
+    const qwen_command_issue_options_t* options) {
+  if (!options) return iree_ok_status();
+  if (options->structure_size < sizeof(*options)) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "Qwen command issue options structure is too small");
+  }
+  if (options->next) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "Qwen command issue option extensions are unsupported");
+  }
+  const qwen_command_issue_flags_t supported_flags =
+      QWEN_COMMAND_ISSUE_FLAG_DIAGNOSTIC_BARRIER_WAVES;
+  if (iree_any_bit_set(options->flags, ~supported_flags)) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "Qwen command issue options contain unsupported flags");
+  }
+  if (!iree_any_bit_set(options->flags,
+                        QWEN_COMMAND_ISSUE_FLAG_DIAGNOSTIC_BARRIER_WAVES) &&
+      (options->barrier_wave_observer.callback ||
+       options->barrier_wave_observer.user_data)) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "Qwen barrier-wave observer requires barrier-wave issue");
+  }
+  if (!options->barrier_wave_observer.callback &&
+      options->barrier_wave_observer.user_data) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "Qwen barrier-wave observer user data requires a callback");
+  }
+  return iree_ok_status();
 }
 
 static iree_status_t qwen_command_validate_options(
@@ -454,7 +520,7 @@ static void qwen_command_release_units(iree_host_size_t unit_count,
 static iree_status_t qwen_command_validate_parameter_layout(
     qwen_model_t* model, const loomc_cmd_program_t* command_program,
     const loomc_cmd_program_info_t* info, iree_allocator_t host_allocator,
-    iree_hal_buffer_ref_t out_fixed_buffers[2]) {
+    iree_hal_buffer_ref_t out_fixed_buffers[QWEN_COMMAND_FIXED_BUFFER_COUNT]) {
   const qwen_parameter_layout_t* model_layout =
       qwen_model_parameter_layout(model);
   qwen_command_parameter_t* model_parameters = NULL;
@@ -635,7 +701,8 @@ iree_status_t qwen_command_package_prepare(
   loomc_program_plan_root_t roots[QWEN_COMMAND_PROGRAM_COUNT];
   loomc_cmd_program_t* command_programs[QWEN_COMMAND_PROGRAM_COUNT];
   loomc_cmd_program_info_t command_program_infos[QWEN_COMMAND_PROGRAM_COUNT];
-  iree_hal_buffer_ref_t fixed_buffers[QWEN_COMMAND_PROGRAM_COUNT][2];
+  iree_hal_buffer_ref_t fixed_buffers[QWEN_COMMAND_PROGRAM_COUNT]
+                                     [QWEN_COMMAND_FIXED_BUFFER_COUNT];
   loomc_cmd_iree_hal_package_t* hal_package = NULL;
   loomc_cmd_iree_hal_program_t* hal_programs[QWEN_COMMAND_PROGRAM_COUNT];
   loomc_result_t* result = NULL;
@@ -918,7 +985,7 @@ iree_status_t qwen_command_package_prepare(
     }
     const loomc_cmd_program_info_t* info = &command_program_infos[i];
     if (iree_status_is_ok(status) &&
-        (info->fixed_buffer_count != 2 ||
+        (info->fixed_buffer_count != QWEN_COMMAND_FIXED_BUFFER_COUNT ||
          info->rebindable_binding_count != QWEN_COMMAND_BINDING_COUNT ||
          info->parameter_root_count != 2 ||
          info->parameter_count != QWEN_PARAMETER_COUNT + 1 ||
@@ -988,13 +1055,20 @@ iree_status_t qwen_command_package_prepare(
     package->request_token_capacity = options->request_token_capacity;
     package->context_capacity = options->context_capacity;
     package->request_flags = options->request_flags;
+    package->hal_package = hal_package;
+    hal_package = NULL;
+    package->command_buffer_mode = options->command_buffer_mode;
   }
   for (iree_host_size_t i = 0;
        i < QWEN_COMMAND_PROGRAM_COUNT && iree_status_is_ok(status); ++i) {
     qwen_command_program_state_t* program = &package->programs[i];
     program->descriptor = &qwen_command_program_descriptors[i];
+    program->command_program = command_programs[i];
+    command_programs[i] = NULL;
     program->hal_program = hal_programs[i];
     hal_programs[i] = NULL;
+    memcpy(program->fixed_buffers, fixed_buffers[i],
+           sizeof(program->fixed_buffers));
     program->transient_byte_length =
         command_program_infos[i].transient.required_byte_length;
     program->transient_minimum_alignment =
@@ -1055,6 +1129,85 @@ void qwen_command_package_release(qwen_command_package_t* package) {
   if (package && iree_atomic_ref_count_dec(&package->ref_count) == 1) {
     qwen_command_package_destroy(package);
   }
+}
+
+static void qwen_command_release_program_segments(
+    iree_host_size_t segment_count, qwen_command_program_segment_t* segments,
+    iree_allocator_t host_allocator) {
+  for (iree_host_size_t i = 0; i < segment_count; ++i) {
+    loomc_cmd_iree_hal_program_release(segments[i].hal_program);
+  }
+  iree_allocator_free(host_allocator, segments);
+}
+
+static iree_status_t qwen_command_materialize_barrier_waves(
+    qwen_command_package_t* package, qwen_command_program_state_t* program,
+    qwen_command_program_segment_t** out_segments,
+    iree_host_size_t* out_segment_count) {
+  *out_segments = NULL;
+  *out_segment_count = 0;
+
+  loomc_cmd_program_barrier_wave_iterator_t iterator = {0};
+  iree_status_t status =
+      iree_status_from_loomc(loomc_cmd_program_barrier_wave_iterator_initialize(
+          program->command_program, &iterator));
+  iree_host_size_t segment_capacity = 0;
+  while (iree_status_is_ok(status)) {
+    loomc_cmd_program_barrier_wave_t barrier_wave = {0};
+    bool has_wave = false;
+    status =
+        iree_status_from_loomc(loomc_cmd_program_barrier_wave_iterator_next(
+            &iterator, &barrier_wave, &has_wave));
+    if (!iree_status_is_ok(status) || !has_wave) break;
+
+    if (*out_segment_count == segment_capacity) {
+      status = iree_allocator_grow_array(
+          package->host_allocator, *out_segment_count + 1,
+          sizeof(**out_segments), &segment_capacity, (void**)out_segments);
+      if (!iree_status_is_ok(status)) break;
+    }
+
+    qwen_command_program_segment_t* segment =
+        &(*out_segments)[*out_segment_count];
+    *segment = (qwen_command_program_segment_t){
+        .barrier_wave = barrier_wave,
+        .hal_program = NULL,
+    };
+    const loomc_cmd_program_range_options_t range_options = {
+        .type = LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_RANGE_OPTIONS,
+        .structure_size = sizeof(range_options),
+        .next = NULL,
+        .command_range = barrier_wave.commands,
+    };
+    const loomc_cmd_iree_hal_program_options_t program_options = {
+        .type = LOOMC_STRUCTURE_TYPE_CMD_IREE_HAL_PROGRAM_OPTIONS,
+        .structure_size = sizeof(program_options),
+        .next = &range_options,
+        .command_buffer_mode = package->command_buffer_mode,
+        .queue_affinity = qwen_model_queue_affinity(package->model),
+        .fixed_buffers = program->fixed_buffers,
+        .fixed_buffer_count = IREE_ARRAYSIZE(program->fixed_buffers),
+        .flags = LOOMC_CMD_IREE_HAL_PROGRAM_FLAG_RETAIN_RECORDED_OPERATIONS,
+    };
+    status = iree_status_from_loomc(loomc_cmd_iree_hal_program_create(
+        package->hal_package, program->command_program, &program_options,
+        loomc_allocator_from_iree(package->host_allocator),
+        &segment->hal_program));
+    if (iree_status_is_ok(status)) ++*out_segment_count;
+  }
+
+  if (iree_status_is_ok(status) && *out_segment_count == 0) {
+    status = iree_make_status(
+        IREE_STATUS_FAILED_PRECONDITION,
+        "Qwen command program contains no non-empty barrier waves");
+  }
+  if (!iree_status_is_ok(status)) {
+    qwen_command_release_program_segments(*out_segment_count, *out_segments,
+                                          package->host_allocator);
+    *out_segments = NULL;
+    *out_segment_count = 0;
+  }
+  return status;
 }
 
 static iree_status_t qwen_command_build_issue_wait_list(
@@ -1133,6 +1286,74 @@ static void qwen_command_fail_after_partial_submission(
                           iree_status_clone(status));
 }
 
+static void qwen_command_notify_barrier_wave(
+    const qwen_command_issue_options_t* options, qwen_command_program_t program,
+    const qwen_command_program_segment_t* segment,
+    iree_host_size_t segment_index, iree_host_size_t segment_count,
+    qwen_command_barrier_wave_event_t event) {
+  if (!options->barrier_wave_observer.callback) return;
+  const qwen_command_barrier_wave_event_info_t event_info = {
+      .structure_size = sizeof(event_info),
+      .next = NULL,
+      .program = program,
+      .event = event,
+      .wave_index = segment_index,
+      .wave_count = segment_count,
+      .barrier_wave_ordinal = segment->barrier_wave.ordinal,
+      .command_range = segment->barrier_wave.commands,
+  };
+  options->barrier_wave_observer.callback(
+      options->barrier_wave_observer.user_data, &event_info);
+}
+
+static iree_status_t qwen_command_execute_barrier_waves(
+    qwen_command_package_t* package, qwen_command_program_t program,
+    qwen_command_program_state_t* program_state,
+    const qwen_command_issue_options_t* options,
+    const qwen_command_program_segment_t* segments,
+    iree_host_size_t segment_count, uint64_t execute_ready_value,
+    iree_hal_buffer_binding_table_t binding_table) {
+  iree_hal_device_t* device = qwen_model_device(package->model);
+  const iree_hal_queue_affinity_t queue_affinity =
+      qwen_model_queue_affinity(package->model);
+  iree_hal_semaphore_t* program_timeline = program_state->timeline_semaphore;
+  uint64_t wait_value = execute_ready_value;
+  iree_status_t status = iree_ok_status();
+  for (iree_host_size_t i = 0; i < segment_count && iree_status_is_ok(status);
+       ++i) {
+    uint64_t signal_value = execute_ready_value + i + 1;
+    const iree_hal_semaphore_list_t waits = {
+        .count = 1,
+        .semaphores = &program_timeline,
+        .payload_values = &wait_value,
+    };
+    const iree_hal_semaphore_list_t signals = {
+        .count = 1,
+        .semaphores = &program_timeline,
+        .payload_values = &signal_value,
+    };
+    qwen_command_notify_barrier_wave(
+        options, program, &segments[i], i, segment_count,
+        QWEN_COMMAND_BARRIER_WAVE_EVENT_BEFORE_EXECUTE);
+    status = iree_hal_device_queue_execute(
+        device, queue_affinity, waits, signals,
+        loomc_cmd_iree_hal_program_command_buffer(segments[i].hal_program),
+        binding_table, IREE_HAL_EXECUTE_FLAG_NONE);
+    if (iree_status_is_ok(status)) {
+      status = iree_hal_semaphore_wait(program_timeline, signal_value,
+                                       iree_infinite_timeout(),
+                                       IREE_ASYNC_WAIT_FLAG_NONE);
+    }
+    if (iree_status_is_ok(status)) {
+      qwen_command_notify_barrier_wave(
+          options, program, &segments[i], i, segment_count,
+          QWEN_COMMAND_BARRIER_WAVE_EVENT_COMPLETED);
+      wait_value = signal_value;
+    }
+  }
+  return status;
+}
+
 iree_status_t qwen_command_package_query_program(
     const qwen_command_package_t* package, qwen_command_program_t program,
     qwen_command_program_info_t* out_info) {
@@ -1164,12 +1385,14 @@ iree_status_t qwen_command_package_query_program(
 
 iree_status_t qwen_command_package_issue(
     qwen_command_package_t* package, qwen_command_program_t program,
-    qwen_request_t* request, iree_hal_semaphore_list_t wait_semaphore_list,
+    qwen_request_t* request, const qwen_command_issue_options_t* options,
+    iree_hal_semaphore_list_t wait_semaphore_list,
     iree_hal_semaphore_list_t signal_semaphore_list) {
   if (!package || !request) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "Qwen command package and request are required");
   }
+  IREE_RETURN_IF_ERROR(qwen_command_validate_issue_options(options));
   if ((uint32_t)program >= QWEN_COMMAND_PROGRAM_COUNT) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "Qwen command program %d is unknown", program);
@@ -1209,11 +1432,6 @@ iree_status_t qwen_command_package_issue(
         IREE_STATUS_FAILED_PRECONDITION,
         "Qwen command programs require token-ID request state");
   }
-  if (program_state->timeline_value > IREE_HAL_SEMAPHORE_MAX_VALUE - 4 ||
-      qwen_request_timeline_value(request) == IREE_HAL_SEMAPHORE_MAX_VALUE) {
-    return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
-                            "Qwen issue timeline is exhausted");
-  }
 
   uint64_t completed_program_value = 0;
   IREE_RETURN_IF_ERROR(iree_hal_semaphore_query(
@@ -1225,14 +1443,42 @@ iree_status_t qwen_command_package_issue(
         program_state->timeline_value);
   }
 
+  const bool issue_barrier_waves =
+      options &&
+      iree_any_bit_set(options->flags,
+                       QWEN_COMMAND_ISSUE_FLAG_DIAGNOSTIC_BARRIER_WAVES);
+  qwen_command_program_segment_t* segments = NULL;
+  iree_host_size_t segment_count = 0;
+  if (issue_barrier_waves) {
+    IREE_RETURN_IF_ERROR(qwen_command_materialize_barrier_waves(
+        package, program_state, &segments, &segment_count));
+  }
+  const uint64_t program_timeline_advance =
+      issue_barrier_waves ? (uint64_t)segment_count + 3 : 4;
+  if (program_state->timeline_value >
+          IREE_HAL_SEMAPHORE_MAX_VALUE - program_timeline_advance ||
+      qwen_request_timeline_value(request) == IREE_HAL_SEMAPHORE_MAX_VALUE) {
+    qwen_command_release_program_segments(segment_count, segments,
+                                          package->host_allocator);
+    return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
+                            "Qwen issue timeline is exhausted");
+  }
+
   iree_hal_semaphore_list_t alloca_waits;
-  IREE_RETURN_IF_ERROR(qwen_command_build_issue_wait_list(
-      package, program_state, request, wait_semaphore_list, &alloca_waits));
+  iree_status_t status = qwen_command_build_issue_wait_list(
+      package, program_state, request, wait_semaphore_list, &alloca_waits);
+  if (!iree_status_is_ok(status)) {
+    qwen_command_release_program_segments(segment_count, segments,
+                                          package->host_allocator);
+    return status;
+  }
 
   uint64_t scratch_ready_value = program_state->timeline_value + 1;
   uint64_t execute_ready_value = program_state->timeline_value + 2;
-  uint64_t execute_complete_value = program_state->timeline_value + 3;
-  const uint64_t program_complete_value = program_state->timeline_value + 4;
+  uint64_t execute_complete_value =
+      program_state->timeline_value + program_timeline_advance - 1;
+  const uint64_t program_complete_value =
+      program_state->timeline_value + program_timeline_advance;
   const uint64_t request_complete_value =
       qwen_request_timeline_value(request) + 1;
   iree_hal_semaphore_t* program_timeline = program_state->timeline_semaphore;
@@ -1252,9 +1498,14 @@ iree_status_t qwen_command_package_issue(
       .payload_values = &execute_complete_value,
   };
   iree_hal_semaphore_list_t completion_signals;
-  IREE_RETURN_IF_ERROR(qwen_command_build_issue_signal_list(
+  status = qwen_command_build_issue_signal_list(
       package, program_state, request, program_complete_value,
-      request_complete_value, signal_semaphore_list, &completion_signals));
+      request_complete_value, signal_semaphore_list, &completion_signals);
+  if (!iree_status_is_ok(status)) {
+    qwen_command_release_program_segments(segment_count, segments,
+                                          package->host_allocator);
+    return status;
+  }
 
   iree_hal_device_t* device = qwen_model_device(package->model);
   const iree_hal_queue_affinity_t queue_affinity =
@@ -1268,11 +1519,15 @@ iree_status_t qwen_command_package_issue(
       .min_alignment = program_state->transient_minimum_alignment,
   };
   iree_hal_buffer_t* transient_buffer = NULL;
-  iree_status_t status = iree_hal_device_queue_alloca(
+  status = iree_hal_device_queue_alloca(
       device, queue_affinity, alloca_waits, scratch_ready, /*pool=*/NULL,
       transient_params, program_state->transient_byte_length,
       IREE_HAL_ALLOCA_FLAG_NONE, &transient_buffer);
-  if (!iree_status_is_ok(status)) return status;
+  if (!iree_status_is_ok(status)) {
+    qwen_command_release_program_segments(segment_count, segments,
+                                          package->host_allocator);
+    return status;
+  }
 
   const uint32_t zero_pattern = 0;
   status = iree_hal_device_queue_fill(
@@ -1285,6 +1540,8 @@ iree_status_t qwen_command_package_issue(
         transient_buffer, IREE_HAL_DEALLOCA_FLAG_NONE);
     iree_hal_buffer_release(transient_buffer);
     qwen_command_fail_after_partial_submission(program_state, request, status);
+    qwen_command_release_program_segments(segment_count, segments,
+                                          package->host_allocator);
     return iree_status_join(status, cleanup_status);
   }
 
@@ -1326,16 +1583,28 @@ iree_status_t qwen_command_package_issue(
       .count = IREE_ARRAYSIZE(bindings),
       .bindings = bindings,
   };
-  status = iree_hal_device_queue_execute(
-      device, queue_affinity, execute_ready, execute_complete,
-      loomc_cmd_iree_hal_program_command_buffer(program_state->hal_program),
-      binding_table, IREE_HAL_EXECUTE_FLAG_NONE);
+  if (issue_barrier_waves) {
+    status = qwen_command_execute_barrier_waves(
+        package, program, program_state, options, segments, segment_count,
+        execute_ready_value, binding_table);
+  } else {
+    status = iree_hal_device_queue_execute(
+        device, queue_affinity, execute_ready, execute_complete,
+        loomc_cmd_iree_hal_program_command_buffer(program_state->hal_program),
+        binding_table, IREE_HAL_EXECUTE_FLAG_NONE);
+  }
   if (!iree_status_is_ok(status)) {
-    iree_status_t cleanup_status = iree_hal_device_queue_dealloca(
-        device, queue_affinity, execute_ready, iree_hal_semaphore_list_empty(),
-        transient_buffer, IREE_HAL_DEALLOCA_FLAG_NONE);
+    iree_status_t cleanup_status = iree_ok_status();
+    if (!issue_barrier_waves) {
+      cleanup_status = iree_hal_device_queue_dealloca(
+          device, queue_affinity, execute_ready,
+          iree_hal_semaphore_list_empty(), transient_buffer,
+          IREE_HAL_DEALLOCA_FLAG_NONE);
+    }
     iree_hal_buffer_release(transient_buffer);
     qwen_command_fail_after_partial_submission(program_state, request, status);
+    qwen_command_release_program_segments(segment_count, segments,
+                                          package->host_allocator);
     return iree_status_join(status, cleanup_status);
   }
 
@@ -1343,6 +1612,8 @@ iree_status_t qwen_command_package_issue(
       device, queue_affinity, execute_complete, completion_signals,
       transient_buffer, IREE_HAL_DEALLOCA_FLAG_NONE);
   iree_hal_buffer_release(transient_buffer);
+  qwen_command_release_program_segments(segment_count, segments,
+                                        package->host_allocator);
   if (!iree_status_is_ok(status)) {
     qwen_command_fail_after_partial_submission(program_state, request, status);
     return status;
