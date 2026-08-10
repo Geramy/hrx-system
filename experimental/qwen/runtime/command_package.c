@@ -23,7 +23,9 @@
 #include "loomc/target/cmd.h"
 #include "loomc/target/cmd/iree_hal.h"
 
-#define QWEN_COMMAND_PREFILL_TOKEN_COUNT 512
+#define QWEN_COMMAND_MAXIMUM_PREFILL_TOKEN_COUNT 512
+#define QWEN_COMMAND_INITIAL_CONTEXT_BASE 0
+#define QWEN_COMMAND_DECODE_CONTEXT_BEGIN 512
 #define QWEN_COMMAND_CONTEXT_CAPACITY 576
 #define QWEN_COMMAND_FIXED_BUFFER_COUNT 2
 #define QWEN_COMMAND_INITIAL_SEMAPHORE_CAPACITY 8
@@ -47,31 +49,67 @@ typedef struct qwen_command_parameter_t {
 } qwen_command_parameter_t;
 
 typedef struct qwen_command_program_descriptor_t {
-  // Public semantic program identity.
-  qwen_command_program_t program;
   // Compiled public command-program export name.
   const char* export_name;
   // Exact active token-row count.
   iree_host_size_t token_count;
   // Exact attention context extent.
   iree_host_size_t context_count;
+  // Inclusive minimum request context base accepted by the program.
+  iree_host_size_t minimum_context_base;
+  // Exclusive maximum request context base accepted by the program.
+  iree_host_size_t maximum_context_base;
 } qwen_command_program_descriptor_t;
 
 static const qwen_command_program_descriptor_t
     qwen_command_program_descriptors[QWEN_COMMAND_PROGRAM_COUNT] = {
+        [QWEN_COMMAND_PROGRAM_PREFILL_32] =
+            {
+                .export_name = "qwen3_30b_prefill_32",
+                .token_count = 32,
+                .context_count = 64,
+                .minimum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE,
+                .maximum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE + 1,
+            },
+        [QWEN_COMMAND_PROGRAM_PREFILL_64] =
+            {
+                .export_name = "qwen3_30b_prefill_64",
+                .token_count = 64,
+                .context_count = 64,
+                .minimum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE,
+                .maximum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE + 1,
+            },
+        [QWEN_COMMAND_PROGRAM_PREFILL_128] =
+            {
+                .export_name = "qwen3_30b_prefill_128",
+                .token_count = 128,
+                .context_count = 128,
+                .minimum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE,
+                .maximum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE + 1,
+            },
+        [QWEN_COMMAND_PROGRAM_PREFILL_256] =
+            {
+                .export_name = "qwen3_30b_prefill_256",
+                .token_count = 256,
+                .context_count = 256,
+                .minimum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE,
+                .maximum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE + 1,
+            },
         [QWEN_COMMAND_PROGRAM_PREFILL_512] =
             {
-                .program = QWEN_COMMAND_PROGRAM_PREFILL_512,
                 .export_name = "qwen3_30b_prefill_512",
-                .token_count = QWEN_COMMAND_PREFILL_TOKEN_COUNT,
-                .context_count = QWEN_COMMAND_PREFILL_TOKEN_COUNT,
+                .token_count = QWEN_COMMAND_MAXIMUM_PREFILL_TOKEN_COUNT,
+                .context_count = QWEN_COMMAND_MAXIMUM_PREFILL_TOKEN_COUNT,
+                .minimum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE,
+                .maximum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE + 1,
             },
         [QWEN_COMMAND_PROGRAM_DECODE_576] =
             {
-                .program = QWEN_COMMAND_PROGRAM_DECODE_576,
                 .export_name = "qwen3_30b_decode_576",
                 .token_count = 1,
                 .context_count = QWEN_COMMAND_CONTEXT_CAPACITY,
+                .minimum_context_base = QWEN_COMMAND_DECODE_CONTEXT_BEGIN,
+                .maximum_context_base = QWEN_COMMAND_CONTEXT_CAPACITY,
             },
 };
 
@@ -234,7 +272,7 @@ void qwen_command_package_options_initialize(
   *out_options = (qwen_command_package_options_t){
       .structure_size = sizeof(*out_options),
       .next = NULL,
-      .request_token_capacity = QWEN_COMMAND_PREFILL_TOKEN_COUNT,
+      .request_token_capacity = QWEN_COMMAND_MAXIMUM_PREFILL_TOKEN_COUNT,
       .context_capacity = QWEN_COMMAND_CONTEXT_CAPACITY,
       .request_flags = QWEN_REQUEST_FLAG_NONE,
       .sanitizer_checks = 0,
@@ -308,11 +346,12 @@ static iree_status_t qwen_command_validate_options(
         IREE_STATUS_INVALID_ARGUMENT,
         "Qwen command-package option extensions are unsupported");
   }
-  if (options->request_token_capacity < QWEN_COMMAND_PREFILL_TOKEN_COUNT) {
+  if (options->request_token_capacity <
+      QWEN_COMMAND_MAXIMUM_PREFILL_TOKEN_COUNT) {
     return iree_make_status(
         IREE_STATUS_INVALID_ARGUMENT,
         "Qwen command package requires at least %d request token rows",
-        QWEN_COMMAND_PREFILL_TOKEN_COUNT);
+        QWEN_COMMAND_MAXIMUM_PREFILL_TOKEN_COUNT);
   }
   if (options->context_capacity != QWEN_COMMAND_CONTEXT_CAPACITY) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
@@ -1378,22 +1417,17 @@ static iree_status_t qwen_command_validate_program_request(
   const iree_host_size_t context_base = qwen_request_context_base(request);
   const iree_host_size_t active_token_count =
       qwen_request_active_token_count(request);
-  if (program == QWEN_COMMAND_PROGRAM_PREFILL_512 &&
-      (active_token_count != QWEN_COMMAND_PREFILL_TOKEN_COUNT ||
-       context_base != 0)) {
+  const qwen_command_program_descriptor_t* descriptor =
+      &qwen_command_program_descriptors[program];
+  if (active_token_count != descriptor->token_count ||
+      context_base < descriptor->minimum_context_base ||
+      context_base >= descriptor->maximum_context_base) {
     return iree_make_status(
         IREE_STATUS_FAILED_PRECONDITION,
-        "Qwen prefill command requires %d tokens at context base zero",
-        QWEN_COMMAND_PREFILL_TOKEN_COUNT);
-  }
-  if (program == QWEN_COMMAND_PROGRAM_DECODE_576 &&
-      (active_token_count != 1 ||
-       context_base < QWEN_COMMAND_PREFILL_TOKEN_COUNT ||
-       context_base >= QWEN_COMMAND_CONTEXT_CAPACITY)) {
-    return iree_make_status(
-        IREE_STATUS_FAILED_PRECONDITION,
-        "Qwen decode command requires one token in context class [%d, %d)",
-        QWEN_COMMAND_PREFILL_TOKEN_COUNT, QWEN_COMMAND_CONTEXT_CAPACITY);
+        "Qwen command program '%s' requires %" PRIhsz
+        " tokens in context-base class [%" PRIhsz ", %" PRIhsz ")",
+        descriptor->export_name, descriptor->token_count,
+        descriptor->minimum_context_base, descriptor->maximum_context_base);
   }
   if (qwen_request_input_kind(request) != QWEN_REQUEST_INPUT_KIND_TOKEN_IDS) {
     return iree_make_status(
