@@ -35,8 +35,8 @@ IREE_FLAG(int32_t, expected_prefill_token, IREE_TOKENIZER_TOKEN_ID_INVALID,
           "Required token expected from the configured prefill shape.");
 IREE_FLAG(int32_t, expected_decode_token, IREE_TOKENIZER_TOKEN_ID_INVALID,
           "Expected token selected after appending the prefill-selected token. "
-          "Providing this with a 512-token prefill enables matched Decode-513 "
-          "rows.");
+          "Providing this enables matched decode rows at the selected prefill "
+          "boundary.");
 
 namespace {
 
@@ -90,7 +90,7 @@ typedef struct QwenPrefillBenchmarkEnvironment {
   QwenBenchmarkProgram command_prefill_program;
   // Legacy owned-recorder decode oracle, when requested.
   QwenBenchmarkProgram owned_decode_program;
-  // Reusable Decode-576 command-program candidate, when requested.
+  // Reusable dynamic-decode command-program candidate, when requested.
   QwenBenchmarkProgram command_decode_program;
   // Persistent full-model request state.
   qwen_request_t* request;
@@ -371,12 +371,6 @@ static iree_status_t QwenBenchmarkEnvironmentInitialize(
     status = qwen_command_select_prefill_program(
         environment->prefill_token_count, &command_prefill_program);
   }
-  if (iree_status_is_ok(status) && decode_is_enabled &&
-      environment->prefill_token_count != QWEN_COMMAND_PREFILL_TOKEN_CAPACITY) {
-    status = iree_make_status(
-        IREE_STATUS_INVALID_ARGUMENT,
-        "matched owned and command decode rows require a 512-token prefill");
-  }
   if (iree_status_is_ok(status)) {
     status = QwenBenchmarkLoadTokens(environment);
   }
@@ -416,7 +410,7 @@ static iree_status_t QwenBenchmarkEnvironmentInitialize(
   const iree_host_size_t request_token_capacity =
       QWEN_COMMAND_PREFILL_TOKEN_CAPACITY;
   const iree_host_size_t request_context_capacity =
-      QWEN_COMMAND_CONTEXT_CAPACITY;
+      QWEN_COMMAND_DEFAULT_CONTEXT_CAPACITY;
 
   // Host-side owned-program and package preparation overlap the asynchronous
   // model gather. None of this work enters a benchmark row.
@@ -441,7 +435,8 @@ static iree_status_t QwenBenchmarkEnvironmentInitialize(
     program_options.kind = QWEN_PROGRAM_KIND_DECODE;
     program_options.layer_index = 0;
     program_options.token_count = 1;
-    program_options.context_count = request_context_capacity;
+    program_options.context_count =
+        qwen_program_decode_context_class(environment->prefill_token_count);
     program_options.token_capacity = request_token_capacity;
     program_options.context_capacity = request_context_capacity;
     program_options.command_buffer_mode =
@@ -457,6 +452,7 @@ static iree_status_t QwenBenchmarkEnvironmentInitialize(
       package_options.compiler_worker_count =
           environment->runtime_context.jit_worker_count;
     }
+    package_options.context_capacity = request_context_capacity;
     package_options.command_buffer_mode =
         environment->runtime_context.command_buffer_mode;
     status = qwen_command_package_prepare(environment->model, &package_options,
@@ -472,9 +468,9 @@ static iree_status_t QwenBenchmarkEnvironmentInitialize(
   if (iree_status_is_ok(status) && decode_is_enabled) {
     environment->owned_decode_program = QwenBenchmarkOwnedProgram(
         environment->owned_decode_program.owned_program);
-    status = QwenBenchmarkCommandProgram(environment,
-                                         QWEN_COMMAND_PROGRAM_DECODE_576,
-                                         &environment->command_decode_program);
+    status =
+        QwenBenchmarkCommandProgram(environment, QWEN_COMMAND_PROGRAM_DECODE,
+                                    &environment->command_decode_program);
   }
 
   QwenBenchmarkTimepoint request_ready =
@@ -629,7 +625,8 @@ int main(int argc, char** argv) {
   iree_flags_set_usage(
       "qwen-prefill-benchmark",
       "Compares matched owned-recorder and command-program issues for one "
-      "resident Qwen full-model prefill shape and optional Decode-513.");
+      "resident Qwen full-model prefill shape and its optional decode "
+      "boundary.");
   iree_flags_parse_checked(IREE_FLAGS_PARSE_MODE_UNDEFINED_OK |
                                IREE_FLAGS_PARSE_MODE_CONTINUE_AFTER_HELP,
                            &argc, &argv);

@@ -29,6 +29,8 @@ IREE_FLAG(string, prompt, "", "User message to generate a response for.");
 IREE_FLAG(string, system, "", "Optional system message.");
 IREE_FLAG(int32_t, max_tokens, 16,
           "Maximum generated token count, including a terminating EOS.");
+IREE_FLAG(int32_t, context_capacity, QWEN_COMMAND_DEFAULT_CONTEXT_CAPACITY,
+          "K/V rows specialized into the reusable command package.");
 IREE_FLAG(bool, print_token_ids, false,
           "Print each generated token ID to stderr.");
 IREE_FLAG(bool, qwen_print_timings, false,
@@ -48,7 +50,9 @@ static const char* const qwen_generation_cli_usage =
     "\n"
     "The formatted prompt must encode to exactly 32, 64, 128, 256, or 512 "
     "tokens. It is uploaded once; every continuation token remains on the "
-    "device and host reads are observation-only for text streaming and EOS.\n";
+    "device and host reads are observation-only for text streaming and EOS. "
+    "The context capacity specializes storage and kernel selection; decode "
+    "positions within that capacity reuse one command buffer.\n";
 
 typedef struct qwen_generation_cli_timepoint_t {
   // Timeline semaphore carrying this timepoint.
@@ -286,6 +290,10 @@ static iree_status_t qwen_generation_cli_run(iree_time_t process_start_ns) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "--max_tokens must be greater than zero");
   }
+  if (FLAG_context_capacity <= 0) {
+    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
+                            "--context_capacity must be greater than zero");
+  }
   if (FLAG_tokenizer[0] == '\0') {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
                             "--tokenizer is required");
@@ -299,7 +307,8 @@ static iree_status_t qwen_generation_cli_run(iree_time_t process_start_ns) {
       .process_start_ns = process_start_ns,
   };
   const iree_host_size_t max_tokens = (iree_host_size_t)FLAG_max_tokens;
-  const iree_host_size_t context_capacity = QWEN_COMMAND_CONTEXT_CAPACITY;
+  const iree_host_size_t context_capacity =
+      (iree_host_size_t)FLAG_context_capacity;
   iree_status_t status = iree_ok_status();
 
   qwen_tooling_runtime_context_t runtime_context;
@@ -425,6 +434,7 @@ static iree_status_t qwen_generation_cli_run(iree_time_t process_start_ns) {
     if (runtime_context.jit_worker_count != 0) {
       package_options.compiler_worker_count = runtime_context.jit_worker_count;
     }
+    package_options.context_capacity = context_capacity;
     package_options.command_buffer_mode = runtime_context.command_buffer_mode;
     status = qwen_command_package_prepare(model, &package_options,
                                           host_allocator, &command_package);
@@ -544,7 +554,7 @@ static iree_status_t qwen_generation_cli_run(iree_time_t process_start_ns) {
         .value = issue_complete.value + 1,
     };
     status = qwen_command_package_issue(
-        command_package, QWEN_COMMAND_PROGRAM_DECODE_576, request,
+        command_package, QWEN_COMMAND_PROGRAM_DECODE, request,
         /*options=*/NULL, qwen_generation_cli_timepoint_list(&issue_complete),
         qwen_generation_cli_timepoint_list(&next_issue_complete));
     issue_complete = next_issue_complete;

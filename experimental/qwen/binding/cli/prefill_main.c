@@ -47,7 +47,7 @@ IREE_FLAG(string, command_capture_transient, "",
           "--command_capture_prefix.");
 
 static const char* const qwen_prefill_cli_usage =
-    "Runs one exact Qwen prefill shape and optional one-token Decode-576.\n"
+    "Runs one exact Qwen prefill shape and optional one-token decode.\n"
     "\n"
     "Required flags:\n"
     "  --device=<device URI>\n"
@@ -62,8 +62,9 @@ static const char* const qwen_prefill_cli_usage =
     "  --command_capture_prefix=<first excluded canonical command>\n"
     "  --command_capture_transient=<transient root output path>\n"
     "\n"
-    "Decode-576 accepts every exact prefill root. Both stages execute reusable "
-    "command programs from one compiled multi-root package. "
+    "Decode accepts every exact prefill root and derives its attention work "
+    "from the issue-time visible prefix. Both stages execute reusable command "
+    "programs from one compiled multi-root package. "
     "Profiling flags surround the prefill issue. Barrier-wave and "
     "prefix-capture modes are fault-localization only and invalidate timing."
     "\n";
@@ -98,8 +99,8 @@ static const char* qwen_prefill_cli_program_name(
       return "prefill-256";
     case QWEN_COMMAND_PROGRAM_PREFILL_512:
       return "prefill-512";
-    case QWEN_COMMAND_PROGRAM_DECODE_576:
-      return "decode-576";
+    case QWEN_COMMAND_PROGRAM_DECODE:
+      return "decode";
     default:
       return "unknown";
   }
@@ -296,7 +297,7 @@ static iree_status_t qwen_prefill_cli_run(void) {
     qwen_request_options_t request_options;
     qwen_request_options_initialize(&request_options);
     request_options.token_capacity = QWEN_COMMAND_PREFILL_TOKEN_CAPACITY;
-    request_options.context_capacity = QWEN_COMMAND_CONTEXT_CAPACITY;
+    request_options.context_capacity = QWEN_COMMAND_DEFAULT_CONTEXT_CAPACITY;
     status = qwen_request_create(
         model, &request_options, qwen_prefill_cli_timepoint_list(&model_ready),
         qwen_prefill_cli_timepoint_list(&request_ready), host_allocator,
@@ -434,7 +435,7 @@ static iree_status_t qwen_prefill_cli_run(void) {
   };
   if (iree_status_is_ok(status) && FLAG_decode_one) {
     status = qwen_command_package_issue(
-        command_package, QWEN_COMMAND_PROGRAM_DECODE_576, request,
+        command_package, QWEN_COMMAND_PROGRAM_DECODE, request,
         /*options=*/NULL, qwen_prefill_cli_timepoint_list(&issue_complete),
         qwen_prefill_cli_timepoint_list(&decode_complete));
   }
@@ -462,7 +463,7 @@ static iree_status_t qwen_prefill_cli_run(void) {
         .next = NULL,
     };
     status = qwen_command_package_query_program(
-        command_package, QWEN_COMMAND_PROGRAM_DECODE_576, &decode_info);
+        command_package, QWEN_COMMAND_PROGRAM_DECODE, &decode_info);
     if (iree_status_is_ok(status)) {
       fprintf(stdout,
               "Qwen command decode at context %" PRIhsz

@@ -23,8 +23,6 @@
 #include "loomc/target/cmd.h"
 #include "loomc/target/cmd/iree_hal.h"
 
-#define QWEN_COMMAND_INITIAL_CONTEXT_BASE 0
-#define QWEN_COMMAND_MINIMUM_DECODE_CONTEXT_BASE 0
 #define QWEN_COMMAND_FIXED_BUFFER_COUNT 2
 #define QWEN_COMMAND_INITIAL_SEMAPHORE_CAPACITY 8
 
@@ -34,8 +32,16 @@ typedef enum qwen_command_binding_e {
   QWEN_COMMAND_BINDING_REQUEST_STATE = 2,
   QWEN_COMMAND_BINDING_OUTPUT_STAGING = 3,
   QWEN_COMMAND_BINDING_TRANSIENT = 4,
-  QWEN_COMMAND_BINDING_COUNT = 5,
+  QWEN_COMMAND_BINDING_LAUNCH_COUNTS = 5,
+  QWEN_COMMAND_BINDING_CAPACITY = 6,
 } qwen_command_binding_t;
+
+typedef enum qwen_command_context_kind_e {
+  // The root requires context base zero and has one exact context extent.
+  QWEN_COMMAND_CONTEXT_KIND_FIXED_INITIAL = 0,
+  // The root accepts any one-row prefix within the prepared package capacity.
+  QWEN_COMMAND_CONTEXT_KIND_CAPACITY_PREFIX = 1,
+} qwen_command_context_kind_t;
 
 typedef struct qwen_command_parameter_t {
   // Stable fixed-schema key.
@@ -51,13 +57,26 @@ typedef struct qwen_command_program_descriptor_t {
   const char* export_name;
   // Exact active token-row count.
   iree_host_size_t token_count;
-  // Exact attention context extent.
-  iree_host_size_t context_count;
-  // Inclusive minimum request context base accepted by the program.
-  iree_host_size_t minimum_context_base;
-  // Exclusive maximum request context base accepted by the program.
-  iree_host_size_t maximum_context_base;
+  // Exact context extent for QWEN_COMMAND_CONTEXT_KIND_FIXED_INITIAL.
+  iree_host_size_t fixed_context_count;
+  // Request context contract enforced before issue.
+  qwen_command_context_kind_t context_kind;
 } qwen_command_program_descriptor_t;
+
+typedef struct qwen_command_launch_state_t {
+  // Prepared evaluator for this program's aggregate launch function.
+  loomc_launch_config_context_t* context;
+  // Module-local aggregate launch-function identity.
+  loomc_launch_config_function_t function;
+  // Persistently mapped host-local/device-visible launch-count storage.
+  iree_hal_buffer_t* buffer;
+  // Persistent host mapping of |buffer|.
+  iree_hal_buffer_mapping_t mapping;
+  // Exact mapped prefix written and flushed before each issue.
+  iree_device_size_t byte_length;
+  // Rebindable command-program slot occupied by |buffer|.
+  uint32_t binding_index;
+} qwen_command_launch_state_t;
 
 static const qwen_command_program_descriptor_t
     qwen_command_program_descriptors[QWEN_COMMAND_PROGRAM_COUNT] = {
@@ -65,50 +84,43 @@ static const qwen_command_program_descriptor_t
             {
                 .export_name = "qwen3_30b_prefill_32",
                 .token_count = 32,
-                .context_count = 64,
-                .minimum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE,
-                .maximum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE + 1,
+                .fixed_context_count = 64,
+                .context_kind = QWEN_COMMAND_CONTEXT_KIND_FIXED_INITIAL,
             },
         [QWEN_COMMAND_PROGRAM_PREFILL_64] =
             {
                 .export_name = "qwen3_30b_prefill_64",
                 .token_count = 64,
-                .context_count = 64,
-                .minimum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE,
-                .maximum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE + 1,
+                .fixed_context_count = 64,
+                .context_kind = QWEN_COMMAND_CONTEXT_KIND_FIXED_INITIAL,
             },
         [QWEN_COMMAND_PROGRAM_PREFILL_128] =
             {
                 .export_name = "qwen3_30b_prefill_128",
                 .token_count = 128,
-                .context_count = 128,
-                .minimum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE,
-                .maximum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE + 1,
+                .fixed_context_count = 128,
+                .context_kind = QWEN_COMMAND_CONTEXT_KIND_FIXED_INITIAL,
             },
         [QWEN_COMMAND_PROGRAM_PREFILL_256] =
             {
                 .export_name = "qwen3_30b_prefill_256",
                 .token_count = 256,
-                .context_count = 256,
-                .minimum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE,
-                .maximum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE + 1,
+                .fixed_context_count = 256,
+                .context_kind = QWEN_COMMAND_CONTEXT_KIND_FIXED_INITIAL,
             },
         [QWEN_COMMAND_PROGRAM_PREFILL_512] =
             {
                 .export_name = "qwen3_30b_prefill_512",
                 .token_count = QWEN_COMMAND_PREFILL_TOKEN_CAPACITY,
-                .context_count = QWEN_COMMAND_PREFILL_TOKEN_CAPACITY,
-                .minimum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE,
-                .maximum_context_base = QWEN_COMMAND_INITIAL_CONTEXT_BASE + 1,
+                .fixed_context_count = QWEN_COMMAND_PREFILL_TOKEN_CAPACITY,
+                .context_kind = QWEN_COMMAND_CONTEXT_KIND_FIXED_INITIAL,
             },
-        [QWEN_COMMAND_PROGRAM_DECODE_576] =
+        [QWEN_COMMAND_PROGRAM_DECODE] =
             {
-                .export_name = "qwen3_30b_decode_576",
+                .export_name = "qwen3_30b_decode",
                 .token_count = 1,
-                .context_count = QWEN_COMMAND_CONTEXT_CAPACITY,
-                .minimum_context_base =
-                    QWEN_COMMAND_MINIMUM_DECODE_CONTEXT_BASE,
-                .maximum_context_base = QWEN_COMMAND_CONTEXT_CAPACITY,
+                .fixed_context_count = 0,
+                .context_kind = QWEN_COMMAND_CONTEXT_KIND_CAPACITY_PREFIX,
             },
 };
 
@@ -129,6 +141,10 @@ typedef struct qwen_command_program_state_t {
   iree_device_size_t transient_byte_length;
   // Required alignment of the transient slab base.
   iree_device_size_t transient_minimum_alignment;
+  // Number of rebindable buffer slots required when issuing the program.
+  iree_host_size_t binding_count;
+  // Dynamic aggregate launch state, empty for fully static programs.
+  qwen_command_launch_state_t launch;
   // Reusable wait-semaphore pointer storage.
   iree_hal_semaphore_t** wait_semaphores;
   // Reusable wait payload storage paired with |wait_semaphores|.
@@ -252,6 +268,11 @@ static void qwen_command_package_destroy(qwen_command_package_t* package) {
   iree_allocator_t host_allocator = package->host_allocator;
   for (iree_host_size_t i = 0; i < QWEN_COMMAND_PROGRAM_COUNT; ++i) {
     qwen_command_program_state_t* program = &package->programs[i];
+    if (program->launch.mapping.buffer) {
+      iree_hal_buffer_unmap_range(&program->launch.mapping);
+    }
+    iree_hal_buffer_release(program->launch.buffer);
+    loomc_launch_config_context_release(program->launch.context);
     iree_allocator_free(host_allocator, program->signal_values);
     iree_allocator_free(host_allocator, program->signal_semaphores);
     iree_allocator_free(host_allocator, program->wait_values);
@@ -272,7 +293,7 @@ void qwen_command_package_options_initialize(
       .structure_size = sizeof(*out_options),
       .next = NULL,
       .request_token_capacity = QWEN_COMMAND_PREFILL_TOKEN_CAPACITY,
-      .context_capacity = QWEN_COMMAND_CONTEXT_CAPACITY,
+      .context_capacity = QWEN_COMMAND_DEFAULT_CONTEXT_CAPACITY,
       .request_flags = QWEN_REQUEST_FLAG_NONE,
       .sanitizer_checks = 0,
       .compiler_worker_count = QWEN_LOOM_JIT_DEFAULT_WORKER_COUNT,
@@ -369,10 +390,14 @@ static iree_status_t qwen_command_validate_options(
         "Qwen command package requires at least %d request token rows",
         QWEN_COMMAND_PREFILL_TOKEN_CAPACITY);
   }
-  if (options->context_capacity != QWEN_COMMAND_CONTEXT_CAPACITY) {
-    return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
-                            "Qwen command package requires context capacity %d",
-                            QWEN_COMMAND_CONTEXT_CAPACITY);
+  if (options->context_capacity < options->request_token_capacity ||
+      options->context_capacity > QWEN_COMMAND_MAX_CONTEXT_CAPACITY) {
+    return iree_make_status(
+        IREE_STATUS_INVALID_ARGUMENT,
+        "Qwen command-package context capacity %" PRIhsz " must cover %" PRIhsz
+        " request rows and not exceed %d",
+        options->context_capacity, options->request_token_capacity,
+        QWEN_COMMAND_MAX_CONTEXT_CAPACITY);
   }
   if (options->request_flags != QWEN_REQUEST_FLAG_NONE) {
     return iree_make_status(
@@ -727,6 +752,102 @@ static iree_status_t qwen_command_validate_parameter_layout(
   return status;
 }
 
+static iree_status_t qwen_command_prepare_launch_state(
+    qwen_model_t* model, const qwen_command_program_descriptor_t* descriptor,
+    const loomc_cmd_program_info_t* command_info,
+    loomc_cmd_iree_hal_program_t* hal_program, iree_allocator_t host_allocator,
+    qwen_command_launch_state_t* out_launch) {
+  loomc_launch_config_module_t* launch_module =
+      loomc_cmd_iree_hal_program_launch_module(hal_program);
+  const loomc_launch_config_function_t launch_function =
+      loomc_cmd_iree_hal_program_launch_function(hal_program);
+  loomc_launch_config_function_info_t launch_info = {
+      .type = LOOMC_STRUCTURE_TYPE_LAUNCH_CONFIG_FUNCTION_INFO,
+      .structure_size = sizeof(launch_info),
+  };
+  IREE_RETURN_IF_ERROR(
+      iree_status_from_loomc(loomc_launch_config_module_function_info(
+          launch_module, launch_function, &launch_info)));
+
+  const bool has_dynamic_launch_counts =
+      command_info->launch_counts.binding_index !=
+      LOOMC_CMD_PROGRAM_BINDING_INVALID;
+  if (!has_dynamic_launch_counts) {
+    if (launch_info.workload_argument_count != 0 ||
+        launch_info.result_count != 0 || launch_info.output_byte_length != 0) {
+      return iree_make_status(
+          IREE_STATUS_FAILED_PRECONDITION,
+          "static Qwen command program '%s' has a dynamic launch function",
+          descriptor->export_name);
+    }
+    return iree_ok_status();
+  }
+  if (launch_info.workload_argument_count != 1 ||
+      launch_info.result_count != 1 ||
+      launch_info.output_byte_length !=
+          command_info->launch_counts.required_byte_length ||
+      launch_info.output_alignment !=
+          command_info->launch_counts.minimum_alignment) {
+    return iree_make_status(
+        IREE_STATUS_FAILED_PRECONDITION,
+        "dynamic Qwen command program '%s' must produce one shared launch "
+        "tuple from one workload value",
+        descriptor->export_name);
+  }
+
+  out_launch->function = launch_function;
+  out_launch->byte_length = command_info->launch_counts.required_byte_length;
+  out_launch->binding_index = command_info->launch_counts.binding_index;
+  IREE_RETURN_IF_ERROR(
+      iree_status_from_loomc(loomc_launch_config_context_create(
+          launch_module, /*options=*/NULL,
+          loomc_allocator_from_iree(host_allocator), &out_launch->context)));
+
+  const iree_hal_buffer_params_t buffer_params = {
+      .usage = IREE_HAL_BUFFER_USAGE_DISPATCH_INDIRECT_PARAMETERS |
+               IREE_HAL_BUFFER_USAGE_MAPPING_PERSISTENT,
+      .access = IREE_HAL_MEMORY_ACCESS_ALL,
+      .type =
+          IREE_HAL_MEMORY_TYPE_HOST_LOCAL | IREE_HAL_MEMORY_TYPE_DEVICE_VISIBLE,
+      .queue_affinity = qwen_model_queue_affinity(model),
+      .min_alignment = command_info->launch_counts.minimum_alignment,
+  };
+  IREE_RETURN_IF_ERROR(iree_hal_allocator_allocate_buffer(
+      iree_hal_device_allocator(qwen_model_device(model)), buffer_params,
+      out_launch->byte_length, &out_launch->buffer));
+  return iree_hal_buffer_map_range(
+      out_launch->buffer, IREE_HAL_MAPPING_MODE_PERSISTENT,
+      IREE_HAL_MEMORY_ACCESS_WRITE, /*byte_offset=*/0, out_launch->byte_length,
+      &out_launch->mapping);
+}
+
+static iree_status_t qwen_command_evaluate_launch(
+    qwen_command_program_state_t* program, iree_host_size_t context_base) {
+  if (!program->launch.context) return iree_ok_status();
+
+  const int64_t visible_context_count = (int64_t)context_base + 1;
+  const loomc_launch_config_arguments_t arguments = {
+      .type = LOOMC_STRUCTURE_TYPE_LAUNCH_CONFIG_ARGUMENTS,
+      .structure_size = sizeof(arguments),
+      .next = NULL,
+      .workload_arguments = &visible_context_count,
+      .workload_argument_count = 1,
+  };
+  loomc_launch_config_outputs_t outputs = {
+      .type = LOOMC_STRUCTURE_TYPE_LAUNCH_CONFIG_OUTPUTS,
+      .structure_size = sizeof(outputs),
+      .next = NULL,
+      .storage = program->launch.mapping.contents.data,
+      .storage_length = program->launch.byte_length,
+  };
+  IREE_RETURN_IF_ERROR(
+      iree_status_from_loomc(loomc_launch_config_context_evaluate(
+          program->launch.context, program->launch.function, &arguments,
+          &outputs)));
+  return iree_hal_buffer_mapping_flush_range(
+      &program->launch.mapping, /*byte_offset=*/0, program->launch.byte_length);
+}
+
 iree_status_t qwen_command_package_prepare(
     qwen_model_t* model, const qwen_command_package_options_t* options,
     iree_allocator_t host_allocator, qwen_command_package_t** out_package) {
@@ -914,12 +1035,19 @@ iree_status_t qwen_command_package_prepare(
   const int request_token_capacity_length = snprintf(
       request_token_capacity_storage, sizeof(request_token_capacity_storage),
       "%" PRIhsz, options->request_token_capacity);
+  char context_capacity_storage[32];
+  const int context_capacity_length =
+      snprintf(context_capacity_storage, sizeof(context_capacity_storage),
+               "%" PRIhsz, options->context_capacity);
   if (iree_status_is_ok(status) &&
       (request_token_capacity_length < 0 ||
        (iree_host_size_t)request_token_capacity_length >=
-           sizeof(request_token_capacity_storage))) {
+           sizeof(request_token_capacity_storage) ||
+       context_capacity_length < 0 ||
+       (iree_host_size_t)context_capacity_length >=
+           sizeof(context_capacity_storage))) {
     status = iree_make_status(IREE_STATUS_OUT_OF_RANGE,
-                              "Qwen token capacity spelling overflowed");
+                              "Qwen capacity spelling overflowed");
   }
   if (iree_status_is_ok(status)) {
     const loomc_config_binding_t config_bindings[] = {
@@ -928,6 +1056,13 @@ iree_status_t qwen_command_package_prepare(
             .value = loomc_make_string_view(
                 request_token_capacity_storage,
                 (loomc_host_size_t)request_token_capacity_length),
+        },
+        {
+            .key = loomc_make_cstring_view(
+                "qwen3_moe.attention.key_value_token_capacity"),
+            .value = loomc_make_string_view(
+                context_capacity_storage,
+                (loomc_host_size_t)context_capacity_length),
         },
     };
     const loomc_target_specialization_options_t target_options = {
@@ -1039,16 +1174,30 @@ iree_status_t qwen_command_package_prepare(
           command_programs[i], &command_program_infos[i]));
     }
     const loomc_cmd_program_info_t* info = &command_program_infos[i];
+    const bool expects_dynamic_launch_counts =
+        descriptor->context_kind == QWEN_COMMAND_CONTEXT_KIND_CAPACITY_PREFIX;
+    const iree_host_size_t expected_binding_count =
+        expects_dynamic_launch_counts ? QWEN_COMMAND_BINDING_CAPACITY
+                                      : QWEN_COMMAND_BINDING_LAUNCH_COUNTS;
+    const uint32_t expected_launch_binding =
+        expects_dynamic_launch_counts ? QWEN_COMMAND_BINDING_LAUNCH_COUNTS
+                                      : LOOMC_CMD_PROGRAM_BINDING_INVALID;
+    const uint64_t expected_launch_byte_length =
+        expects_dynamic_launch_counts ? sizeof(loomc_dimension3_t) : 0;
+    const uint64_t expected_launch_alignment =
+        expects_dynamic_launch_counts ? _Alignof(loomc_dimension3_t) : 0;
     if (iree_status_is_ok(status) &&
         (info->fixed_buffer_count != QWEN_COMMAND_FIXED_BUFFER_COUNT ||
-         info->rebindable_binding_count != QWEN_COMMAND_BINDING_COUNT ||
+         info->rebindable_binding_count != expected_binding_count ||
          info->parameter_root_count != 2 ||
          info->parameter_count != QWEN_PARAMETER_COUNT + 1 ||
          info->transient.binding_index != QWEN_COMMAND_BINDING_TRANSIENT ||
          info->transient.required_byte_length == 0 ||
          info->transient.minimum_alignment == 0 ||
-         info->launch_counts.binding_index !=
-             LOOMC_CMD_PROGRAM_BINDING_INVALID)) {
+         info->launch_counts.binding_index != expected_launch_binding ||
+         info->launch_counts.required_byte_length !=
+             expected_launch_byte_length ||
+         info->launch_counts.minimum_alignment != expected_launch_alignment)) {
       status = iree_make_status(
           IREE_STATUS_FAILED_PRECONDITION,
           "compiled Qwen command program '%s' has an incompatible ABI",
@@ -1128,9 +1277,15 @@ iree_status_t qwen_command_package_prepare(
         command_program_infos[i].transient.required_byte_length;
     program->transient_minimum_alignment =
         command_program_infos[i].transient.minimum_alignment;
-    status = qwen_command_reserve_semaphore_storage(
-        QWEN_COMMAND_INITIAL_SEMAPHORE_CAPACITY, host_allocator,
-        &program->wait_semaphores, &program->wait_values);
+    program->binding_count = command_program_infos[i].rebindable_binding_count;
+    status = qwen_command_prepare_launch_state(
+        model, program->descriptor, &command_program_infos[i],
+        program->hal_program, host_allocator, &program->launch);
+    if (iree_status_is_ok(status)) {
+      status = qwen_command_reserve_semaphore_storage(
+          QWEN_COMMAND_INITIAL_SEMAPHORE_CAPACITY, host_allocator,
+          &program->wait_semaphores, &program->wait_values);
+    }
     if (iree_status_is_ok(status)) {
       program->wait_capacity = QWEN_COMMAND_INITIAL_SEMAPHORE_CAPACITY;
       status = qwen_command_reserve_semaphore_storage(
@@ -1435,15 +1590,17 @@ static iree_status_t qwen_command_validate_program_request(
       qwen_request_active_token_count(request);
   const qwen_command_program_descriptor_t* descriptor =
       &qwen_command_program_descriptors[program];
-  if (active_token_count != descriptor->token_count ||
-      context_base < descriptor->minimum_context_base ||
-      context_base >= descriptor->maximum_context_base) {
+  const bool context_base_is_valid =
+      (descriptor->context_kind == QWEN_COMMAND_CONTEXT_KIND_FIXED_INITIAL &&
+       context_base == 0) ||
+      (descriptor->context_kind == QWEN_COMMAND_CONTEXT_KIND_CAPACITY_PREFIX &&
+       context_base < package->context_capacity);
+  if (active_token_count != descriptor->token_count || !context_base_is_valid) {
     return iree_make_status(
         IREE_STATUS_FAILED_PRECONDITION,
         "Qwen command program '%s' requires %" PRIhsz
-        " tokens in context-base class [%" PRIhsz ", %" PRIhsz ")",
-        descriptor->export_name, descriptor->token_count,
-        descriptor->minimum_context_base, descriptor->maximum_context_base);
+        " tokens and a context base valid for its prepared context contract",
+        descriptor->export_name, descriptor->token_count);
   }
   if (qwen_request_input_kind(request) != QWEN_REQUEST_INPUT_KIND_TOKEN_IDS) {
     return iree_make_status(
@@ -1467,9 +1624,10 @@ static iree_status_t qwen_command_validate_program_request(
 }
 
 static iree_hal_buffer_binding_table_t qwen_command_build_binding_table(
-    qwen_request_t* request, iree_hal_buffer_t* transient_buffer,
+    const qwen_command_program_state_t* program, qwen_request_t* request,
+    iree_hal_buffer_t* transient_buffer,
     iree_device_size_t transient_byte_length,
-    iree_hal_buffer_binding_t out_bindings[QWEN_COMMAND_BINDING_COUNT]) {
+    iree_hal_buffer_binding_t out_bindings[QWEN_COMMAND_BINDING_CAPACITY]) {
   const qwen_request_storage_layout_t* request_layout =
       qwen_request_storage_layout(request);
   out_bindings[QWEN_COMMAND_BINDING_KEY_CACHE] = (iree_hal_buffer_binding_t){
@@ -1499,8 +1657,15 @@ static iree_hal_buffer_binding_table_t qwen_command_build_binding_table(
       .offset = 0,
       .length = transient_byte_length,
   };
+  if (program->launch.buffer) {
+    out_bindings[program->launch.binding_index] = (iree_hal_buffer_binding_t){
+        .buffer = program->launch.buffer,
+        .offset = 0,
+        .length = program->launch.byte_length,
+    };
+  }
   return (iree_hal_buffer_binding_table_t){
-      .count = QWEN_COMMAND_BINDING_COUNT,
+      .count = program->binding_count,
       .bindings = out_bindings,
   };
 }
@@ -1527,7 +1692,10 @@ iree_status_t qwen_command_package_query_program(
       .structure_size = sizeof(*out_info),
       .next = NULL,
       .token_count = program_state->descriptor->token_count,
-      .context_count = program_state->descriptor->context_count,
+      .context_count = program_state->descriptor->context_kind ==
+                               QWEN_COMMAND_CONTEXT_KIND_FIXED_INITIAL
+                           ? program_state->descriptor->fixed_context_count
+                           : package->context_capacity,
       .transient_byte_length = program_state->transient_byte_length,
       .transient_minimum_alignment = program_state->transient_minimum_alignment,
   };
@@ -1541,6 +1709,8 @@ iree_status_t qwen_command_package_capture_transient_prefix(
   qwen_command_program_state_t* program_state = NULL;
   IREE_RETURN_IF_ERROR(qwen_command_validate_program_request(
       package, program, request, &program_state));
+  IREE_RETURN_IF_ERROR(qwen_command_evaluate_launch(
+      program_state, qwen_request_context_base(request)));
   if (program_state->transient_byte_length > IREE_HOST_SIZE_MAX ||
       transient_capture.data_length != program_state->transient_byte_length) {
     return iree_make_status(IREE_STATUS_INVALID_ARGUMENT,
@@ -1668,9 +1838,9 @@ iree_status_t qwen_command_package_capture_transient_prefix(
     if (iree_status_is_ok(status)) cleanup_wait_value = execute_ready_value;
   }
 
-  iree_hal_buffer_binding_t bindings[QWEN_COMMAND_BINDING_COUNT];
+  iree_hal_buffer_binding_t bindings[QWEN_COMMAND_BINDING_CAPACITY];
   const iree_hal_buffer_binding_table_t binding_table =
-      qwen_command_build_binding_table(request, transient_buffer,
+      qwen_command_build_binding_table(program_state, request, transient_buffer,
                                        program_state->transient_byte_length,
                                        bindings);
   if (iree_status_is_ok(status)) {
@@ -1738,6 +1908,8 @@ iree_status_t qwen_command_package_issue(
   IREE_RETURN_IF_ERROR(qwen_command_validate_program_request(
       package, program, request, &program_state));
   const iree_host_size_t context_base = qwen_request_context_base(request);
+  IREE_RETURN_IF_ERROR(
+      qwen_command_evaluate_launch(program_state, context_base));
 
   const bool issue_barrier_waves =
       options &&
@@ -1841,9 +2013,9 @@ iree_status_t qwen_command_package_issue(
     return iree_status_join(status, cleanup_status);
   }
 
-  iree_hal_buffer_binding_t bindings[QWEN_COMMAND_BINDING_COUNT];
+  iree_hal_buffer_binding_t bindings[QWEN_COMMAND_BINDING_CAPACITY];
   const iree_hal_buffer_binding_table_t binding_table =
-      qwen_command_build_binding_table(request, transient_buffer,
+      qwen_command_build_binding_table(program_state, request, transient_buffer,
                                        program_state->transient_byte_length,
                                        bindings);
   if (issue_barrier_waves) {

@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <iterator>
 #include <memory>
@@ -444,6 +445,11 @@ TEST(QwenCommandPackageTest, CompilesCompleteProductionPlan) {
           /*.key=*/loomc_make_cstring_view("qwen3_30b.request.token_capacity"),
           /*.value=*/loomc_make_cstring_view("512"),
       },
+      {
+          /*.key=*/loomc_make_cstring_view(
+              "qwen3_moe.attention.key_value_token_capacity"),
+          /*.value=*/loomc_make_cstring_view("577"),
+      },
   };
   const loomc_target_specialization_options_t target_options = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_TARGET_SPECIALIZATION_OPTIONS,
@@ -479,7 +485,7 @@ TEST(QwenCommandPackageTest, CompilesCompleteProductionPlan) {
   ASSERT_EQ(loomc_program_plan_unit_count(plan.get()), 15u);
   loomc_program_plan_root_t root = loomc_program_plan_root_invalid();
   LOOMC_ASSERT_OK(loomc_program_plan_lookup_root(
-      plan.get(), loomc_make_cstring_view("qwen3_30b_decode_576"), &root));
+      plan.get(), loomc_make_cstring_view("qwen3_30b_decode"), &root));
   loomc_program_plan_root_info_t root_info = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_ROOT_INFO,
       /*.structure_size=*/sizeof(root_info),
@@ -538,7 +544,7 @@ TEST(QwenCommandPackageTest, CompilesCompleteProductionPlan) {
 
   loomc_program_export_t root_export = loomc_program_export_invalid();
   LOOMC_ASSERT_OK(loomc_program_lookup_export(
-      assembled_program.get(), loomc_make_cstring_view("qwen3_30b_decode_576"),
+      assembled_program.get(), loomc_make_cstring_view("qwen3_30b_decode"),
       &root_export));
   loomc_cmd_program_t* raw_command_program = nullptr;
   LOOMC_ASSERT_OK(loomc_cmd_program_create_from_export(
@@ -551,14 +557,15 @@ TEST(QwenCommandPackageTest, CompilesCompleteProductionPlan) {
   };
   LOOMC_ASSERT_OK(loomc_cmd_program_info(command_program.get(), &info));
   EXPECT_EQ(info.fixed_buffer_count, 2u);
-  EXPECT_EQ(info.rebindable_binding_count, 5u);
+  EXPECT_EQ(info.rebindable_binding_count, 6u);
   EXPECT_EQ(info.parameter_root_count, 2u);
   EXPECT_EQ(info.parameter_count, 580u);
   EXPECT_EQ(info.transient.binding_index, 4u);
-  EXPECT_EQ(info.transient.required_byte_length, 197376u);
+  EXPECT_EQ(info.transient.required_byte_length, 214272u);
   EXPECT_EQ(info.transient.minimum_alignment, 256u);
-  EXPECT_EQ(info.launch_counts.binding_index,
-            LOOMC_CMD_PROGRAM_BINDING_INVALID);
+  EXPECT_EQ(info.launch_counts.binding_index, 5u);
+  EXPECT_EQ(info.launch_counts.required_byte_length, 12u);
+  EXPECT_EQ(info.launch_counts.minimum_alignment, 4u);
 
   loomc_cmd_program_parameter_root_info_t parameter_root = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_PARAMETER_ROOT_INFO,
@@ -576,7 +583,7 @@ TEST(QwenCommandPackageTest, CompilesCompleteProductionPlan) {
   EXPECT_EQ(parameter_root.minimum_alignment, 256u);
 
   const loomc_artifact_t* command_artifact =
-      FindCommandArtifact(assembled_program.get(), "qwen3_30b_decode_576");
+      FindCommandArtifact(assembled_program.get(), "qwen3_30b_decode");
   ASSERT_NE(command_artifact, nullptr);
   EXPECT_GT(command_artifact->contents.data_length, 0u);
 }
@@ -612,14 +619,21 @@ TEST(QwenCommandPackageTest, PlansExactPrefillShapeFamily) {
       /*.specializations=*/specializations.data(),
       /*.specialization_count=*/specializations.size(),
   };
+  const loomc_config_binding_t config_bindings[] = {
+      {
+          /*.key=*/loomc_make_cstring_view(
+              "qwen3_moe.attention.key_value_token_capacity"),
+          /*.value=*/loomc_make_cstring_view("576"),
+      },
+  };
   const loomc_program_plan_options_t plan_options = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_OPTIONS,
       /*.structure_size=*/sizeof(plan_options),
       /*.next=*/&command_options,
       /*.config=*/
       {
-          /*.bindings=*/nullptr,
-          /*.binding_count=*/0,
+          /*.bindings=*/config_bindings,
+          /*.binding_count=*/std::size(config_bindings),
           /*.json_object=*/loomc_string_view_empty(),
           /*.flags=*/LOOMC_CONFIG_POLICY_FLAG_REQUIRE_RESOLVED,
       },
@@ -685,14 +699,21 @@ TEST(QwenCommandPackageTest, CompilesSharedPrefillAndDecodePlan) {
       /*.specializations=*/specializations.data(),
       /*.specialization_count=*/specializations.size(),
   };
+  const loomc_config_binding_t config_bindings[] = {
+      {
+          /*.key=*/loomc_make_cstring_view(
+              "qwen3_moe.attention.key_value_token_capacity"),
+          /*.value=*/loomc_make_cstring_view("576"),
+      },
+  };
   const loomc_program_plan_options_t plan_options = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_OPTIONS,
       /*.structure_size=*/sizeof(plan_options),
       /*.next=*/&command_options,
       /*.config=*/
       {
-          /*.bindings=*/nullptr,
-          /*.binding_count=*/0,
+          /*.bindings=*/config_bindings,
+          /*.binding_count=*/std::size(config_bindings),
           /*.json_object=*/loomc_string_view_empty(),
           /*.flags=*/LOOMC_CONFIG_POLICY_FLAG_REQUIRE_RESOLVED,
       },
@@ -713,8 +734,7 @@ TEST(QwenCommandPackageTest, CompilesSharedPrefillAndDecodePlan) {
             std::size(kPrefillShapes) + 1);
   loomc_program_plan_root_t decode_root = loomc_program_plan_root_invalid();
   LOOMC_ASSERT_OK(loomc_program_plan_lookup_root(
-      plan.get(), loomc_make_cstring_view("qwen3_30b_decode_576"),
-      &decode_root));
+      plan.get(), loomc_make_cstring_view("qwen3_30b_decode"), &decode_root));
   loomc_program_plan_root_info_t decode_root_info = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_ROOT_INFO,
       /*.structure_size=*/sizeof(decode_root_info),
@@ -854,9 +874,34 @@ TEST(QwenCommandPackageTest, CompilesSharedPrefillAndDecodePlan) {
               LOOMC_CMD_PROGRAM_BINDING_INVALID);
   }
   const loomc_artifact_t* decode_artifact =
-      FindCommandArtifact(assembled_program.get(), "qwen3_30b_decode_576");
+      FindCommandArtifact(assembled_program.get(), "qwen3_30b_decode");
   ASSERT_NE(decode_artifact, nullptr);
   EXPECT_GT(decode_artifact->contents.data_length, 0u);
+
+  loomc_program_export_t decode_export = loomc_program_export_invalid();
+  LOOMC_ASSERT_OK(loomc_program_lookup_export(
+      assembled_program.get(), loomc_make_cstring_view("qwen3_30b_decode"),
+      &decode_export));
+  loomc_cmd_program_t* raw_decode_program = nullptr;
+  LOOMC_ASSERT_OK(loomc_cmd_program_create_from_export(
+      assembled_program.get(), decode_export, loomc_allocator_system(),
+      &raw_decode_program));
+  CmdProgramPtr decode_program(raw_decode_program);
+  loomc_cmd_program_info_t decode_info = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_INFO,
+      /*.structure_size=*/sizeof(decode_info),
+  };
+  LOOMC_ASSERT_OK(loomc_cmd_program_info(decode_program.get(), &decode_info));
+  EXPECT_EQ(decode_info.fixed_buffer_count, 2u);
+  EXPECT_EQ(decode_info.rebindable_binding_count, 6u);
+  EXPECT_EQ(decode_info.parameter_root_count, 2u);
+  EXPECT_EQ(decode_info.parameter_count, 580u);
+  EXPECT_EQ(decode_info.transient.binding_index, 4u);
+  EXPECT_EQ(decode_info.transient.required_byte_length, 197376u);
+  EXPECT_EQ(decode_info.transient.minimum_alignment, 256u);
+  EXPECT_EQ(decode_info.launch_counts.binding_index, 5u);
+  EXPECT_EQ(decode_info.launch_counts.required_byte_length, 12u);
+  EXPECT_EQ(decode_info.launch_counts.minimum_alignment, 4u);
 }
 
 }  // namespace

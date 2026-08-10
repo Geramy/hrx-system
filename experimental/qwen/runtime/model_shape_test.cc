@@ -28,6 +28,13 @@ TEST(QwenModelShapeTest, ComputesPrefill512Storage) {
   EXPECT_EQ(all_cache_byte_length, layer_cache_byte_length * 48u * 2u);
 }
 
+TEST(QwenModelShapeTest, PadsCacheStorageToAttentionTiles) {
+  iree_device_size_t layer_cache_byte_length = 0;
+  IREE_ASSERT_OK(qwen_model_layer_cache_byte_length(
+      /*context_capacity=*/513, &layer_cache_byte_length));
+  EXPECT_EQ(layer_cache_byte_length, 576u * 4u * 128u * 2u);
+}
+
 TEST(QwenModelShapeTest, RejectsUnsupportedDomains) {
   iree_device_size_t byte_length = 0;
   IREE_EXPECT_STATUS_IS(IREE_STATUS_OUT_OF_RANGE,

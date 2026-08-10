@@ -1004,10 +1004,6 @@ static iree_status_t qwen_program_prepare_layer_executables(
   qwen_program_config_binding_list_initialize_with_token_capacity(
       /*static_binding_count=*/0, /*static_bindings=*/NULL, token_count,
       &attention_metadata_config_binding_list);
-  qwen_program_config_binding_list_append_index(
-      &attention_metadata_config_binding_list,
-      IREE_SV("qwen.attention.metadata_context_capacity"),
-      attention_context_count);
 
   qwen_program_config_binding_list_t attention_prepare_config_binding_list;
   qwen_program_config_binding_list_initialize_with_token_capacity(

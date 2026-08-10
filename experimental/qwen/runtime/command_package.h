@@ -29,8 +29,11 @@ typedef struct qwen_command_package_t qwen_command_package_t;
 // Minimum request token-storage capacity needed by the prefill root family.
 #define QWEN_COMMAND_PREFILL_TOKEN_CAPACITY 512
 
-// Request K/V and attention capacity specialized into Decode-576.
-#define QWEN_COMMAND_CONTEXT_CAPACITY 576
+// Default request K/V storage capacity used by the example tools.
+#define QWEN_COMMAND_DEFAULT_CONTEXT_CAPACITY 576
+
+// Largest context supported by the current fused decode-attention provider.
+#define QWEN_COMMAND_MAX_CONTEXT_CAPACITY 2048
 
 // Program identities available in a prepared package.
 typedef enum qwen_command_program_e {
@@ -44,8 +47,8 @@ typedef enum qwen_command_program_e {
   QWEN_COMMAND_PROGRAM_PREFILL_256 = 3,
   // Exact 512-row initial prefill with a 512-row attention extent.
   QWEN_COMMAND_PROGRAM_PREFILL_512 = 4,
-  // One-token decode over a 576-row attention and cache capacity.
-  QWEN_COMMAND_PROGRAM_DECODE_576 = 5,
+  // One-token decode over the issue-time visible K/V prefix.
+  QWEN_COMMAND_PROGRAM_DECODE = 5,
   // Number of known command programs.
   QWEN_COMMAND_PROGRAM_COUNT = 6,
 } qwen_command_program_t;
@@ -154,7 +157,7 @@ typedef struct qwen_command_issue_options_t {
   qwen_command_barrier_wave_observer_t barrier_wave_observer;
 } qwen_command_issue_options_t;
 
-// Initializes |out_options| for the exact prefill family and Decode-576.
+// Initializes |out_options| for the exact prefill family and dynamic decode.
 IREE_API_EXPORT void qwen_command_package_options_initialize(
     qwen_command_package_options_t* out_options);
 
@@ -213,9 +216,11 @@ IREE_API_EXPORT iree_status_t qwen_command_package_capture_transient_prefix(
 // waits; allocates and initializes the program's packed transient slab;
 // executes its reusable command buffer; and deallocates the slab before
 // publishing request and caller completion. It performs no compilation,
-// linking, parameter lookup, launch evaluation, allocation planning, or
-// command recording. Diagnostic barrier-wave issue temporarily records the
-// selected root in barrier-aligned segments and host-waits between them.
+// linking, parameter lookup, allocation planning, or command recording. A root
+// with dynamic workloads evaluates its prepared aggregate launch function into
+// persistent mapped indirect storage before submission. Diagnostic barrier-wave
+// issue temporarily records the selected root in barrier-aligned segments and
+// host-waits between them.
 IREE_API_EXPORT iree_status_t qwen_command_package_issue(
     qwen_command_package_t* package, qwen_command_program_t program,
     qwen_request_t* request, const qwen_command_issue_options_t* options,

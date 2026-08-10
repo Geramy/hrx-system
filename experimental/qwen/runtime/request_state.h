@@ -87,7 +87,7 @@ typedef struct qwen_request_storage_layout_t {
   iree_device_size_t reset_upload_byte_length;
   // Complete request-state binding length visible to recorded dispatches.
   iree_device_size_t dispatch_state_byte_length;
-  // Byte length of one layer-local K or V cache.
+  // Byte length of one tile-padded layer-local K or V cache.
   iree_device_size_t layer_cache_byte_length;
   // Complete request-local device allocation size.
   iree_device_size_t persistent_byte_length;

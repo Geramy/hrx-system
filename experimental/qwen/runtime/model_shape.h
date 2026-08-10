@@ -59,11 +59,19 @@ extern "C" {
 // Largest K/V context accepted by the current attention kernel corpus.
 #define QWEN_MODEL_MAX_CONTEXT_CAPACITY 32768
 
+// Physical K/V cache row granularity used by tiled attention loads.
+#define QWEN_MODEL_KEY_VALUE_CACHE_TILE_ROWS 64
+
 // Returns the byte length of one dense F32 hidden-state tensor.
 iree_status_t qwen_model_hidden_state_byte_length(
     iree_host_size_t token_count, iree_device_size_t* out_byte_length);
 
-// Returns the byte length of one layer's F16 K cache or V cache.
+// Returns the byte length of one layer's tile-padded F16 K or V cache.
+//
+// |context_capacity| remains the exact logical row limit. Physical storage is
+// rounded up to QWEN_MODEL_KEY_VALUE_CACHE_TILE_ROWS so attention can issue
+// full-tile vector loads at every logical position. The padded suffix is
+// initialized to zero with the rest of request-local K/V storage.
 iree_status_t qwen_model_layer_cache_byte_length(
     iree_host_size_t context_capacity, iree_device_size_t* out_byte_length);
 

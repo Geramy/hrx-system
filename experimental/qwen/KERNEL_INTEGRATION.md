@@ -344,8 +344,9 @@ Use the same command with counts such as 32 or 128 and their matching external
 prefill oracle to compare resident `Owned/Prefill/32` and
 `Command/Prefill/32`, or the corresponding 128-row pair. Decode comparison is
 registered only for a 512-token prefill: both implementations then use the
-same 576-row compiled attention schedule while issuing the token at position
-512.
+same 513-row visible prefix. The command program computes nine 64-row producer
+blocks at issue time while retaining the prepared package's K/V storage
+capacity.
 
 Model files and token fixtures are intentionally not repository inputs. The
 authored kernel cases use bounded synthetic packed data, so individual kernels

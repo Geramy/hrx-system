@@ -65,17 +65,20 @@ build_tools/bin/iree-bazel-run //experimental/qwen/binding/cli:qwen-cli -- \
 
 The generation lane prepares one command-program package while the asynchronous
 model gather is in flight. The package contains exact PP32, PP64, PP128, PP256,
-and PP512 roots over one authored prefill body plus one reusable Decode-576
-root. A formatted prompt must currently encode to one of those exact prefill
-sizes, and the prompt plus generated continuation must fit the 576-row command
-capacity. Unsupported shapes fail before program issue without entering the
-owned recorder.
+and PP512 roots over one authored prefill body plus one dynamic decode root. A
+formatted prompt must currently encode to one of those exact prefill sizes, and
+the prompt plus generated continuation must fit `--context_capacity` (576 by
+default). The capacity specializes K/V placement, transient storage, and
+attention algorithm selection; it is not part of the root name and need not be
+rounded to a tile boundary. Unsupported shapes fail before program issue
+without entering the owned recorder.
 
-The active position lives only in device request control and advances at the
-greedy endpoint. Decode-576 treats 576 as its compiled attention and cache
-capacity; device-produced metadata masks the inactive suffix, so every
-continuation position reuses the same recorded command buffer without
-host-side compilation, launch evaluation, or recording between tokens.
+The request owner publishes the active prefix to both a 12-byte indirect-launch
+tuple and device request control. All 48 attention dispatches share that tuple,
+whose x count is `ceildiv(visible_context_count, 64)`. The mask-free device
+kernel consumes only that visible prefix. Every continuation position reuses
+the same recorded command buffer without host-side compilation, linking,
+parameter lookup, or recording between tokens.
 
 ## Qwen-owned endpoints and attention-tail workaround
 

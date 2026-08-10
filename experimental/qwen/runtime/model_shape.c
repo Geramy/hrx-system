@@ -49,8 +49,12 @@ iree_status_t qwen_model_layer_cache_byte_length(
                             context_capacity, QWEN_MODEL_MAX_CONTEXT_CAPACITY);
   }
 
+  const iree_host_size_t storage_capacity =
+      ((context_capacity + QWEN_MODEL_KEY_VALUE_CACHE_TILE_ROWS - 1) /
+       QWEN_MODEL_KEY_VALUE_CACHE_TILE_ROWS) *
+      QWEN_MODEL_KEY_VALUE_CACHE_TILE_ROWS;
   iree_device_size_t element_count = 0;
-  if (!iree_device_size_checked_mul((iree_device_size_t)context_capacity,
+  if (!iree_device_size_checked_mul((iree_device_size_t)storage_capacity,
                                     QWEN_MODEL_KEY_VALUE_HEAD_COUNT,
                                     &element_count) ||
       !iree_device_size_checked_mul(element_count, QWEN_MODEL_HEAD_SIZE,

@@ -46,20 +46,28 @@ roughly:
 
 ```loom
 config.def @qwen3_moe.model.hidden_size = 2048 : index
-config.def @qwen3_moe.router.expert_count = 128 : index
+config.decl @qwen3_moe.attention.key_value_token_capacity :
+    %value: index where [range(%value, 64, 32768)]
 
-kernel.decl @qwen_attention_metadata(
-    %token_count: index, %context_capacity: index)
-    launch(%token_count: index, %context_capacity: index,
-           %control: buffer, %positions: buffer, ...)
+kernel.decl @qwen_decode_attention_metadata()
+    launch(%control: buffer, %positions: buffer, ...)
 
-command.program.def public @qwen3_30b_decode_576()
+command.program.def public @qwen3_30b_decode(
+    %visible_context_count: index)
     launch(%parameters: buffer,
            %auxiliary_parameters: buffer,
            %key_cache: buffer,
            %value_cache: buffer,
            %request_state: buffer,
-           %output_staging: buffer) {
+           %output_staging: buffer)
+    where [range(%visible_context_count, 1, 2048)] {
+  %context_capacity0 = config.get
+      @qwen3_moe.attention.key_value_token_capacity : index
+  %context_capacity, %active_context_count = index.assume
+      %context_capacity0, %visible_context_count
+      [range(%context_capacity0, 512, 2048),
+       le(%visible_context_count, %context_capacity0)] : index, index
+
   %output_weight = command.parameter
       %parameters, "output.weight"[] : view<255252480xi8, #dense>
 
@@ -68,7 +76,8 @@ command.program.def public @qwen3_30b_decode_576()
   } : buffer
 
   scf.for %layer = [%layer_begin to %layer_end step %layer_step] unroll {
-    // Parameter queries, views, typed kernel launches, and explicit ordering.
+    // Parameter queries, capacity-sized K/V views, typed launches, and
+    // explicit ordering. Every attention launch uses %active_context_count.
   }
 
   kernel.launch @qwen_greedy_argmax_partials[...] (...) : [...](...)
@@ -88,6 +97,13 @@ classes can share the same kernel definitions and compiled dependency units.
 Root selection and dead-code elimination determine which units are actually
 produced; the API does not compile every program in a library eagerly.
 
+The K/V capacity is a package specialization fact, while the visible prefix is
+an issue-time workload argument. Capacity controls storage placement and
+algorithm selection; it is neither a root name nor a token-position bucket.
+Canonicalization and CSE reduce the 48 identical attention launch formulas to
+one xyz tuple, so all positions up to the configured capacity reuse one
+recorded command buffer.
+
 ## Resource and invocation ABI
 
 The compiler derives the command-buffer ABI from provenance instead of asking
@@ -101,18 +117,21 @@ the hosting framework to duplicate it:
 | Host-dynamic launch values | Evaluated together into a small mapped host-local/device-visible workgroup-count table consumed by static indirect dispatches. Equivalent launch tuples are computed once. |
 | Device-produced launch values | A future dynamic-indirect path; no device-to-host routing readback is required by the program representation. |
 
-For the current decode root the compiler reports two fixed parameter roots,
-580 concrete parameter ranges, five rebindable bindings, and one 209,152-byte
-transient slab aligned to 256 bytes. The main GGUF-derived fixed root requires
-18,550,716,416 bytes; the auxiliary root requires 256 bytes. These are queried
-from the compiled program rather than copied into llama.cpp tables.
+At the default 576-row capacity, the current decode root reports two fixed
+parameter roots, 580 concrete parameter ranges, six rebindable bindings, one
+197,376-byte transient slab aligned to 256 bytes, and one 12-byte launch-count
+table aligned to 4 bytes. The main GGUF-derived fixed root requires
+18,550,716,416 bytes; the auxiliary root requires 256 bytes. An exact 577-row
+capacity grows only the transient slab to 214,272 bytes because it needs a
+tenth attention tile. These values are queried from the compiled program
+rather than copied into llama.cpp tables.
 
 ## Public C lifecycle
 
 The public API deliberately separates planning, independent production, and
 materialization. The omitted setup and cleanup below are conventional Loom C
 handle ownership; the complete exercised call sequence is in
-[`runtime/decode_command_program_test.cc`](runtime/decode_command_program_test.cc).
+[`runtime/command_package_test.cc`](runtime/command_package_test.cc).
 
 ### 1. Prepare one immutable multi-root plan
 
@@ -199,7 +218,7 @@ ancillary units and may export several roots that share them.
 ```c
 loomc_program_export_t root_export;
 loomc_program_lookup_export(program,
-                            loomc_make_cstring_view("qwen3_30b_decode_576"),
+                            loomc_make_cstring_view("qwen3_30b_decode"),
                             &root_export);
 
 loomc_cmd_program_t* command_program = NULL;
@@ -292,21 +311,25 @@ command representation and issue path do not change.
 The generic command-program stack executes reusable multi-root command buffers
 on AMDGPU through the public APIs above. The production Qwen package now owns
 six roots: exact PP32, PP64, PP128, PP256, and PP512 programs over one authored
-prefill body plus Decode-576. The compiler partitions and deduplicates their
-kernel dependencies, compiles independent units concurrently, assembles the
-selected root set, loads one shared HAL package, validates every fixed
-parameter range against the live model slab, and records one reusable command
-buffer per root.
+prefill body plus one dynamic decode program. The compiler partitions and
+deduplicates their kernel dependencies, compiles independent units
+concurrently, assembles the selected root set, loads one shared HAL package,
+validates every fixed parameter range against the live model slab, and records
+one reusable command buffer per root.
 
 `qwen_command_package_prepare` owns that cold path and runs while the model
 gather is in flight. `qwen_command_package_issue` supplies the KV caches,
 request state, output staging, and packed transient slab through the reported
-binding table. Every issue submits an existing recording without a graph walk,
-compilation, launch evaluation, parameter lookup, allocation planning, or
-command recording.
+binding table. Decode issue also evaluates one allocation-free, lock-free
+launch function into the persistent 12-byte indirect table. Every issue submits
+an existing recording without a graph walk, compilation, parameter lookup,
+allocation planning, or command recording.
 
 Both the raw-token fixture CLI and the tokenizer-backed `qwen-cli` execute only
-through that package. A live PP32 text run issued one prefill and seven
-Decode-576 continuations; all eight token IDs matched the independent owned
-runner. The smaller PP32 to Decode-576 boundary and the existing PP512 to
-Decode-576 boundary also reproduce their owned full-model selected tokens.
+through that package. Live PP32 text runs issued one prefill and seven dynamic
+decode continuations at exact 576- and 577-row capacities; both produced the
+accepted token IDs `151667, 198, 32313, 11, 279, 1196, 6801, 264`. Public
+launch evaluation maps visible counts 1, 64, 65, 256, 513, 576, and 577 to x
+counts 1, 1, 2, 4, 9, 9, and 10. The mask-free attention kernel executes the
+same boundary set against one 577-row K/V allocation, and every decode position
+uses the same materialized command buffer.
