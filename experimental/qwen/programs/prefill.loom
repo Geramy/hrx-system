@@ -195,20 +195,6 @@ command.program.def @qwen3_30b_prefill(%token_count: index) launch(%parameters: 
     %routed_projection_elements = index.mul %route_elements, %hidden_size : index
     %f16_bytes = index.constant 2 : offset
     %routed_projection_bytes = index.scale %routed_projection_elements, %f16_bytes : index, offset -> offset
-    %raw_query = buffer.alloca %raw_query_bytes {base_alignment = 256, memory_space = global} : buffer
-    %raw_key = buffer.alloca %raw_key_value_bytes {base_alignment = 256, memory_space = global} : buffer
-    %raw_value = buffer.alloca %raw_key_value_bytes {base_alignment = 256, memory_space = global} : buffer
-    %rotated_query = buffer.alloca %raw_query_bytes {base_alignment = 256, memory_space = global} : buffer
-    %attention_output = buffer.alloca %raw_query_bytes {base_alignment = 256, memory_space = global} : buffer
-    %feed_forward_norm = buffer.alloca %feed_forward_norm_bytes {base_alignment = 256, memory_space = global} : buffer
-    %router_logits = buffer.alloca %router_logits_bytes {base_alignment = 256, memory_space = global} : buffer
-    %route_ids = buffer.alloca %route_ids_bytes {base_alignment = 256, memory_space = global} : buffer
-    %route_weights = buffer.alloca %route_weights_bytes {base_alignment = 256, memory_space = global} : buffer
-    %expert_table = buffer.alloca %expert_table_bytes {base_alignment = 256, memory_space = global} : buffer
-    %partition_table = buffer.alloca %partition_table_bytes {base_alignment = 256, memory_space = global} : buffer
-    %swiglu = buffer.alloca %swiglu_bytes {base_alignment = 256, memory_space = global} : buffer
-    %routed_projection = buffer.alloca %routed_projection_bytes {base_alignment = 256, memory_space = global} : buffer
-
     %layer_cache_relative_offset = index.scale %layer, %layer_cache_stride : index, offset -> offset
     %layer_cache_offset = index.add %layer_cache_base, %layer_cache_relative_offset : offset
     %layer_key_cache = buffer.view %key_cache[%layer_cache_offset] : buffer -> view<589824xi8, #dense>
@@ -229,16 +215,19 @@ command.program.def @qwen3_30b_prefill(%token_count: index) launch(%parameters: 
         %queried_attention_norm = command.parameter %parameters, "blk.{}.attn_norm.weight"[%next_layer] : view<8192xi8, #dense>
         scf.yield %queried_key, %queried_key_norm, %queried_attention_norm : view<589824xi8, #dense>, view<512xi8, #dense>, view<8192xi8, #dense>
       }
-      kernel.launch.serial {
-        kernel.launch.concurrent {
-          kernel.launch @qwen3_moe_dense_linear_q4k_f16_wmma_parameterized[%token_count, %hidden_size, %query_size, %overwrite](%token_count, %hidden_size, %query_size, %overwrite, %projection_input, %query_weight, %raw_query) : [index, index, index, index](index, index, index, index, buffer, view<4718592xi8, #dense>, buffer)
-          kernel.launch @qwen3_moe_dense_linear_q4k_f16_wmma_parameterized[%token_count, %hidden_size, %key_value_size, %overwrite](%token_count, %hidden_size, %key_value_size, %overwrite, %projection_input, %key_weight, %raw_key) : [index, index, index, index](index, index, index, index, buffer, view<589824xi8, #dense>, buffer)
-          kernel.launch @qwen3_moe_dense_linear_q6k_f16_wmma_parameterized[%token_count, %hidden_size, %key_value_size, %overwrite](%token_count, %hidden_size, %key_value_size, %overwrite, %projection_input, %value_weight, %raw_value) : [index, index, index, index](index, index, index, index, buffer, view<860160xi8, #dense>, buffer)
-        }
-        kernel.launch @qwen3_moe_attention_postprocess_f32_f16[%token_count, %context_count](%token_count, %context_count, %positions, %key_cache_indices, %value_cache_indices, %raw_query, %raw_key, %raw_value, %query_norm, %key_norm, %rope_inverse_frequencies, %rotated_query, %layer_key_cache, %layer_value_cache) : [index, index](index, index, view<512xi32, #dense>, view<512xi64, #dense>, view<512xi64, #dense>, buffer, buffer, buffer, view<512xi8, #dense>, view<512xi8, #dense>, view<64xf32, #dense>, buffer, view<589824xi8, #dense>, view<589824xi8, #dense>)
-        kernel.launch @qwen3_moe_flash_attention_f32_f16_wmma[%token_count, %context_count](%token_count, %context_count, %rotated_query, %layer_key_cache, %layer_value_cache, %attention_mask, %attention_output) : [index, index](index, index, buffer, view<589824xi8, #dense>, view<589824xi8, #dense>, view<512x576xi16, #dense>, buffer)
-        kernel.launch @qwen3_moe_dense_linear_q4k_f16_wmma_parameterized[%token_count, %query_size, %hidden_size, %accumulate](%token_count, %query_size, %hidden_size, %accumulate, %attention_output, %attention_output_weight, %hidden_state) : [index, index, index, index](index, index, index, index, buffer, view<4718592xi8, #dense>, view<512x2048xf32, #dense>)
+      %raw_query = buffer.alloca %raw_query_bytes {base_alignment = 256, memory_space = global} : buffer
+      %raw_key = buffer.alloca %raw_key_value_bytes {base_alignment = 256, memory_space = global} : buffer
+      %raw_value = buffer.alloca %raw_key_value_bytes {base_alignment = 256, memory_space = global} : buffer
+      kernel.launch.concurrent {
+        kernel.launch @qwen3_moe_dense_linear_q4k_f16_wmma_parameterized[%token_count, %hidden_size, %query_size, %overwrite](%token_count, %hidden_size, %query_size, %overwrite, %projection_input, %query_weight, %raw_query) : [index, index, index, index](index, index, index, index, buffer, view<4718592xi8, #dense>, buffer)
+        kernel.launch @qwen3_moe_dense_linear_q4k_f16_wmma_parameterized[%token_count, %hidden_size, %key_value_size, %overwrite](%token_count, %hidden_size, %key_value_size, %overwrite, %projection_input, %key_weight, %raw_key) : [index, index, index, index](index, index, index, index, buffer, view<589824xi8, #dense>, buffer)
+        kernel.launch @qwen3_moe_dense_linear_q6k_f16_wmma_parameterized[%token_count, %hidden_size, %key_value_size, %overwrite](%token_count, %hidden_size, %key_value_size, %overwrite, %projection_input, %value_weight, %raw_value) : [index, index, index, index](index, index, index, index, buffer, view<860160xi8, #dense>, buffer)
       }
+      %rotated_query = buffer.alloca %raw_query_bytes {base_alignment = 256, memory_space = global} : buffer
+      kernel.launch @qwen3_moe_attention_postprocess_f32_f16[%token_count, %context_count](%token_count, %context_count, %positions, %key_cache_indices, %value_cache_indices, %raw_query, %raw_key, %raw_value, %query_norm, %key_norm, %rope_inverse_frequencies, %rotated_query, %layer_key_cache, %layer_value_cache) : [index, index](index, index, view<512xi32, #dense>, view<512xi64, #dense>, view<512xi64, #dense>, buffer, buffer, buffer, view<512xi8, #dense>, view<512xi8, #dense>, view<64xf32, #dense>, buffer, view<589824xi8, #dense>, view<589824xi8, #dense>)
+      %attention_output = buffer.alloca %raw_query_bytes {base_alignment = 256, memory_space = global} : buffer
+      kernel.launch @qwen3_moe_flash_attention_f32_f16_wmma[%token_count, %context_count](%token_count, %context_count, %rotated_query, %layer_key_cache, %layer_value_cache, %attention_mask, %attention_output) : [index, index](index, index, buffer, view<589824xi8, #dense>, view<589824xi8, #dense>, view<512x576xi16, #dense>, buffer)
+      kernel.launch @qwen3_moe_dense_linear_q4k_f16_wmma_parameterized[%token_count, %query_size, %hidden_size, %accumulate](%token_count, %query_size, %hidden_size, %accumulate, %attention_output, %attention_output_weight, %hidden_state) : [index, index, index, index](index, index, index, index, buffer, view<4718592xi8, #dense>, view<512x2048xf32, #dense>)
       scf.if %is_last_layer {
         %terminal_norm_bytes = index.constant 8192 : offset
         %terminal_logits_bytes = index.constant 512 : offset
@@ -266,15 +255,21 @@ command.program.def @qwen3_30b_prefill(%token_count: index) launch(%parameters: 
           kernel.launch @qwen3_moe_routed_down_weighted_reduce_f16_f32[%c1](%c1, %terminal_route_weights, %terminal_routed, %last_hidden_state) : [index](index, buffer, buffer, view<2048xf32, #dense>)
         }
       } else {
-        kernel.launch.serial {
-          kernel.launch @qwen3_moe_rmsnorm_f32[%token_count](%token_count, %hidden_state, %feed_forward_norm_weight, %feed_forward_norm) : [index](index, view<512x2048xf32, #dense>, view<8192xi8, #dense>, buffer)
-          kernel.launch @qwen3_moe_router_projection_f32_four_row_wave32[%token_count](%token_count, %feed_forward_norm, %router_weight, %router_logits) : [index](index, buffer, view<1048576xi8, #dense>, buffer)
-          kernel.launch @qwen3_moe_router_top8_f32[%token_count, %route_count](%token_count, %route_count, %router_logits, %route_ids, %route_weights) : [index, index](index, index, buffer, buffer, buffer)
-          kernel.launch @qwen3_moe_build_expert_table_partition_prefill_512[%token_count, %route_count, %route_count, %expert_count](%token_count, %route_count, %route_count, %expert_count, %route_ids, %expert_table, %partition_table, %expert_table_completion) : [index, index, index, index](index, index, index, index, buffer, buffer, buffer, buffer)
-          kernel.launch @qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma[%token_count](%token_count, %feed_forward_norm, %expert_table, %partition_table, %gate_weight, %up_weight, %swiglu) : [index](index, buffer, buffer, buffer, view<113246208xi8, #dense>, view<113246208xi8, #dense>, buffer)
-          kernel.launch @qwen3_moe_routed_down_q6k_f16_wmma_grouped[%token_count](%token_count, %swiglu, %expert_table, %down_weight, %routed_projection) : [index](index, buffer, buffer, view<165150720xi8, #dense>, buffer)
-          kernel.launch @qwen3_moe_routed_down_weighted_reduce_next_rmsnorm_f32[%token_count](%token_count, %route_weights, %routed_projection, %hidden_state, %following_attention_norm, %projection_input) : [index](index, buffer, buffer, view<512x2048xf32, #dense>, view<8192xi8, #dense>, buffer)
-        }
+        %feed_forward_norm = buffer.alloca %feed_forward_norm_bytes {base_alignment = 256, memory_space = global} : buffer
+        kernel.launch @qwen3_moe_rmsnorm_f32[%token_count](%token_count, %hidden_state, %feed_forward_norm_weight, %feed_forward_norm) : [index](index, view<512x2048xf32, #dense>, view<8192xi8, #dense>, buffer)
+        %router_logits = buffer.alloca %router_logits_bytes {base_alignment = 256, memory_space = global} : buffer
+        kernel.launch @qwen3_moe_router_projection_f32_four_row_wave32[%token_count](%token_count, %feed_forward_norm, %router_weight, %router_logits) : [index](index, buffer, view<1048576xi8, #dense>, buffer)
+        %route_ids = buffer.alloca %route_ids_bytes {base_alignment = 256, memory_space = global} : buffer
+        %route_weights = buffer.alloca %route_weights_bytes {base_alignment = 256, memory_space = global} : buffer
+        kernel.launch @qwen3_moe_router_top8_f32[%token_count, %route_count](%token_count, %route_count, %router_logits, %route_ids, %route_weights) : [index, index](index, index, buffer, buffer, buffer)
+        %expert_table = buffer.alloca %expert_table_bytes {base_alignment = 256, memory_space = global} : buffer
+        %partition_table = buffer.alloca %partition_table_bytes {base_alignment = 256, memory_space = global} : buffer
+        kernel.launch @qwen3_moe_build_expert_table_partition_prefill_512[%token_count, %route_count, %route_count, %expert_count](%token_count, %route_count, %route_count, %expert_count, %route_ids, %expert_table, %partition_table, %expert_table_completion) : [index, index, index, index](index, index, index, index, buffer, buffer, buffer, buffer)
+        %swiglu = buffer.alloca %swiglu_bytes {base_alignment = 256, memory_space = global} : buffer
+        kernel.launch @qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma[%token_count](%token_count, %feed_forward_norm, %expert_table, %partition_table, %gate_weight, %up_weight, %swiglu) : [index](index, buffer, buffer, buffer, view<113246208xi8, #dense>, view<113246208xi8, #dense>, buffer)
+        %routed_projection = buffer.alloca %routed_projection_bytes {base_alignment = 256, memory_space = global} : buffer
+        kernel.launch @qwen3_moe_routed_down_q6k_f16_wmma_grouped[%token_count](%token_count, %swiglu, %expert_table, %down_weight, %routed_projection) : [index](index, buffer, buffer, view<165150720xi8, #dense>, buffer)
+        kernel.launch @qwen3_moe_routed_down_weighted_reduce_next_rmsnorm_f32[%token_count](%token_count, %route_weights, %routed_projection, %hidden_state, %following_attention_norm, %projection_input) : [index](index, buffer, buffer, view<512x2048xf32, #dense>, view<8192xi8, #dense>, buffer)
       }
       scf.yield %following_key, %following_key_norm, %following_attention_norm : view<589824xi8, #dense>, view<512xi8, #dense>, view<8192xi8, #dense>
     } else {
@@ -292,16 +287,19 @@ command.program.def @qwen3_30b_prefill(%token_count: index) launch(%parameters: 
         %queried_attention_norm = command.parameter %parameters, "blk.{}.attn_norm.weight"[%next_layer] : view<8192xi8, #dense>
         scf.yield %queried_key, %queried_key_norm, %queried_attention_norm : view<589824xi8, #dense>, view<512xi8, #dense>, view<8192xi8, #dense>
       }
-      kernel.launch.serial {
-        kernel.launch.concurrent {
-          kernel.launch @qwen3_moe_dense_linear_q4k_f16_wmma_parameterized[%token_count, %hidden_size, %query_size, %overwrite](%token_count, %hidden_size, %query_size, %overwrite, %projection_input, %query_weight, %raw_query) : [index, index, index, index](index, index, index, index, buffer, view<4718592xi8, #dense>, buffer)
-          kernel.launch @qwen3_moe_dense_linear_q4k_f16_wmma_parameterized[%token_count, %hidden_size, %key_value_size, %overwrite](%token_count, %hidden_size, %key_value_size, %overwrite, %projection_input, %key_weight, %raw_key) : [index, index, index, index](index, index, index, index, buffer, view<589824xi8, #dense>, buffer)
-          kernel.launch @qwen3_moe_dense_linear_q4k_f16_wmma_parameterized[%token_count, %hidden_size, %key_value_size, %overwrite](%token_count, %hidden_size, %key_value_size, %overwrite, %projection_input, %value_weight, %raw_value) : [index, index, index, index](index, index, index, index, buffer, view<589824xi8, #dense>, buffer)
-        }
-        kernel.launch @qwen3_moe_attention_postprocess_f32_f16[%token_count, %context_count](%token_count, %context_count, %positions, %key_cache_indices, %value_cache_indices, %raw_query, %raw_key, %raw_value, %query_norm, %key_norm, %rope_inverse_frequencies, %rotated_query, %layer_key_cache, %layer_value_cache) : [index, index](index, index, view<512xi32, #dense>, view<512xi64, #dense>, view<512xi64, #dense>, buffer, buffer, buffer, view<512xi8, #dense>, view<512xi8, #dense>, view<64xf32, #dense>, buffer, view<589824xi8, #dense>, view<589824xi8, #dense>)
-        kernel.launch @qwen3_moe_flash_attention_f32_f16_wmma[%token_count, %context_count](%token_count, %context_count, %rotated_query, %layer_key_cache, %layer_value_cache, %attention_mask, %attention_output) : [index, index](index, index, buffer, view<589824xi8, #dense>, view<589824xi8, #dense>, view<512x576xi16, #dense>, buffer)
-        kernel.launch @qwen3_moe_dense_linear_q4k_f16_wmma_parameterized[%token_count, %query_size, %hidden_size, %accumulate](%token_count, %query_size, %hidden_size, %accumulate, %attention_output, %attention_output_weight, %hidden_state) : [index, index, index, index](index, index, index, index, buffer, view<4718592xi8, #dense>, view<512x2048xf32, #dense>)
+      %raw_query = buffer.alloca %raw_query_bytes {base_alignment = 256, memory_space = global} : buffer
+      %raw_key = buffer.alloca %raw_key_value_bytes {base_alignment = 256, memory_space = global} : buffer
+      %raw_value = buffer.alloca %raw_key_value_bytes {base_alignment = 256, memory_space = global} : buffer
+      kernel.launch.concurrent {
+        kernel.launch @qwen3_moe_dense_linear_q4k_f16_wmma_parameterized[%token_count, %hidden_size, %query_size, %overwrite](%token_count, %hidden_size, %query_size, %overwrite, %projection_input, %query_weight, %raw_query) : [index, index, index, index](index, index, index, index, buffer, view<4718592xi8, #dense>, buffer)
+        kernel.launch @qwen3_moe_dense_linear_q4k_f16_wmma_parameterized[%token_count, %hidden_size, %key_value_size, %overwrite](%token_count, %hidden_size, %key_value_size, %overwrite, %projection_input, %key_weight, %raw_key) : [index, index, index, index](index, index, index, index, buffer, view<589824xi8, #dense>, buffer)
+        kernel.launch @qwen3_moe_dense_linear_q4k_f16_wmma_parameterized[%token_count, %hidden_size, %key_value_size, %overwrite](%token_count, %hidden_size, %key_value_size, %overwrite, %projection_input, %value_weight, %raw_value) : [index, index, index, index](index, index, index, index, buffer, view<589824xi8, #dense>, buffer)
       }
+      %rotated_query = buffer.alloca %raw_query_bytes {base_alignment = 256, memory_space = global} : buffer
+      kernel.launch @qwen3_moe_attention_postprocess_f32_f16[%token_count, %context_count](%token_count, %context_count, %positions, %key_cache_indices, %value_cache_indices, %raw_query, %raw_key, %raw_value, %query_norm, %key_norm, %rope_inverse_frequencies, %rotated_query, %layer_key_cache, %layer_value_cache) : [index, index](index, index, view<512xi32, #dense>, view<512xi64, #dense>, view<512xi64, #dense>, buffer, buffer, buffer, view<512xi8, #dense>, view<512xi8, #dense>, view<64xf32, #dense>, buffer, view<589824xi8, #dense>, view<589824xi8, #dense>)
+      %attention_output = buffer.alloca %raw_query_bytes {base_alignment = 256, memory_space = global} : buffer
+      kernel.launch @qwen3_moe_flash_attention_f32_f16_wmma[%token_count, %context_count](%token_count, %context_count, %rotated_query, %layer_key_cache, %layer_value_cache, %attention_mask, %attention_output) : [index, index](index, index, buffer, view<589824xi8, #dense>, view<589824xi8, #dense>, view<512x576xi16, #dense>, buffer)
+      kernel.launch @qwen3_moe_dense_linear_q4k_f16_wmma_parameterized[%token_count, %query_size, %hidden_size, %accumulate](%token_count, %query_size, %hidden_size, %accumulate, %attention_output, %attention_output_weight, %hidden_state) : [index, index, index, index](index, index, index, index, buffer, view<4718592xi8, #dense>, view<512x2048xf32, #dense>)
       scf.if %is_last_layer {
         %terminal_norm_bytes = index.constant 8192 : offset
         %terminal_logits_bytes = index.constant 512 : offset
@@ -329,15 +327,21 @@ command.program.def @qwen3_30b_prefill(%token_count: index) launch(%parameters: 
           kernel.launch @qwen3_moe_routed_down_weighted_reduce_f16_f32[%c1](%c1, %terminal_route_weights, %terminal_routed, %last_hidden_state) : [index](index, buffer, buffer, view<2048xf32, #dense>)
         }
       } else {
-        kernel.launch.serial {
-          kernel.launch @qwen3_moe_rmsnorm_f32[%token_count](%token_count, %hidden_state, %feed_forward_norm_weight, %feed_forward_norm) : [index](index, view<512x2048xf32, #dense>, view<8192xi8, #dense>, buffer)
-          kernel.launch @qwen3_moe_router_projection_f32_four_row_wave32[%token_count](%token_count, %feed_forward_norm, %router_weight, %router_logits) : [index](index, buffer, view<1048576xi8, #dense>, buffer)
-          kernel.launch @qwen3_moe_router_top8_f32[%token_count, %route_count](%token_count, %route_count, %router_logits, %route_ids, %route_weights) : [index, index](index, index, buffer, buffer, buffer)
-          kernel.launch @qwen3_moe_build_expert_table_partition_prefill_512[%token_count, %route_count, %route_count, %expert_count](%token_count, %route_count, %route_count, %expert_count, %route_ids, %expert_table, %partition_table, %expert_table_completion) : [index, index, index, index](index, index, index, index, buffer, buffer, buffer, buffer)
-          kernel.launch @qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma[%token_count](%token_count, %feed_forward_norm, %expert_table, %partition_table, %gate_weight, %up_weight, %swiglu) : [index](index, buffer, buffer, buffer, view<113246208xi8, #dense>, view<113246208xi8, #dense>, buffer)
-          kernel.launch @qwen3_moe_routed_down_q4k_f16_wmma_grouped[%token_count](%token_count, %swiglu, %expert_table, %down_weight, %routed_projection) : [index](index, buffer, buffer, view<113246208xi8, #dense>, buffer)
-          kernel.launch @qwen3_moe_routed_down_weighted_reduce_next_rmsnorm_f32[%token_count](%token_count, %route_weights, %routed_projection, %hidden_state, %following_attention_norm, %projection_input) : [index](index, buffer, buffer, view<512x2048xf32, #dense>, view<8192xi8, #dense>, buffer)
-        }
+        %feed_forward_norm = buffer.alloca %feed_forward_norm_bytes {base_alignment = 256, memory_space = global} : buffer
+        kernel.launch @qwen3_moe_rmsnorm_f32[%token_count](%token_count, %hidden_state, %feed_forward_norm_weight, %feed_forward_norm) : [index](index, view<512x2048xf32, #dense>, view<8192xi8, #dense>, buffer)
+        %router_logits = buffer.alloca %router_logits_bytes {base_alignment = 256, memory_space = global} : buffer
+        kernel.launch @qwen3_moe_router_projection_f32_four_row_wave32[%token_count](%token_count, %feed_forward_norm, %router_weight, %router_logits) : [index](index, buffer, view<1048576xi8, #dense>, buffer)
+        %route_ids = buffer.alloca %route_ids_bytes {base_alignment = 256, memory_space = global} : buffer
+        %route_weights = buffer.alloca %route_weights_bytes {base_alignment = 256, memory_space = global} : buffer
+        kernel.launch @qwen3_moe_router_top8_f32[%token_count, %route_count](%token_count, %route_count, %router_logits, %route_ids, %route_weights) : [index, index](index, index, buffer, buffer, buffer)
+        %expert_table = buffer.alloca %expert_table_bytes {base_alignment = 256, memory_space = global} : buffer
+        %partition_table = buffer.alloca %partition_table_bytes {base_alignment = 256, memory_space = global} : buffer
+        kernel.launch @qwen3_moe_build_expert_table_partition_prefill_512[%token_count, %route_count, %route_count, %expert_count](%token_count, %route_count, %route_count, %expert_count, %route_ids, %expert_table, %partition_table, %expert_table_completion) : [index, index, index, index](index, index, index, index, buffer, buffer, buffer, buffer)
+        %swiglu = buffer.alloca %swiglu_bytes {base_alignment = 256, memory_space = global} : buffer
+        kernel.launch @qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma[%token_count](%token_count, %feed_forward_norm, %expert_table, %partition_table, %gate_weight, %up_weight, %swiglu) : [index](index, buffer, buffer, buffer, view<113246208xi8, #dense>, view<113246208xi8, #dense>, buffer)
+        %routed_projection = buffer.alloca %routed_projection_bytes {base_alignment = 256, memory_space = global} : buffer
+        kernel.launch @qwen3_moe_routed_down_q4k_f16_wmma_grouped[%token_count](%token_count, %swiglu, %expert_table, %down_weight, %routed_projection) : [index](index, buffer, buffer, view<113246208xi8, #dense>, buffer)
+        kernel.launch @qwen3_moe_routed_down_weighted_reduce_next_rmsnorm_f32[%token_count](%token_count, %route_weights, %routed_projection, %hidden_state, %following_attention_norm, %projection_input) : [index](index, buffer, buffer, view<512x2048xf32, #dense>, view<8192xi8, #dense>, buffer)
       }
       scf.yield %following_key, %following_key_norm, %following_attention_norm : view<589824xi8, #dense>, view<512xi8, #dense>, view<8192xi8, #dense>
     }

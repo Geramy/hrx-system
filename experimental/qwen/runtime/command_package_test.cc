@@ -446,7 +446,7 @@ TEST(QwenCommandPackageTest, CompilesCompleteProductionPlan) {
   EXPECT_EQ(info.parameter_root_count, 2u);
   EXPECT_EQ(info.parameter_count, 580u);
   EXPECT_EQ(info.transient.binding_index, 4u);
-  EXPECT_EQ(info.transient.required_byte_length, 209152u);
+  EXPECT_EQ(info.transient.required_byte_length, 197376u);
   EXPECT_EQ(info.transient.minimum_alignment, 256u);
   EXPECT_EQ(info.launch_counts.binding_index,
             LOOMC_CMD_PROGRAM_BINDING_INVALID);
@@ -585,7 +585,7 @@ TEST(QwenCommandPackageTest, CompilesExactPrefill512Plan) {
   EXPECT_EQ(info.parameter_root_count, 2u);
   EXPECT_EQ(info.parameter_count, 580u);
   EXPECT_EQ(info.transient.binding_index, 4u);
-  EXPECT_EQ(info.transient.required_byte_length, 39845888u);
+  EXPECT_EQ(info.transient.required_byte_length, 39846144u);
   EXPECT_EQ(info.transient.minimum_alignment, 256u);
   EXPECT_EQ(info.launch_counts.binding_index,
             LOOMC_CMD_PROGRAM_BINDING_INVALID);
