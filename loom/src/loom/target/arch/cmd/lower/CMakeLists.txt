@@ -175,8 +175,10 @@ loom_cc_library(
     loom::analysis::symbol_dependencies
     loom::ir
     loom::ops::op_defs
+    loom::pass::value_facts
     loom::rewrite::callable
     loom::rewrite::rewriter
+    loom::transforms::cleanup::canonicalize
   PUBLIC
 )
 
