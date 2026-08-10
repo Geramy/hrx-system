@@ -47,8 +47,9 @@ typedef struct loom_cmd_transient_layout_t {
 // Packs device-global buffer.alloca roots into one issue-time slab.
 //
 // Allocation roots and statically resolved derived views are assigned aligned
-// ranges. Roots whose scheduled-use intervals do not overlap may alias the same
-// bytes; roots used by commands in the same concurrent wave never alias.
+// ranges. A root is live from its allocation definition through its final
+// scheduled use. Non-overlapping roots may alias the same bytes; roots whose
+// definitions or uses share a concurrent wave never alias.
 // Allocation lengths must have finite nonnegative maxima after source
 // specialization. The resulting ranges and requirement remain valid until
 // |scratch_arena| resets.

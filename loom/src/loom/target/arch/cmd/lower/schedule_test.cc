@@ -14,6 +14,7 @@
 #include "loom/format/text/parser.h"
 #include "loom/ir/context.h"
 #include "loom/ir/module.h"
+#include "loom/ops/buffer/ops.h"
 #include "loom/ops/kernel/ops.h"
 #include "loom/ops/op_registry.h"
 #include "loom/testing/module_ptr.h"
@@ -192,6 +193,37 @@ command.program.def @kernel_schedule(%workgroup_count: index) launch(%storage: b
   EXPECT_EQ(CalleeName(module.get(), plan.commands[0]), "a");
   EXPECT_EQ(CalleeName(module.get(), plan.commands[1]), "b");
   EXPECT_EQ(CalleeName(module.get(), plan.commands[2]), "a");
+
+  iree_arena_deinitialize(&arena);
+}
+
+TEST_F(CmdScheduleTest, RecordsAllocationDefinitionWaves) {
+  ModulePtr module = Parse(R"(
+kernel.decl @use() launch(%storage: buffer)
+
+command.program.def @allocation_waves() launch() {
+  %bytes = index.constant 64 : offset
+  %early = buffer.alloca %bytes {base_alignment = 64, memory_space = global} : buffer
+  kernel.launch @use[](%early) : [](buffer)
+  %later = buffer.alloca %bytes {base_alignment = 64, memory_space = global} : buffer
+  kernel.launch @use[](%later) : [](buffer)
+  command.return
+}
+)");
+
+  iree_arena_allocator_t arena;
+  iree_arena_initialize(&block_pool_, &arena);
+  const loom_func_like_t program =
+      FindProgram(module.get(), IREE_SV("allocation_waves"));
+  loom_cmd_schedule_plan_t plan = {};
+  IREE_ASSERT_OK(loom_cmd_schedule_plan_build(
+      module.get(), loom_func_like_body(program), &arena, &plan));
+
+  ASSERT_EQ(plan.allocation_count, 2u);
+  EXPECT_TRUE(loom_buffer_alloca_isa(plan.allocations[0].op));
+  EXPECT_EQ(plan.allocations[0].definition_wave, 0u);
+  EXPECT_TRUE(loom_buffer_alloca_isa(plan.allocations[1].op));
+  EXPECT_EQ(plan.allocations[1].definition_wave, 1u);
 
   iree_arena_deinitialize(&arena);
 }

@@ -284,3 +284,45 @@ low.func.def public retain target<cmd.core> abi(command_program) abi_layout({ent
   cmd.dispatch.direct.barrier<%2, %3>[%6, %6, %6](%0, %4, %5, %1, %4, %5)
   return
 }
+
+// ====
+
+// RUN: emit command-program @allocation_definition_lifetime
+
+kernel.def @copy_one() {
+  %c1 = index.constant 1 : index
+  kernel.launch.config workgroups(%c1, %c1, %c1) workgroup_size(%c1, %c1, %c1) : index
+} launch(%source: buffer, %target: buffer) {
+  %base = index.constant 0 : offset
+  %c0 = index.constant 0 : index
+  %source_view = buffer.view %source[%base] : buffer -> view<1xi32, #dense>
+  %target_view = buffer.view %target[%base] : buffer -> view<1xi32, #dense>
+  %value = view.load %source_view[%c0] : view<1xi32, #dense> -> i32
+  view.store %value, %target_view[%c0] : i32, view<1xi32, #dense>
+  kernel.return
+}
+
+command.program.def public @allocation_definition_lifetime() launch(%source: buffer, %target: buffer) {
+  %bytes = index.constant 64 : offset
+  %persistent = buffer.alloca %bytes {base_alignment = 64, memory_space = global} : buffer
+  %early = buffer.alloca %bytes {base_alignment = 64, memory_space = global} : buffer
+  kernel.launch @copy_one[](%source, %early) : [](buffer, buffer)
+  kernel.launch @copy_one[](%persistent, %target) : [](buffer, buffer)
+  command.return
+}
+
+// ----
+low.func.def public retain target<cmd.core> abi(command_program) abi_layout({entry_count = 1, executable_count = 1, fixed_buffer_count = 0, rebindable_binding_count = 3}) @allocation_definition_lifetime() asm {
+  %0 = resource<command_input> {index = 0, source_type = buffer} : reg<cmd.binding>
+  %1 = resource<command_input> {index = 1, source_type = buffer} : reg<cmd.binding>
+  %2 = resource<command_input> {index = 2, source_type = buffer} : reg<cmd.binding>
+  %3 = resource<command_input> {index = 0, source_type = index} : reg<cmd.executable>
+  %4 = resource<command_input> {index = 0, source_type = index} : reg<cmd.entry>
+  %5 = cmd.constant.u64 0
+  %6 = cmd.constant.u64 -1
+  %7 = cmd.constant.u64 64
+  %8 = cmd.constant.u32 1
+  cmd.dispatch.direct<%3, %4>[%8, %8, %8](%0, %5, %6, %2, %7, %7)
+  cmd.dispatch.direct.barrier<%3, %4>[%8, %8, %8](%2, %5, %7, %1, %5, %6)
+  return
+}

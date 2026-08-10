@@ -244,6 +244,7 @@ loom_cc_test(
     iree::testing::gtest_main
     loom::format::text::parser
     loom::ir
+    loom::ops::buffer
     loom::ops::kernel
     loom::ops::op_registry
     loom::testing::module_ptr

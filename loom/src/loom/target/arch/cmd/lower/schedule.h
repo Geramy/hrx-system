@@ -28,6 +28,14 @@ typedef struct loom_cmd_schedule_wave_t {
   iree_host_size_t command_count;
 } loom_cmd_schedule_wave_t;
 
+// One transient allocation definition in a portable command schedule.
+typedef struct loom_cmd_schedule_allocation_t {
+  // Source buffer.alloca operation defining the storage identity.
+  const loom_op_t* op;
+  // First wave during which the defined storage identity exists.
+  iree_host_size_t definition_wave;
+} loom_cmd_schedule_allocation_t;
+
 // Flattened portable schedule for one command-program body.
 //
 // All storage is owned by the arena passed to loom_cmd_schedule_plan_build.
@@ -40,6 +48,10 @@ typedef struct loom_cmd_schedule_plan_t {
   const loom_cmd_schedule_wave_t* waves;
   // Number of ordered waves.
   iree_host_size_t wave_count;
+  // Source allocation definitions in traversal order.
+  const loom_cmd_schedule_allocation_t* allocations;
+  // Number of entries in |allocations|.
+  iree_host_size_t allocation_count;
 } loom_cmd_schedule_plan_t;
 
 // Builds the portable wave schedule for a command-program body.
@@ -48,10 +60,12 @@ typedef struct loom_cmd_schedule_plan_t {
 // ordered. Siblings in concurrent launch-schedule regions begin in the same
 // wave; nested serial spans are aligned by wave index, which may conservatively
 // add cross-sibling dependencies. The kernel.launch and command schedule ops
-// are equivalent structured scheduling forms. Pure leaf dataflow is ignored
-// because it emits no command; the launch plan owns any values it contributes
-// to dispatch metadata. Other residual source operations must have been
-// specialized away and are rejected.
+// are equivalent structured scheduling forms. Allocation definitions retain
+// their first possible wave so storage planning can preserve state from
+// definition through last use. Pure leaf dataflow is ignored because it emits
+// no command; the launch plan owns any values it contributes to dispatch
+// metadata. Other residual source operations must have been specialized away
+// and are rejected.
 iree_status_t loom_cmd_schedule_plan_build(const loom_module_t* module,
                                            loom_region_t* program_body,
                                            iree_arena_allocator_t* arena,

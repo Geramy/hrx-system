@@ -167,7 +167,6 @@ command.program.def public @attention_wave() launch(%source: buffer, %target: bu
   %query = buffer.alloca %branch_bytes {base_alignment = 64, memory_space = global} : buffer
   %key = buffer.alloca %branch_bytes {base_alignment = 256, memory_space = global} : buffer
   %value = buffer.alloca %branch_bytes {base_alignment = 64, memory_space = global} : buffer
-  %post = buffer.alloca %post_bytes {base_alignment = 256, memory_space = global} : buffer
   %unused = buffer.alloca %unused_bytes {base_alignment = 4096, memory_space = global} : buffer
   command.concurrent {
     kernel.launch @copy_one[](%source, %query) : [](buffer, buffer)
@@ -175,6 +174,7 @@ command.program.def public @attention_wave() launch(%source: buffer, %target: bu
     kernel.launch @copy_one[](%source, %value) : [](buffer, buffer)
   }
   kernel.launch @sum_three[](%query, %key, %value, %target) : [](buffer, buffer, buffer, buffer)
+  %post = buffer.alloca %post_bytes {base_alignment = 256, memory_space = global} : buffer
   kernel.launch @copy_one[](%source, %post) : [](buffer, buffer)
   kernel.launch @copy_one[](%post, %target) : [](buffer, buffer)
   command.return

@@ -61,6 +61,12 @@ typedef struct loom_cmd_schedule_build_t {
   iree_host_size_t command_count;
   // Number of allocated command rows.
   iree_host_size_t command_capacity;
+  // Allocation definitions accumulated in source traversal order.
+  loom_cmd_schedule_allocation_t* allocations;
+  // Number of accumulated allocation definitions.
+  iree_host_size_t allocation_count;
+  // Number of allocated allocation rows.
+  iree_host_size_t allocation_capacity;
 } loom_cmd_schedule_build_t;
 
 static iree_status_t loom_cmd_schedule_reserve_frames(
@@ -81,6 +87,17 @@ static iree_status_t loom_cmd_schedule_reserve_commands(
                                required_count, sizeof(*build->commands),
                                &build->command_capacity,
                                (void**)&build->commands);
+}
+
+static iree_status_t loom_cmd_schedule_reserve_allocations(
+    loom_cmd_schedule_build_t* build, iree_host_size_t additional_count) {
+  const iree_host_size_t required_count =
+      build->allocation_count + additional_count;
+  if (required_count <= build->allocation_capacity) return iree_ok_status();
+  return iree_arena_grow_array(build->arena, build->allocation_count,
+                               required_count, sizeof(*build->allocations),
+                               &build->allocation_capacity,
+                               (void**)&build->allocations);
 }
 
 static iree_status_t loom_cmd_schedule_push_frame(
@@ -129,6 +146,18 @@ static iree_status_t loom_cmd_schedule_append_command(
   return iree_ok_status();
 }
 
+static iree_status_t loom_cmd_schedule_append_allocation(
+    loom_cmd_schedule_build_t* build, const loom_cmd_schedule_frame_t* frame,
+    const loom_op_t* op) {
+  IREE_RETURN_IF_ERROR(loom_cmd_schedule_reserve_allocations(build, 1));
+  build->allocations[build->allocation_count++] =
+      (loom_cmd_schedule_allocation_t){
+          .op = op,
+          .definition_wave = loom_cmd_schedule_child_base_wave(frame),
+      };
+  return iree_ok_status();
+}
+
 static bool loom_cmd_schedule_is_terminator(const loom_op_t* op) {
   return loom_command_return_isa(op) || loom_command_yield_isa(op) ||
          loom_kernel_launch_yield_isa(op);
@@ -140,12 +169,16 @@ static iree_status_t loom_cmd_schedule_build_commands(
   *out_wave_count = 0;
   build->frame_capacity = LOOM_CMD_SCHEDULE_INITIAL_CAPACITY;
   build->command_capacity = LOOM_CMD_SCHEDULE_INITIAL_CAPACITY;
+  build->allocation_capacity = LOOM_CMD_SCHEDULE_INITIAL_CAPACITY;
   IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
       build->arena, build->frame_capacity, sizeof(*build->frames),
       (void**)&build->frames));
   IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
       build->arena, build->command_capacity, sizeof(*build->commands),
       (void**)&build->commands));
+  IREE_RETURN_IF_ERROR(iree_arena_allocate_array(
+      build->arena, build->allocation_capacity, sizeof(*build->allocations),
+      (void**)&build->allocations));
   IREE_RETURN_IF_ERROR(loom_cmd_schedule_push_frame(
       build, program_body, /*base_wave=*/0, LOOM_CMD_SCHEDULE_MODE_SERIAL));
 
@@ -184,8 +217,8 @@ static iree_status_t loom_cmd_schedule_build_commands(
       IREE_RETURN_IF_ERROR(loom_cmd_schedule_append_command(build, frame, op));
       continue;
     } else if (loom_buffer_alloca_isa(op)) {
-      // Allocation declarations contribute to the transient frame but do not
-      // themselves emit executable commands.
+      IREE_RETURN_IF_ERROR(
+          loom_cmd_schedule_append_allocation(build, frame, op));
       continue;
     } else if (op->region_count == 0 &&
                iree_any_bit_set(loom_op_effective_traits(build->module, op),
@@ -249,6 +282,8 @@ static iree_status_t loom_cmd_schedule_group_waves(
       .command_count = build->command_count,
       .waves = waves,
       .wave_count = wave_count,
+      .allocations = build->allocations,
+      .allocation_count = build->allocation_count,
   };
   return iree_ok_status();
 }

@@ -30,7 +30,10 @@ typedef struct loom_cmd_transient_allocation_t {
   // Minimum byte alignment of the allocation root.
   uint64_t base_alignment;
 
-  // First scheduled wave that may access the allocation.
+  // First wave during which the allocation identity exists.
+  iree_host_size_t definition_wave;
+
+  // First scheduled wave during which the allocation is live.
   iree_host_size_t first_wave;
 
   // Last scheduled wave that may access the allocation.
@@ -166,7 +169,8 @@ static iree_status_t loom_cmd_transient_append_range(
 }
 
 static iree_status_t loom_cmd_transient_collect_allocation(
-    loom_cmd_transient_build_t* build, const loom_op_t* op) {
+    loom_cmd_transient_build_t* build, const loom_op_t* op,
+    iree_host_size_t definition_wave) {
   const loom_value_fact_memory_space_t memory_space =
       loom_buffer_alloca_memory_space(op);
   if (memory_space != LOOM_VALUE_FACT_MEMORY_SPACE_GLOBAL) {
@@ -200,6 +204,7 @@ static iree_status_t loom_cmd_transient_collect_allocation(
       .root_value = loom_buffer_alloca_result(op),
       .byte_length = byte_length,
       .base_alignment = base_alignment,
+      .definition_wave = definition_wave,
       .first_wave = IREE_HOST_SIZE_MAX,
       .source_ordinal = build->allocation_count - 1,
   };
@@ -235,7 +240,8 @@ static void loom_cmd_transient_mark_launch_uses(
     loom_cmd_transient_allocation_t* allocation =
         loom_cmd_transient_find_mutable_allocation(build, root_value);
     if (!allocation) continue;
-    allocation->first_wave = iree_min(allocation->first_wave, wave_index);
+    IREE_ASSERT_LE(allocation->definition_wave, wave_index);
+    allocation->first_wave = allocation->definition_wave;
     allocation->last_wave = iree_max(allocation->last_wave, wave_index);
   }
 }
@@ -456,19 +462,6 @@ static iree_status_t loom_cmd_transient_append_result_range(
       build, result, allocation, /*byte_offset=*/0, allocation->byte_length);
 }
 
-static iree_status_t loom_cmd_transient_collect_visit(
-    void* user_data, loom_op_t* op, const loom_walk_context_t* context,
-    loom_walk_result_t* out_result) {
-  (void)context;
-  *out_result = LOOM_WALK_CONTINUE;
-  loom_cmd_transient_build_t* build = (loom_cmd_transient_build_t*)user_data;
-  if (loom_buffer_alloca_isa(op)) {
-    return loom_cmd_transient_collect_allocation(build, op);
-  }
-
-  return iree_ok_status();
-}
-
 static iree_status_t loom_cmd_transient_range_visit(
     void* user_data, loom_op_t* op, const loom_walk_context_t* context,
     loom_walk_result_t* out_result) {
@@ -503,14 +496,14 @@ iree_status_t loom_cmd_transient_layout_build(
       .binding_index = binding_index,
       .scratch_arena = scratch_arena,
   };
-  loom_walk_result_t walk_result = LOOM_WALK_CONTINUE;
-  IREE_RETURN_IF_ERROR(loom_walk_function(
-      module, program, LOOM_WALK_PRE_ORDER,
-      (loom_walk_callback_t){loom_cmd_transient_collect_visit, &build},
-      scratch_arena, &walk_result));
-  IREE_ASSERT_EQ(walk_result, LOOM_WALK_CONTINUE);
+  for (iree_host_size_t i = 0; i < schedule->allocation_count; ++i) {
+    const loom_cmd_schedule_allocation_t allocation = schedule->allocations[i];
+    IREE_RETURN_IF_ERROR(loom_cmd_transient_collect_allocation(
+        &build, allocation.op, allocation.definition_wave));
+  }
   loom_cmd_transient_mark_scheduled_uses(&build, schedule);
   IREE_RETURN_IF_ERROR(loom_cmd_transient_pack_allocations(&build));
+  loom_walk_result_t walk_result = LOOM_WALK_CONTINUE;
   IREE_RETURN_IF_ERROR(loom_walk_function(
       module, program, LOOM_WALK_PRE_ORDER,
       (loom_walk_callback_t){loom_cmd_transient_range_visit, &build},
