@@ -63,7 +63,13 @@ loom_link_module(
         "//experimental/qwen/kernels:vocabulary_projection_q6_runtime_module",
     ],
     mode = "selective",
-    roots = ["@qwen3_30b_prefill_512"],
+    roots = [
+        "@qwen3_30b_prefill_32",
+        "@qwen3_30b_prefill_64",
+        "@qwen3_30b_prefill_128",
+        "@qwen3_30b_prefill_256",
+        "@qwen3_30b_prefill_512",
+    ],
     strip_check = True,
 )
 
@@ -107,6 +113,10 @@ loom_link_module(
     mode = "selective",
     roots = [
         "@qwen3_30b_decode_576",
+        "@qwen3_30b_prefill_32",
+        "@qwen3_30b_prefill_64",
+        "@qwen3_30b_prefill_128",
+        "@qwen3_30b_prefill_256",
         "@qwen3_30b_prefill_512",
     ],
     strip_check = True,

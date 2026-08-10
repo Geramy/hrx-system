@@ -298,6 +298,23 @@ static const loomc_artifact_t* FindCommandArtifact(
   return nullptr;
 }
 
+struct PrefillShape {
+  // Exact public command-program export.
+  const char* export_name;
+  // Number of independently compiled dependencies selected by the root.
+  loomc_host_size_t dependency_count;
+  // Packed transient backing-store requirement.
+  uint64_t transient_byte_length;
+};
+
+static constexpr PrefillShape kPrefillShapes[] = {
+    {"qwen3_30b_prefill_32", 28, 2490368},
+    {"qwen3_30b_prefill_64", 28, 4980736},
+    {"qwen3_30b_prefill_128", 28, 9961472},
+    {"qwen3_30b_prefill_256", 28, 19922944},
+    {"qwen3_30b_prefill_512", 27, 39846144},
+};
+
 TEST(QwenCommandPackageTest, SpecializesExactDenseProjectionShapes) {
   TargetEnvironmentPtr target_environment = CreateTargetEnvironment();
   ContextPtr context = CreateContext(target_environment.get());
@@ -564,7 +581,7 @@ TEST(QwenCommandPackageTest, CompilesCompleteProductionPlan) {
   EXPECT_GT(command_artifact->contents.data_length, 0u);
 }
 
-TEST(QwenCommandPackageTest, CompilesExactPrefill512Plan) {
+TEST(QwenCommandPackageTest, PlansExactPrefillShapeFamily) {
   TargetEnvironmentPtr target_environment = CreateTargetEnvironment();
   ContextPtr context = CreateContext(target_environment.get());
   WorkspacePtr coordinator_workspace = CreateWorkspace();
@@ -619,86 +636,22 @@ TEST(QwenCommandPackageTest, CompilesExactPrefill512Plan) {
   ASSERT_TRUE(
       ResultSucceeded(prepare_result.get(), "prefill plan preparation"));
 
-  ASSERT_EQ(loomc_program_plan_root_count(plan.get()), 1u);
-  loomc_program_plan_root_t root = loomc_program_plan_root_invalid();
-  LOOMC_ASSERT_OK(loomc_program_plan_lookup_root(
-      plan.get(), loomc_make_cstring_view("qwen3_30b_prefill_512"), &root));
-  loomc_program_plan_root_info_t root_info = {
-      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_ROOT_INFO,
-      /*.structure_size=*/sizeof(root_info),
-  };
-  LOOMC_ASSERT_OK(loomc_program_plan_root_info(plan.get(), root, &root_info));
-  EXPECT_EQ(root_info.dependency_count, 27u);
-
-  std::vector<ProgramPtr> unit_programs;
-  std::vector<loomc_program_t*> unit_table_values;
-  const loomc_host_size_t unit_count =
-      loomc_program_plan_unit_count(plan.get());
-  ASSERT_EQ(unit_count, 28u);
-  unit_programs.reserve(unit_count);
-  unit_table_values.reserve(unit_count);
-  for (loomc_host_size_t i = 0; i < unit_count; ++i) {
-    WorkspacePtr worker_workspace = CreateWorkspace();
-    loomc_program_t* raw_program = nullptr;
-    raw_result = nullptr;
-    LOOMC_ASSERT_OK(loomc_program_plan_compile_unit(
-        plan.get(), worker_workspace.get(),
-        loomc_program_plan_unit_from_index(static_cast<uint32_t>(i)),
-        /*options=*/nullptr, loomc_allocator_system(), &raw_program,
-        &raw_result));
-    ProgramPtr program(raw_program);
-    ResultPtr result(raw_result);
-    ASSERT_TRUE(
-        ResultSucceeded(result.get(), "prefill unit " + std::to_string(i)));
-    unit_table_values.push_back(program.get());
-    unit_programs.push_back(std::move(program));
+  ASSERT_EQ(loomc_program_plan_root_count(plan.get()),
+            std::size(kPrefillShapes));
+  for (const PrefillShape& shape : kPrefillShapes) {
+    loomc_program_plan_root_t root = loomc_program_plan_root_invalid();
+    LOOMC_ASSERT_OK(loomc_program_plan_lookup_root(
+        plan.get(), loomc_make_cstring_view(shape.export_name), &root));
+    loomc_program_plan_root_info_t root_info = {
+        /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_ROOT_INFO,
+        /*.structure_size=*/sizeof(root_info),
+    };
+    LOOMC_ASSERT_OK(loomc_program_plan_root_info(plan.get(), root, &root_info));
+    EXPECT_EQ(root_info.dependency_count, shape.dependency_count)
+        << shape.export_name;
   }
 
-  const loomc_program_plan_unit_table_t unit_table = {
-      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_UNIT_TABLE,
-      /*.structure_size=*/sizeof(unit_table),
-      /*.next=*/nullptr,
-      /*.programs=*/unit_table_values.data(),
-      /*.program_count=*/unit_table_values.size(),
-  };
-  loomc_program_t* raw_assembled_program = nullptr;
-  loomc_result_t* raw_assemble_result = nullptr;
-  LOOMC_ASSERT_OK(loomc_program_plan_assemble(
-      plan.get(), coordinator_workspace.get(), &root, 1, &unit_table,
-      /*options=*/nullptr, loomc_allocator_system(), &raw_assembled_program,
-      &raw_assemble_result));
-  ProgramPtr assembled_program(raw_assembled_program);
-  ResultPtr assemble_result(raw_assemble_result);
-  ASSERT_TRUE(ResultSucceeded(assemble_result.get(), "prefill plan assembly"));
-
-  loomc_program_export_t root_export = loomc_program_export_invalid();
-  LOOMC_ASSERT_OK(loomc_program_lookup_export(
-      assembled_program.get(), loomc_make_cstring_view("qwen3_30b_prefill_512"),
-      &root_export));
-  loomc_cmd_program_t* raw_command_program = nullptr;
-  LOOMC_ASSERT_OK(loomc_cmd_program_create_from_export(
-      assembled_program.get(), root_export, loomc_allocator_system(),
-      &raw_command_program));
-  CmdProgramPtr command_program(raw_command_program);
-  loomc_cmd_program_info_t info = {
-      /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_INFO,
-      /*.structure_size=*/sizeof(info),
-  };
-  LOOMC_ASSERT_OK(loomc_cmd_program_info(command_program.get(), &info));
-  EXPECT_EQ(info.fixed_buffer_count, 2u);
-  EXPECT_EQ(info.rebindable_binding_count, 5u);
-  EXPECT_EQ(info.parameter_root_count, 2u);
-  EXPECT_EQ(info.parameter_count, 580u);
-  EXPECT_EQ(info.transient.binding_index, 4u);
-  EXPECT_EQ(info.transient.required_byte_length, 39846144u);
-  EXPECT_EQ(info.transient.minimum_alignment, 256u);
-  EXPECT_EQ(info.launch_counts.binding_index,
-            LOOMC_CMD_PROGRAM_BINDING_INVALID);
-
-  const loomc_artifact_t* command_artifact =
-      FindCommandArtifact(assembled_program.get(), "qwen3_30b_prefill_512");
-  ASSERT_NE(command_artifact, nullptr);
-  EXPECT_GT(command_artifact->contents.data_length, 0u);
+  EXPECT_EQ(loomc_program_plan_unit_count(plan.get()), 100u);
 }
 
 TEST(QwenCommandPackageTest, CompilesSharedPrefillAndDecodePlan) {
@@ -756,32 +709,21 @@ TEST(QwenCommandPackageTest, CompilesSharedPrefillAndDecodePlan) {
   ASSERT_TRUE(ResultSucceeded(prepare_result.get(),
                               "shared command-package preparation"));
 
-  ASSERT_EQ(loomc_program_plan_root_count(plan.get()), 2u);
+  ASSERT_EQ(loomc_program_plan_root_count(plan.get()),
+            std::size(kPrefillShapes) + 1);
   loomc_program_plan_root_t decode_root = loomc_program_plan_root_invalid();
-  loomc_program_plan_root_t prefill_root = loomc_program_plan_root_invalid();
   LOOMC_ASSERT_OK(loomc_program_plan_lookup_root(
       plan.get(), loomc_make_cstring_view("qwen3_30b_decode_576"),
       &decode_root));
-  LOOMC_ASSERT_OK(loomc_program_plan_lookup_root(
-      plan.get(), loomc_make_cstring_view("qwen3_30b_prefill_512"),
-      &prefill_root));
   loomc_program_plan_root_info_t decode_root_info = {
       /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_ROOT_INFO,
       /*.structure_size=*/sizeof(decode_root_info),
   };
-  loomc_program_plan_root_info_t prefill_root_info = {
-      /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_ROOT_INFO,
-      /*.structure_size=*/sizeof(prefill_root_info),
-  };
   LOOMC_ASSERT_OK(
       loomc_program_plan_root_info(plan.get(), decode_root, &decode_root_info));
   EXPECT_EQ(decode_root_info.dependency_count, 14u);
-  LOOMC_ASSERT_OK(loomc_program_plan_root_info(plan.get(), prefill_root,
-                                               &prefill_root_info));
-  EXPECT_EQ(prefill_root_info.dependency_count, 27u);
 
   std::vector<uint64_t> decode_dependency_units;
-  std::vector<uint64_t> prefill_dependency_units;
   for (loomc_host_size_t i = 0; i < decode_root_info.dependency_count; ++i) {
     loomc_program_plan_dependency_info_t dependency_info = {
         /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_DEPENDENCY_INFO,
@@ -791,23 +733,42 @@ TEST(QwenCommandPackageTest, CompilesSharedPrefillAndDecodePlan) {
         plan.get(), decode_root, i, &dependency_info));
     decode_dependency_units.push_back(dependency_info.unit.value);
   }
-  for (loomc_host_size_t i = 0; i < prefill_root_info.dependency_count; ++i) {
-    loomc_program_plan_dependency_info_t dependency_info = {
-        /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_DEPENDENCY_INFO,
-        /*.structure_size=*/sizeof(dependency_info),
-    };
-    LOOMC_ASSERT_OK(loomc_program_plan_root_dependency_info(
-        plan.get(), prefill_root, i, &dependency_info));
-    prefill_dependency_units.push_back(dependency_info.unit.value);
-  }
   std::sort(decode_dependency_units.begin(), decode_dependency_units.end());
-  std::sort(prefill_dependency_units.begin(), prefill_dependency_units.end());
-  std::vector<uint64_t> shared_dependency_units;
-  std::set_intersection(
-      decode_dependency_units.begin(), decode_dependency_units.end(),
-      prefill_dependency_units.begin(), prefill_dependency_units.end(),
-      std::back_inserter(shared_dependency_units));
-  EXPECT_FALSE(shared_dependency_units.empty());
+
+  std::vector<loomc_program_plan_root_t> roots;
+  roots.reserve(std::size(kPrefillShapes) + 1);
+  for (const PrefillShape& shape : kPrefillShapes) {
+    loomc_program_plan_root_t root = loomc_program_plan_root_invalid();
+    LOOMC_ASSERT_OK(loomc_program_plan_lookup_root(
+        plan.get(), loomc_make_cstring_view(shape.export_name), &root));
+    loomc_program_plan_root_info_t root_info = {
+        /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_ROOT_INFO,
+        /*.structure_size=*/sizeof(root_info),
+    };
+    LOOMC_ASSERT_OK(loomc_program_plan_root_info(plan.get(), root, &root_info));
+    EXPECT_EQ(root_info.dependency_count, shape.dependency_count)
+        << shape.export_name;
+
+    std::vector<uint64_t> prefill_dependency_units;
+    for (loomc_host_size_t i = 0; i < root_info.dependency_count; ++i) {
+      loomc_program_plan_dependency_info_t dependency_info = {
+          /*.type=*/LOOMC_STRUCTURE_TYPE_PROGRAM_PLAN_DEPENDENCY_INFO,
+          /*.structure_size=*/sizeof(dependency_info),
+      };
+      LOOMC_ASSERT_OK(loomc_program_plan_root_dependency_info(
+          plan.get(), root, i, &dependency_info));
+      prefill_dependency_units.push_back(dependency_info.unit.value);
+    }
+    std::sort(prefill_dependency_units.begin(), prefill_dependency_units.end());
+    std::vector<uint64_t> shared_dependency_units;
+    std::set_intersection(
+        decode_dependency_units.begin(), decode_dependency_units.end(),
+        prefill_dependency_units.begin(), prefill_dependency_units.end(),
+        std::back_inserter(shared_dependency_units));
+    EXPECT_FALSE(shared_dependency_units.empty()) << shape.export_name;
+    roots.push_back(root);
+  }
+  roots.push_back(decode_root);
 
   const loomc_host_size_t unit_count =
       loomc_program_plan_unit_count(plan.get());
@@ -850,24 +811,52 @@ TEST(QwenCommandPackageTest, CompilesSharedPrefillAndDecodePlan) {
       /*.programs=*/unit_table_values.data(),
       /*.program_count=*/unit_table_values.size(),
   };
-  const loomc_program_plan_root_t roots[] = {prefill_root, decode_root};
   loomc_program_t* raw_assembled_program = nullptr;
   loomc_result_t* raw_assemble_result = nullptr;
   LOOMC_ASSERT_OK(loomc_program_plan_assemble(
-      plan.get(), coordinator_workspace.get(), roots, std::size(roots),
+      plan.get(), coordinator_workspace.get(), roots.data(), roots.size(),
       &unit_table, /*options=*/nullptr, loomc_allocator_system(),
       &raw_assembled_program, &raw_assemble_result));
   ProgramPtr assembled_program(raw_assembled_program);
   ResultPtr assemble_result(raw_assemble_result);
   ASSERT_TRUE(ResultSucceeded(assemble_result.get(),
                               "shared command-package assembly"));
-  EXPECT_EQ(loomc_program_export_count(assembled_program.get()), 2u);
-  EXPECT_NE(
-      FindCommandArtifact(assembled_program.get(), "qwen3_30b_prefill_512"),
-      nullptr);
-  EXPECT_NE(
-      FindCommandArtifact(assembled_program.get(), "qwen3_30b_decode_576"),
-      nullptr);
+  EXPECT_EQ(loomc_program_export_count(assembled_program.get()), roots.size());
+  for (const PrefillShape& shape : kPrefillShapes) {
+    SCOPED_TRACE(shape.export_name);
+    const loomc_artifact_t* command_artifact =
+        FindCommandArtifact(assembled_program.get(), shape.export_name);
+    ASSERT_NE(command_artifact, nullptr);
+    EXPECT_GT(command_artifact->contents.data_length, 0u);
+
+    loomc_program_export_t root_export = loomc_program_export_invalid();
+    LOOMC_ASSERT_OK(loomc_program_lookup_export(
+        assembled_program.get(), loomc_make_cstring_view(shape.export_name),
+        &root_export));
+    loomc_cmd_program_t* raw_command_program = nullptr;
+    LOOMC_ASSERT_OK(loomc_cmd_program_create_from_export(
+        assembled_program.get(), root_export, loomc_allocator_system(),
+        &raw_command_program));
+    CmdProgramPtr command_program(raw_command_program);
+    loomc_cmd_program_info_t info = {
+        /*.type=*/LOOMC_STRUCTURE_TYPE_CMD_PROGRAM_INFO,
+        /*.structure_size=*/sizeof(info),
+    };
+    LOOMC_ASSERT_OK(loomc_cmd_program_info(command_program.get(), &info));
+    EXPECT_EQ(info.fixed_buffer_count, 2u);
+    EXPECT_EQ(info.rebindable_binding_count, 5u);
+    EXPECT_EQ(info.parameter_root_count, 2u);
+    EXPECT_EQ(info.parameter_count, 580u);
+    EXPECT_EQ(info.transient.binding_index, 4u);
+    EXPECT_EQ(info.transient.required_byte_length, shape.transient_byte_length);
+    EXPECT_EQ(info.transient.minimum_alignment, 256u);
+    EXPECT_EQ(info.launch_counts.binding_index,
+              LOOMC_CMD_PROGRAM_BINDING_INVALID);
+  }
+  const loomc_artifact_t* decode_artifact =
+      FindCommandArtifact(assembled_program.get(), "qwen3_30b_decode_576");
+  ASSERT_NE(decode_artifact, nullptr);
+  EXPECT_GT(decode_artifact->contents.data_length, 0u);
 }
 
 }  // namespace

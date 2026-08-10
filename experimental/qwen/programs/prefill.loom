@@ -1,4 +1,4 @@
-// Complete Qwen3-30B-A3B prefill schedule with an exact 512-row public root.
+// Complete Qwen3-30B-A3B prefill schedule with exact public shape roots.
 //
 // The private program retains token count as a specialization value so future
 // exact shape roots can reuse the model graph. Command preparation inlines the
@@ -85,7 +85,13 @@ command.program.def @qwen3_30b_prefill(%token_count: index) launch(%parameters: 
   %c41 = index.constant 41 : index
   %c42 = index.constant 42 : index
   %c47 = index.constant 47 : index
-  %context_count = index.constant 512 : index
+  %c63 = index.constant 63 : index
+  %c64 = index.constant 64 : index
+  %c512 = index.constant 512 : index
+  %padded_context_count = index.add %token_count, %c63 : index
+  %context_tile_count = index.div %padded_context_count, %c64 : index
+  %context_count = index.mul %context_tile_count, %c64 : index
+  %uses_fused_expert_table = index.cmp eq, %token_count, %c512 : index
   %vocabulary_count = index.constant 151936 : index
   %route_count = index.constant 8 : index
   %expert_count = index.constant 128 : index
@@ -264,7 +270,12 @@ command.program.def @qwen3_30b_prefill(%token_count: index) launch(%parameters: 
         kernel.launch @qwen3_moe_router_top8_f32[%token_count, %route_count](%token_count, %route_count, %router_logits, %route_ids, %route_weights) : [index, index](index, index, buffer, buffer, buffer)
         %expert_table = buffer.alloca %expert_table_bytes {base_alignment = 256, memory_space = global} : buffer
         %partition_table = buffer.alloca %partition_table_bytes {base_alignment = 256, memory_space = global} : buffer
-        kernel.launch @qwen3_moe_build_expert_table_partition_prefill_512[%token_count, %route_count, %route_count, %expert_count](%token_count, %route_count, %route_count, %expert_count, %route_ids, %expert_table, %partition_table, %expert_table_completion) : [index, index, index, index](index, index, index, index, buffer, buffer, buffer, buffer)
+        scf.if %uses_fused_expert_table {
+          kernel.launch @qwen3_moe_build_expert_table_partition_prefill_512[%token_count, %route_count, %route_count, %expert_count](%token_count, %route_count, %route_count, %expert_count, %route_ids, %expert_table, %partition_table, %expert_table_completion) : [index, index, index, index](index, index, index, index, buffer, buffer, buffer, buffer)
+        } else {
+          kernel.launch @qwen3_moe_build_expert_table[%token_count, %route_count, %route_count, %expert_count](%token_count, %route_count, %route_count, %expert_count, %route_ids, %expert_table) : [index, index, index, index](index, index, index, index, buffer, buffer)
+          kernel.launch @qwen3_moe_build_expert_partition_table[%token_count, %route_count, %expert_count](%token_count, %route_count, %expert_count, %expert_table, %partition_table) : [index, index, index](index, index, index, buffer, buffer)
+        }
         %swiglu = buffer.alloca %swiglu_bytes {base_alignment = 256, memory_space = global} : buffer
         kernel.launch @qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma[%token_count](%token_count, %feed_forward_norm, %expert_table, %partition_table, %gate_weight, %up_weight, %swiglu) : [index](index, buffer, buffer, buffer, view<113246208xi8, #dense>, view<113246208xi8, #dense>, buffer)
         %routed_projection = buffer.alloca %routed_projection_bytes {base_alignment = 256, memory_space = global} : buffer
@@ -336,7 +347,12 @@ command.program.def @qwen3_30b_prefill(%token_count: index) launch(%parameters: 
         kernel.launch @qwen3_moe_router_top8_f32[%token_count, %route_count](%token_count, %route_count, %router_logits, %route_ids, %route_weights) : [index, index](index, index, buffer, buffer, buffer)
         %expert_table = buffer.alloca %expert_table_bytes {base_alignment = 256, memory_space = global} : buffer
         %partition_table = buffer.alloca %partition_table_bytes {base_alignment = 256, memory_space = global} : buffer
-        kernel.launch @qwen3_moe_build_expert_table_partition_prefill_512[%token_count, %route_count, %route_count, %expert_count](%token_count, %route_count, %route_count, %expert_count, %route_ids, %expert_table, %partition_table, %expert_table_completion) : [index, index, index, index](index, index, index, index, buffer, buffer, buffer, buffer)
+        scf.if %uses_fused_expert_table {
+          kernel.launch @qwen3_moe_build_expert_table_partition_prefill_512[%token_count, %route_count, %route_count, %expert_count](%token_count, %route_count, %route_count, %expert_count, %route_ids, %expert_table, %partition_table, %expert_table_completion) : [index, index, index, index](index, index, index, index, buffer, buffer, buffer, buffer)
+        } else {
+          kernel.launch @qwen3_moe_build_expert_table[%token_count, %route_count, %route_count, %expert_count](%token_count, %route_count, %route_count, %expert_count, %route_ids, %expert_table) : [index, index, index, index](index, index, index, index, buffer, buffer)
+          kernel.launch @qwen3_moe_build_expert_partition_table[%token_count, %route_count, %expert_count](%token_count, %route_count, %expert_count, %expert_table, %partition_table) : [index, index, index](index, index, index, buffer, buffer)
+        }
         %swiglu = buffer.alloca %swiglu_bytes {base_alignment = 256, memory_space = global} : buffer
         kernel.launch @qwen3_moe_routed_gate_up_swiglu_q4k_f16_wmma[%token_count](%token_count, %feed_forward_norm, %expert_table, %partition_table, %gate_weight, %up_weight, %swiglu) : [index](index, buffer, buffer, buffer, view<113246208xi8, #dense>, view<113246208xi8, #dense>, buffer)
         %routed_projection = buffer.alloca %routed_projection_bytes {base_alignment = 256, memory_space = global} : buffer
@@ -358,6 +374,30 @@ command.program.def @qwen3_30b_prefill(%token_count: index) launch(%parameters: 
   kernel.launch @qwen3_moe_attention_rmsnorm_quantize_q8_1_x4[%c1](%c1, %last_hidden_state, %output_norm, %final_q8) : [index](index, view<2048xf32, #dense>, view<8192xi8, #dense>, buffer)
   kernel.launch @ggml_linear_q6k_q8_1_x4_partial_argmax[%c1, %hidden_size, %vocabulary_count](%c1, %hidden_size, %vocabulary_count, %final_q8, %output_weight, %partial_logits, %partial_ids) : [index, index, index](index, index, index, buffer, view<255252480xi8, #dense>, buffer, buffer)
   kernel.launch @qwen_greedy_argmax_partials[%partial_count, %token_count](%partial_count, %token_count, %partial_logits, %partial_ids, %token_ids, %control, %selected_token) : [index, index](index, index, buffer, buffer, view<512xi32, #dense>, view<1xi32, #dense>, view<1xi32, #dense>)
+  command.return
+}
+
+command.program.def public @qwen3_30b_prefill_32() launch(%parameters: buffer, %auxiliary_parameters: buffer, %key_cache: buffer, %value_cache: buffer, %request_state: buffer, %output_staging: buffer) {
+  %token_count = index.constant 32 : index
+  command.program.launch @qwen3_30b_prefill[%token_count](%parameters, %auxiliary_parameters, %key_cache, %value_cache, %request_state, %output_staging) : [index](buffer, buffer, buffer, buffer, buffer, buffer)
+  command.return
+}
+
+command.program.def public @qwen3_30b_prefill_64() launch(%parameters: buffer, %auxiliary_parameters: buffer, %key_cache: buffer, %value_cache: buffer, %request_state: buffer, %output_staging: buffer) {
+  %token_count = index.constant 64 : index
+  command.program.launch @qwen3_30b_prefill[%token_count](%parameters, %auxiliary_parameters, %key_cache, %value_cache, %request_state, %output_staging) : [index](buffer, buffer, buffer, buffer, buffer, buffer)
+  command.return
+}
+
+command.program.def public @qwen3_30b_prefill_128() launch(%parameters: buffer, %auxiliary_parameters: buffer, %key_cache: buffer, %value_cache: buffer, %request_state: buffer, %output_staging: buffer) {
+  %token_count = index.constant 128 : index
+  command.program.launch @qwen3_30b_prefill[%token_count](%parameters, %auxiliary_parameters, %key_cache, %value_cache, %request_state, %output_staging) : [index](buffer, buffer, buffer, buffer, buffer, buffer)
+  command.return
+}
+
+command.program.def public @qwen3_30b_prefill_256() launch(%parameters: buffer, %auxiliary_parameters: buffer, %key_cache: buffer, %value_cache: buffer, %request_state: buffer, %output_staging: buffer) {
+  %token_count = index.constant 256 : index
+  command.program.launch @qwen3_30b_prefill[%token_count](%parameters, %auxiliary_parameters, %key_cache, %value_cache, %request_state, %output_staging) : [index](buffer, buffer, buffer, buffer, buffer, buffer)
   command.return
 }
 
