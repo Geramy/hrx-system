@@ -1,0 +1,156 @@
+// Qwen position-independent decode attention over reusable command programs.
+//
+// The launch workload carries the active prefix while the device body reads the
+// same value from request control and masks inactive rows in the final 64-row
+// tile. K/V storage is physically rounded to a complete tile so every active
+// workgroup retains the fast matrix path.
+target.decl @qwen3_moe_decode_split_gfx11_wave64
+
+config.decl @qwen3_moe.attention.query_head_count : %value: index where [range(%value, 1, 64)]
+
+config.decl @qwen3_moe.attention.key_value_head_count : %value: index where [range(%value, 1, 64)]
+
+config.decl @qwen3_moe.attention.key_value_token_capacity : %value: index where [range(%value, 64, 32768)]
+
+kernel.def target(@qwen3_moe_decode_split_gfx11_wave64) export("qwen_flash_attention_decode_dynamic_f32_f16_wmma_next_q8") @qwen_flash_attention_decode_dynamic_f32_f16_wmma_next_q8(%visible_context_count: index) {
+  %bounded_visible_context_count = index.assume %visible_context_count [range(%visible_context_count, 1, 32768)] : index
+  %key_value_head_count = config.get @qwen3_moe.attention.key_value_head_count : index
+  %c1 = index.constant 1 : index
+  %c63 = index.constant 63 : index
+  %c64 = index.constant 64 : index
+  %c256 = index.constant 256 : index
+  %padded_visible_context_count = index.add %bounded_visible_context_count, %c63 : index
+  %key_value_block_count = index.div %padded_visible_context_count, %c64 : index
+  kernel.launch.config workgroups(%key_value_block_count, %key_value_head_count, %c1) workgroup_size(%c256, %c1, %c1) : index
+} launch(%control: buffer, %query: buffer, %key: buffer, %value: buffer, %partial_max: buffer, %partial_sum: buffer, %partial_output: buffer, %completion_counter: buffer, %output: buffer, %next_q8_output: buffer) {
+  %key_value_token_capacity = config.get @qwen3_moe.attention.key_value_token_capacity : index
+  %c0 = index.constant 0 : index
+  %c1 = index.constant 1 : index
+  %c0_offset = index.constant 0 : offset
+  %c0_f32 = scalar.constant 0.0 : f32
+  %negative_large = scalar.constant -1e+30 : f32
+  %publish_q8 = scalar.constant true : i1
+  %control_view = buffer.view %control[%c0_offset] : buffer -> view<1xi32, #dense>
+  %context_base_raw = view.load %control_view[%c0] : view<1xi32, #dense> -> i32
+  %context_base_i32 = scalar.assume %context_base_raw [range(%context_base_raw, 0, 32767)] : i32
+  %context_base0 = index.cast %context_base_i32 : i32 to index
+  %context_base = index.assume %context_base0 [range(%context_base0, 0, 32767)] : index
+  %visible_context_count0 = index.add %context_base, %c1 : index
+  %visible_context_count, %launch_key_value_token_capacity = index.assume %visible_context_count0, %key_value_token_capacity [range(%visible_context_count0, 1, 32768), le(%visible_context_count0, %key_value_token_capacity)] : index, index
+  %c63 = index.constant 63 : index
+  %c64 = index.constant 64 : index
+  %padded_key_value_token_capacity = index.add %launch_key_value_token_capacity, %c63 : index
+  %partial_block_capacity = index.div %padded_key_value_token_capacity, %c64 : index
+  %key_value_storage_capacity = index.mul %partial_block_capacity, %c64 : index
+  %padded_visible_context_count = index.add %visible_context_count, %c63 : index
+  %producer_block_count = index.div %padded_visible_context_count, %c64 : index
+  %workgroup_x = kernel.workgroup.id<x> : index
+  %workgroup_is_active = index.cmp ult, %workgroup_x, %producer_block_count : index
+  scf.if %workgroup_is_active {
+    %lane = kernel.subgroup.lane.id : index
+    %key_origin = index.mul %workgroup_x, %c64 : index
+    %key_token = index.add %key_origin, %lane : index
+    %key_is_visible = index.cmp ult, %key_token, %visible_context_count : index
+    %lane_mask = scf.if %key_is_visible -> (f32) {
+      scf.yield %c0_f32 : f32
+    } else {
+      scf.yield %negative_large : f32
+    }
+    func.apply<qwen3_moe.attention.decode_split.produce_partials.active>(%key_value_storage_capacity, %partial_block_capacity, %producer_block_count, %query, %key, %value, %lane_mask, %partial_max, %partial_sum, %partial_output) : (index, index, index, buffer, buffer, buffer, f32, buffer, buffer, buffer)
+    func.apply<qwen3_moe.attention.decode_split.reduce_fused>(%launch_key_value_token_capacity, %partial_block_capacity, %producer_block_count, %publish_q8, %partial_max, %partial_sum, %partial_output, %completion_counter, %output, %next_q8_output) : (index, index, index, i1, buffer, buffer, buffer, buffer, buffer, buffer)
+  }
+  kernel.return
+}
+
+// One maximum-capacity allocation serves both sides of split boundaries and
+// the package limit. Constant V makes every expected attention row exact while
+// reused partial/counter storage exposes stale completion state.
+check.case public @qwen_flash_attention_decode_dynamic_sequence_case {
+  %visible_context_count1 = check.literal value(1) : index
+  %visible_context_count64 = check.literal value(64) : index
+  %visible_context_count65 = check.literal value(65) : index
+  %visible_context_count256 = check.literal value(256) : index
+  %visible_context_count513 = check.literal value(513) : index
+  %visible_context_count576 = check.literal value(576) : index
+  %visible_context_count577 = check.literal value(577) : index
+  %control0 = check.generate.fill value(0) : tensor<1xi32>
+  %control63 = check.generate.fill value(63) : tensor<1xi32>
+  %control64 = check.generate.fill value(64) : tensor<1xi32>
+  %control255 = check.generate.fill value(255) : tensor<1xi32>
+  %control512 = check.generate.fill value(512) : tensor<1xi32>
+  %control575 = check.generate.fill value(575) : tensor<1xi32>
+  %control576 = check.generate.fill value(576) : tensor<1xi32>
+  %query = check.generate.fill value(1.0) : tensor<32x128xf32>
+  %key = check.generate.fill value(1.0) : tensor<640x4x128xf16>
+  %value = check.generate.fill value(2.0) : tensor<640x4x128xf16>
+  %partial_max = check.generate.fill value(-1.0) : tensor<4x10x16xf32>
+  %partial_sum = check.generate.fill value(-1.0) : tensor<4x10x16xf32>
+  %partial_output = check.generate.fill value(-1.0) : tensor<4x10x16x128xf16>
+  %completion_counter = check.generate.fill value(0) : tensor<4xi32>
+  %output1 = check.generate.fill value(-1.0) : tensor<32x128xf32>
+  %output64 = check.generate.fill value(-1.0) : tensor<32x128xf32>
+  %output65 = check.generate.fill value(-1.0) : tensor<32x128xf32>
+  %output256 = check.generate.fill value(-1.0) : tensor<32x128xf32>
+  %output513 = check.generate.fill value(-1.0) : tensor<32x128xf32>
+  %output576 = check.generate.fill value(-1.0) : tensor<32x128xf32>
+  %output577 = check.generate.fill value(-1.0) : tensor<32x128xf32>
+  %next_q8 = check.generate.fill value(0) : tensor<4608xi8>
+  %expected = check.generate.fill value(2.0) : tensor<32x128xf32>
+  kernel.launch @qwen_flash_attention_decode_dynamic_f32_f16_wmma_next_q8[%visible_context_count1](%control0, %query, %key, %value, %partial_max, %partial_sum, %partial_output, %completion_counter, %output1, %next_q8) : [index](tensor<1xi32>, tensor<32x128xf32>, tensor<640x4x128xf16>, tensor<640x4x128xf16>, tensor<4x10x16xf32>, tensor<4x10x16xf32>, tensor<4x10x16x128xf16>, tensor<4xi32>, tensor<32x128xf32>, tensor<4608xi8>)
+  kernel.launch @qwen_flash_attention_decode_dynamic_f32_f16_wmma_next_q8[%visible_context_count64](%control63, %query, %key, %value, %partial_max, %partial_sum, %partial_output, %completion_counter, %output64, %next_q8) : [index](tensor<1xi32>, tensor<32x128xf32>, tensor<640x4x128xf16>, tensor<640x4x128xf16>, tensor<4x10x16xf32>, tensor<4x10x16xf32>, tensor<4x10x16x128xf16>, tensor<4xi32>, tensor<32x128xf32>, tensor<4608xi8>)
+  kernel.launch @qwen_flash_attention_decode_dynamic_f32_f16_wmma_next_q8[%visible_context_count65](%control64, %query, %key, %value, %partial_max, %partial_sum, %partial_output, %completion_counter, %output65, %next_q8) : [index](tensor<1xi32>, tensor<32x128xf32>, tensor<640x4x128xf16>, tensor<640x4x128xf16>, tensor<4x10x16xf32>, tensor<4x10x16xf32>, tensor<4x10x16x128xf16>, tensor<4xi32>, tensor<32x128xf32>, tensor<4608xi8>)
+  kernel.launch @qwen_flash_attention_decode_dynamic_f32_f16_wmma_next_q8[%visible_context_count256](%control255, %query, %key, %value, %partial_max, %partial_sum, %partial_output, %completion_counter, %output256, %next_q8) : [index](tensor<1xi32>, tensor<32x128xf32>, tensor<640x4x128xf16>, tensor<640x4x128xf16>, tensor<4x10x16xf32>, tensor<4x10x16xf32>, tensor<4x10x16x128xf16>, tensor<4xi32>, tensor<32x128xf32>, tensor<4608xi8>)
+  kernel.launch @qwen_flash_attention_decode_dynamic_f32_f16_wmma_next_q8[%visible_context_count513](%control512, %query, %key, %value, %partial_max, %partial_sum, %partial_output, %completion_counter, %output513, %next_q8) : [index](tensor<1xi32>, tensor<32x128xf32>, tensor<640x4x128xf16>, tensor<640x4x128xf16>, tensor<4x10x16xf32>, tensor<4x10x16xf32>, tensor<4x10x16x128xf16>, tensor<4xi32>, tensor<32x128xf32>, tensor<4608xi8>)
+  kernel.launch @qwen_flash_attention_decode_dynamic_f32_f16_wmma_next_q8[%visible_context_count576](%control575, %query, %key, %value, %partial_max, %partial_sum, %partial_output, %completion_counter, %output576, %next_q8) : [index](tensor<1xi32>, tensor<32x128xf32>, tensor<640x4x128xf16>, tensor<640x4x128xf16>, tensor<4x10x16xf32>, tensor<4x10x16xf32>, tensor<4x10x16x128xf16>, tensor<4xi32>, tensor<32x128xf32>, tensor<4608xi8>)
+  kernel.launch @qwen_flash_attention_decode_dynamic_f32_f16_wmma_next_q8[%visible_context_count577](%control576, %query, %key, %value, %partial_max, %partial_sum, %partial_output, %completion_counter, %output577, %next_q8) : [index](tensor<1xi32>, tensor<32x128xf32>, tensor<640x4x128xf16>, tensor<640x4x128xf16>, tensor<4x10x16xf32>, tensor<4x10x16xf32>, tensor<4x10x16x128xf16>, tensor<4xi32>, tensor<32x128xf32>, tensor<4608xi8>)
+  check.expect.close actual(%output1) expected(%expected) atol(0.001) rtol(0.001) nan(same) : tensor<32x128xf32>
+  check.expect.close actual(%output64) expected(%expected) atol(0.001) rtol(0.001) nan(same) : tensor<32x128xf32>
+  check.expect.close actual(%output65) expected(%expected) atol(0.001) rtol(0.001) nan(same) : tensor<32x128xf32>
+  check.expect.close actual(%output256) expected(%expected) atol(0.001) rtol(0.001) nan(same) : tensor<32x128xf32>
+  check.expect.close actual(%output513) expected(%expected) atol(0.001) rtol(0.001) nan(same) : tensor<32x128xf32>
+  check.expect.close actual(%output576) expected(%expected) atol(0.001) rtol(0.001) nan(same) : tensor<32x128xf32>
+  check.expect.close actual(%output577) expected(%expected) atol(0.001) rtol(0.001) nan(same) : tensor<32x128xf32>
+  check.return
+}
+
+// Compare a guarded tail against a tile-aligned visible prefix while retaining
+// one capacity-specialized binary and identical launch geometry.
+check.case public @qwen_flash_attention_decode_dynamic_513_benchmark_case {
+  %visible_context_count = check.literal value(513) : index
+  %control = check.generate.fill value(512) : tensor<1xi32>
+  %query = check.generate.fill value(0.0) : tensor<32x128xf32>
+  %key = check.generate.fill value(0.0) : tensor<576x4x128xf16>
+  %value = check.generate.fill value(0.0) : tensor<576x4x128xf16>
+  %partial_max = check.generate.fill value(-1.0) : tensor<4x9x16xf32>
+  %partial_sum = check.generate.fill value(-1.0) : tensor<4x9x16xf32>
+  %partial_output = check.generate.fill value(-1.0) : tensor<4x9x16x128xf16>
+  %completion_counter = check.generate.fill value(0) : tensor<4xi32>
+  %output = check.generate.fill value(-1.0) : tensor<32x128xf32>
+  %next_q8 = check.generate.fill value(0) : tensor<4608xi8>
+  %expected = check.generate.fill value(0.0) : tensor<32x128xf32>
+  kernel.launch @qwen_flash_attention_decode_dynamic_f32_f16_wmma_next_q8[%visible_context_count](%control, %query, %key, %value, %partial_max, %partial_sum, %partial_output, %completion_counter, %output, %next_q8) : [index](tensor<1xi32>, tensor<32x128xf32>, tensor<576x4x128xf16>, tensor<576x4x128xf16>, tensor<4x9x16xf32>, tensor<4x9x16xf32>, tensor<4x9x16x128xf16>, tensor<4xi32>, tensor<32x128xf32>, tensor<4608xi8>)
+  check.expect.close actual(%output) expected(%expected) atol(0.001) rtol(0.001) nan(same) : tensor<32x128xf32>
+  check.return
+}
+
+check.case public @qwen_flash_attention_decode_dynamic_576_benchmark_case {
+  %visible_context_count = check.literal value(576) : index
+  %control = check.generate.fill value(575) : tensor<1xi32>
+  %query = check.generate.fill value(0.0) : tensor<32x128xf32>
+  %key = check.generate.fill value(0.0) : tensor<576x4x128xf16>
+  %value = check.generate.fill value(0.0) : tensor<576x4x128xf16>
+  %partial_max = check.generate.fill value(-1.0) : tensor<4x9x16xf32>
+  %partial_sum = check.generate.fill value(-1.0) : tensor<4x9x16xf32>
+  %partial_output = check.generate.fill value(-1.0) : tensor<4x9x16x128xf16>
+  %completion_counter = check.generate.fill value(0) : tensor<4xi32>
+  %output = check.generate.fill value(-1.0) : tensor<32x128xf32>
+  %next_q8 = check.generate.fill value(0) : tensor<4608xi8>
+  %expected = check.generate.fill value(0.0) : tensor<32x128xf32>
+  kernel.launch @qwen_flash_attention_decode_dynamic_f32_f16_wmma_next_q8[%visible_context_count](%control, %query, %key, %value, %partial_max, %partial_sum, %partial_output, %completion_counter, %output, %next_q8) : [index](tensor<1xi32>, tensor<32x128xf32>, tensor<576x4x128xf16>, tensor<576x4x128xf16>, tensor<4x9x16xf32>, tensor<4x9x16xf32>, tensor<4x9x16x128xf16>, tensor<4xi32>, tensor<32x128xf32>, tensor<4608xi8>)
+  check.expect.close actual(%output) expected(%expected) atol(0.001) rtol(0.001) nan(same) : tensor<32x128xf32>
+  check.return
+}
+
+check.benchmark<@qwen_flash_attention_decode_dynamic_513_benchmark_case> @qwen_flash_attention_decode_dynamic_513
+
+check.benchmark<@qwen_flash_attention_decode_dynamic_576_benchmark_case> @qwen_flash_attention_decode_dynamic_576
