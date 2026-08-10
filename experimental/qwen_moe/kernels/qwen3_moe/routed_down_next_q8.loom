@@ -25,8 +25,7 @@ func.template<qwen3_moe.routed_down.next_q8_completion> device @qwen3_moe_routed
   %c0_offset = index.constant 0 : offset
   %counter_scratch_bytes = index.constant 4 : offset
   %output_noalias, %norm_weight_noalias, %completion_counter_noalias, %next_q8_output_noalias = buffer.assume.noalias %output, %norm_weight, %completion_counter, %next_q8_output : buffer, buffer, buffer, buffer
-  %completion_counter_global = buffer.assume.memory_space<global> %completion_counter_noalias : buffer
-  %completion_counter_aligned = buffer.assume.alignment %completion_counter_global {minimum_alignment = 16} : buffer
+  %completion_counter_aligned = buffer.assume.alignment %completion_counter_noalias {minimum_alignment = 16} : buffer
   %completion_counter_view = buffer.view %completion_counter_aligned[%c0_offset] : buffer -> view<1xi32, #dense>
   %counter_scratch = buffer.alloca %counter_scratch_bytes {base_alignment = 4, memory_space = workgroup} : buffer
   %counter_scratch_view = buffer.view %counter_scratch[%c0_offset] : buffer -> view<1xi32, #dense>

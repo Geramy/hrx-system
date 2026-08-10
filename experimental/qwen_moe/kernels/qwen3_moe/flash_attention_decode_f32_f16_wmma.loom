@@ -40,12 +40,9 @@ kernel.def target(@qwen3_moe_attention_decode_gfx11_wave64) @qwen3_moe_flash_att
   kernel.launch.config workgroups(%workgroup_count, %c1, %c1) workgroup_size(%c256, %c1, %c1) : index
 } launch(%key_value_token_count: index, %query: buffer, %key: buffer, %value: buffer, %mask: buffer, %output: buffer) {
   %bounded_key_value_token_count = index.assume %key_value_token_count [range(%key_value_token_count, 1, 32768)] : index
-  %query_head_count0 = config.get @qwen3_moe.attention.query_head_count : index
-  %key_value_head_count0 = config.get @qwen3_moe.attention.key_value_head_count : index
-  %output_partition_count0 = config.get @qwen3_moe.attention.decode.output_partition_count : index
-  %query_head_count = index.assume %query_head_count0 [range(%query_head_count0, 1, 64)] : index
-  %key_value_head_count = index.assume %key_value_head_count0 [range(%key_value_head_count0, 1, 64)] : index
-  %output_partition_count = index.assume %output_partition_count0 [range(%output_partition_count0, 1, 2)] : index
+  %query_head_count = config.get @qwen3_moe.attention.query_head_count : index
+  %key_value_head_count = config.get @qwen3_moe.attention.key_value_head_count : index
+  %output_partition_count = config.get @qwen3_moe.attention.decode.output_partition_count : index
   %workgroup_x0 = kernel.workgroup.id<x> : index
   %workgroup_count0 = index.mul %key_value_head_count, %output_partition_count : index
   %workgroup_x, %workgroup_count = index.assume %workgroup_x0, %workgroup_count0 [lt(%workgroup_x0, %workgroup_count0)] : index, index
@@ -134,16 +131,11 @@ kernel.def target(@qwen3_moe_attention_decode_gfx11_wave64) @qwen3_moe_flash_att
   %query_transposed_layout = encoding.layout.strided [1, 136] : encoding<layout>
   %probability_transposed_layout = encoding.layout.strided [1, 24] : encoding<layout>
   %query_noalias, %key_noalias, %value_noalias, %mask_noalias, %output_noalias = buffer.assume.noalias %query, %key, %value, %mask, %output : buffer, buffer, buffer, buffer, buffer
-  %query_global = buffer.assume.memory_space<global> %query_noalias : buffer
-  %key_global = buffer.assume.memory_space<global> %key_noalias : buffer
-  %value_global = buffer.assume.memory_space<global> %value_noalias : buffer
-  %mask_global = buffer.assume.memory_space<global> %mask_noalias : buffer
-  %output_global = buffer.assume.memory_space<global> %output_noalias : buffer
-  %query_aligned = buffer.assume.alignment %query_global {minimum_alignment = 16} : buffer
-  %key_aligned = buffer.assume.alignment %key_global {minimum_alignment = 16} : buffer
-  %value_aligned = buffer.assume.alignment %value_global {minimum_alignment = 16} : buffer
-  %mask_aligned = buffer.assume.alignment %mask_global {minimum_alignment = 16} : buffer
-  %output_aligned = buffer.assume.alignment %output_global {minimum_alignment = 16} : buffer
+  %query_aligned = buffer.assume.alignment %query_noalias {minimum_alignment = 16} : buffer
+  %key_aligned = buffer.assume.alignment %key_noalias {minimum_alignment = 16} : buffer
+  %value_aligned = buffer.assume.alignment %value_noalias {minimum_alignment = 16} : buffer
+  %mask_aligned = buffer.assume.alignment %mask_noalias {minimum_alignment = 16} : buffer
+  %output_aligned = buffer.assume.alignment %output_noalias {minimum_alignment = 16} : buffer
   %query_view = buffer.view %query_aligned[%c0_offset] : buffer -> view<[%query_head_count]x128xf32, #dense>
   %key_view = buffer.view %key_aligned[%c0_offset] : buffer -> view<[%bounded_key_value_token_count]x[%key_value_width]xf16, #dense>
   %value_view = buffer.view %value_aligned[%c0_offset] : buffer -> view<[%bounded_key_value_token_count]x[%key_value_width]xf16, #dense>

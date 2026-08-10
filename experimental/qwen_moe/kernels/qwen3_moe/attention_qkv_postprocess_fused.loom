@@ -59,8 +59,7 @@ func.template<qwen3_moe.attention.qkv_postprocess_fused_decode.body> device @qwe
   %head_domain_count = index.add %query_head_count, %key_value_domain_count : index
   %head_domain, %completion_counter_count = index.assume %head_domain0, %head_domain_count [lt(%head_domain0, %head_domain_count)] : index, index
   %is_arrival_workitem = index.cmp eq, %workitem, %c0 : index
-  %completion_counters_global = buffer.assume.memory_space<global> %completion_counters : buffer
-  %completion_counters_aligned = buffer.assume.alignment %completion_counters_global {minimum_alignment = 16} : buffer
+  %completion_counters_aligned = buffer.assume.alignment %completion_counters {minimum_alignment = 16} : buffer
   %completion_counters_view = buffer.view %completion_counters_aligned[%c0_offset] : buffer -> view<[%completion_counter_count]xi32, #dense>
   %counter_scratch = buffer.alloca %counter_scratch_bytes {base_alignment = 4, memory_space = workgroup} : buffer
   %counter_scratch_view = buffer.view %counter_scratch[%c0_offset] : buffer -> view<1xi32, #dense>

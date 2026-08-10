@@ -57,8 +57,8 @@ func.template<qwen3_moe.attention.qkv_quantized.body> device @qwen3_moe_attentio
   %c2 = index.constant 2 : index
   %c8 = index.constant 8 : index
   %c128 = index.constant 128 : index
-  %c144 = index.constant 144 : index
-  %c210 = index.constant 210 : index
+  %c144_bytes = index.constant 144 : offset
+  %c210_bytes = index.constant 210 : offset
   %c256 = index.constant 256 : index
   %c0_i32 = scalar.constant 0 : i32
   %c0_f32 = scalar.constant 0.0 : f32
@@ -78,35 +78,30 @@ func.template<qwen3_moe.attention.qkv_quantized.body> device @qwen3_moe_attentio
   %lane_i32 = index.cast %lane : index to i32
   %is_lane_zero = scalar.cmpi eq, %lane_i32, %c0_i32 : i32
   %quant_block_count = index.div %hidden_size, %c256 : index
-  %q4_row_byte_count = index.mul %quant_block_count, %c144 : index
-  %q6_row_byte_count = index.mul %quant_block_count, %c210 : index
+  %q4_row_bytes = index.scale %quant_block_count, %c144_bytes : index, offset -> offset
+  %q6_row_bytes = index.scale %quant_block_count, %c210_bytes : index, offset -> offset
   %q8_group_count = index.div %hidden_size, %c128 : index
-  %q8_row_byte_count = index.mul %q8_group_count, %c144 : index
-  %q8_row_byte_index = index.mul %token, %q8_row_byte_count : index
-  %q8_row_byte_base = index.cast %q8_row_byte_index : index to offset
+  %q8_row_bytes = index.scale %q8_group_count, %c144_bytes : index, offset -> offset
+  %q8_row_byte_base = index.scale %token, %q8_row_bytes : index, offset -> offset
   %q8_noalias, %query_weight_noalias, %key_weight_noalias, %value_weight_noalias, %query_output_noalias, %key_output_noalias, %value_output_noalias = buffer.assume.noalias %q8_input, %query_weight, %key_weight, %value_weight, %query_output, %key_output, %value_output : buffer, buffer, buffer, buffer, buffer, buffer, buffer
   %lane_sum = scf.if %publish_output -> (f32) {
     %channel_sum = scf.if %valid_channel -> (f32) {
       %projection_sum = scf.if %is_query -> (f32) {
-        %row_byte_index = index.mul %global_channel, %q4_row_byte_count : index
-        %row_byte_base = index.cast %row_byte_index : index to offset
+        %row_byte_base = index.scale %global_channel, %q4_row_bytes : index, offset -> offset
         %sum = func.call @qwen3_moe_q4k_q8_1_x4_paired_row_lane(%hidden_size, %query_weight_noalias, %row_byte_base, %q8_noalias, %q8_row_byte_base, %lane) : (index, buffer, offset, buffer, offset, index) -> (f32)
         scf.yield %sum : f32
       } else {
         %key_or_value_sum = scf.if %is_key -> (f32) {
-          %row_byte_index = index.mul %key_value_channel, %q4_row_byte_count : index
-          %row_byte_base = index.cast %row_byte_index : index to offset
+          %row_byte_base = index.scale %key_value_channel, %q4_row_bytes : index, offset -> offset
           %sum = func.call @qwen3_moe_q4k_q8_1_x4_paired_row_lane(%hidden_size, %key_weight_noalias, %row_byte_base, %q8_noalias, %q8_row_byte_base, %lane) : (index, buffer, offset, buffer, offset, index) -> (f32)
           scf.yield %sum : f32
         } else {
           %value_sum = scf.if %value_uses_q6 -> (f32) {
-            %row_byte_index = index.mul %key_value_channel, %q6_row_byte_count : index
-            %row_byte_base = index.cast %row_byte_index : index to offset
+            %row_byte_base = index.scale %key_value_channel, %q6_row_bytes : index, offset -> offset
             %sum = func.call @ggml_q6k_q8_1_x4_row_lane(%hidden_size, %value_weight_noalias, %row_byte_base, %q8_noalias, %q8_row_byte_base, %lane) : (index, buffer, offset, buffer, offset, index) -> (f32)
             scf.yield %sum : f32
           } else {
-            %row_byte_index = index.mul %key_value_channel, %q4_row_byte_count : index
-            %row_byte_base = index.cast %row_byte_index : index to offset
+            %row_byte_base = index.scale %key_value_channel, %q4_row_bytes : index, offset -> offset
             %sum = func.call @qwen3_moe_q4k_q8_1_x4_paired_row_lane(%hidden_size, %value_weight_noalias, %row_byte_base, %q8_noalias, %q8_row_byte_base, %lane) : (index, buffer, offset, buffer, offset, index) -> (f32)
             scf.yield %sum : f32
           }

@@ -131,8 +131,7 @@ kernel.def target(@qwen3_moe_router_fused_gfx11_wave64) @qwen3_moe_router_projec
   %token = index.assume %c0 [lt(%c0, %bounded_token_count)] : index
   %input_storage, %weight_storage, %logits_storage = func.apply<qwen3_moe.router_projection.storage>(%input, %weight, %logits) : (buffer, buffer, buffer) -> (buffer, buffer, buffer)
   %input_noalias, %weight_noalias, %logits_noalias, %completion_counter_noalias, %route_ids_noalias, %route_weights_noalias = buffer.assume.noalias %input_storage, %weight_storage, %logits_storage, %completion_counter, %route_ids, %route_weights : buffer, buffer, buffer, buffer, buffer, buffer
-  %completion_counter_global = buffer.assume.memory_space<global> %completion_counter_noalias : buffer
-  %completion_counter_aligned = buffer.assume.alignment %completion_counter_global {minimum_alignment = 16} : buffer
+  %completion_counter_aligned = buffer.assume.alignment %completion_counter_noalias {minimum_alignment = 16} : buffer
   %completion_counter_view = buffer.view %completion_counter_aligned[%c0_offset] : buffer -> view<1xi32, #dense>
   %counter_scratch = buffer.alloca %counter_scratch_bytes {base_alignment = 4, memory_space = workgroup} : buffer
   %counter_scratch_view = buffer.view %counter_scratch[%c0_offset] : buffer -> view<1xi32, #dense>
