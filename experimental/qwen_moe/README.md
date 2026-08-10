@@ -94,10 +94,16 @@ declared dependencies instead of copying template bodies into new files.
 ## Target and qualification contract
 
 The production corpus is authored primarily for `gfx11-generic`, with explicit
-wave32 or wave64 providers where the ownership schedule requires one. Router
-projection additionally contains a `gfx1151` storage specialization. That
-single provider does not imply that the complete model path is qualified on
-gfx1151.
+wave32 or wave64 execution targets where the ownership schedule requires one.
+Router projection additionally contains a `gfx1151` storage specialization.
+That single provider does not imply that the complete model path is qualified
+on gfx1151.
+
+Reusable wave-specific templates express their execution requirement with
+typed target facts, and launch regions derive subgroup-dependent geometry from
+`target.subgroup.size`. Kernel roots retain explicit targets when they select a
+non-default subgroup mode; an exact device profile describes device identity
+and defaults, not an application's preferred execution mode.
 
 Each linked source boundary has a host-only plan test and manual AMDGPU
 differential or access-sanitizer coverage in `kernels/BUILD.bazel`. The current
