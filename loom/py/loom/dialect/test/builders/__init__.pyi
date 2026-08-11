@@ -1079,6 +1079,12 @@ class TestBuilder(DialectBuilder):
         available: Sequence[str] | None = ...,
         location_id: int | None = ...,
     ) -> None: ...
+    def symbol_set_attrs(
+        self,
+        *,
+        symbols: Sequence[str],
+        location_id: int | None = ...,
+    ) -> None: ...
     def parameterized_attr(
         self,
         *,
