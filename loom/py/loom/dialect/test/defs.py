@@ -130,6 +130,7 @@ from loom.dsl import (
     Successor,
     SymbolDefinition,
     SymbolReference,
+    SymbolReferenceRole,
     TargetLikeInterface,
     TiedResult,
     TypeDef,
@@ -265,8 +266,8 @@ test_options_attr = ParameterizedAttrDef(
             "target",
             ATTR_TYPE_SYMBOL,
             optional=True,
-            symbol_ref=SymbolReference("record", ["record"]),
-            doc="Optional record symbol dependency.",
+            symbol_ref=SymbolReference("record", ["record"], role=SymbolReferenceRole.AVAILABILITY),
+            doc="Optional record symbol availability anchor.",
         ),
         AttrDef(
             "tiles",
@@ -348,7 +349,7 @@ test_matrix_type = TypeDef(
             "target",
             ATTR_TYPE_SYMBOL,
             optional=True,
-            symbol_ref=SymbolReference("record", ["record"]),
+            symbol_ref=SymbolReference("record", ["record"], role=SymbolReferenceRole.AVAILABILITY),
         ),
     ],
     format=[
@@ -2066,7 +2067,7 @@ test_template_param_symbol = Op(
         AttrDef(
             "target",
             "symbol",
-            symbol_ref=SymbolReference("record", ["record"]),
+            symbol_ref=SymbolReference("record", ["record"], role=SymbolReferenceRole.AVAILABILITY),
         ),
     ],
     format=[
