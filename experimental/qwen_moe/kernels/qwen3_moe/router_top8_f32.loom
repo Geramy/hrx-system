@@ -46,10 +46,10 @@ func.template<qwen3_moe.router.top8.row> device requires [#target.subgroup.size<
   %route_id_storage_count = index.mul %launch_token_count, %bounded_route_id_stride : index
   %route_weight_storage_count = index.mul %launch_token_count, %route_count : index
   %logits_noalias, %route_ids_noalias, %route_weights_noalias = buffer.assume.noalias %logits, %route_ids, %route_weights : buffer, buffer, buffer
-  %logits_view = buffer.view %logits_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%expert_count]xf32, #dense>
-  %route_ids_view = buffer.view %route_ids_noalias[%c0_offset] : buffer -> view<[%route_id_storage_count]xi32, #dense>
-  %route_weights_view = buffer.view %route_weights_noalias[%c0_offset] : buffer -> view<[%route_weight_storage_count]xf32, #dense>
-  %initial_logits = vector.load %logits_view[%safe_token, %lane_expert_base] : view<[%launch_token_count]x[%expert_count]xf32, #dense> -> vector<[%experts_per_lane]xf32>
+  %logits_view = buffer.view %logits_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%expert_count]xf32>
+  %route_ids_view = buffer.view %route_ids_noalias[%c0_offset] : buffer -> view<[%route_id_storage_count]xi32>
+  %route_weights_view = buffer.view %route_weights_noalias[%c0_offset] : buffer -> view<[%route_weight_storage_count]xf32>
+  %initial_logits = vector.load %logits_view[%safe_token, %lane_expert_base] : view<[%launch_token_count]x[%expert_count]xf32> -> vector<[%experts_per_lane]xf32>
   %remaining_final, %selected_logit = scf.for %route = [%c0 to %route_count step %c1](%remaining_logits = %initial_logits : vector<[%experts_per_lane]xf32>, %lane_selected_logit = %negative_large : f32) -> (vector<[%experts_per_lane]xf32>, f32) {
     %local_value, %local_id = scf.for %slot = [%c0 to %experts_per_lane step %c1](%best_value = %negative_large : f32, %best_id = %largest_i32 : i32) -> (f32, i32) unroll {
       %candidate_value = vector.extract %remaining_logits[%slot] : vector<[%experts_per_lane]xf32> -> f32
@@ -88,7 +88,7 @@ func.template<qwen3_moe.router.top8.row> device requires [#target.subgroup.size<
     scf.if %publishes_route_id {
       %route_id_token_base = index.mul %safe_token, %bounded_route_id_stride : index
       %route_id_index = index.add %route_id_token_base, %route : index
-      view.store %local_id, %route_ids_view[%route_id_index] : i32, view<[%route_id_storage_count]xi32, #dense>
+      view.store %local_id, %route_ids_view[%route_id_index] : i32, view<[%route_id_storage_count]xi32>
     }
     %lane_publishes_route = index.cmp eq, %lane, %route : index
     %publishes_route = scalar.andi %valid_token, %lane_publishes_route : i1
@@ -109,7 +109,7 @@ func.template<qwen3_moe.router.top8.row> device requires [#target.subgroup.size<
   scf.if %publishes_weight {
     %route_weight_token_base = index.mul %safe_token, %route_count : index
     %route_weight_index = index.add %route_weight_token_base, %lane : index
-    view.store %route_weight, %route_weights_view[%route_weight_index] : f32, view<[%route_weight_storage_count]xf32, #dense>
+    view.store %route_weight, %route_weights_view[%route_weight_index] : f32, view<[%route_weight_storage_count]xf32>
   }
   func.return
 }
@@ -150,12 +150,12 @@ kernel.def @qwen3_moe_router_top8_wide_stride_reference() {
   %c0_offset = index.constant 0 : offset
   %slot = index.rem %element, %c16 : index
   %publishes_id = index.cmp ult, %slot, %c8 : index
-  %route_ids_view = buffer.view %route_ids[%c0_offset] : buffer -> view<32xi32, #dense>
+  %route_ids_view = buffer.view %route_ids[%c0_offset] : buffer -> view<32xi32>
   scf.if %publishes_id {
     %scaled_slot = index.mul %slot, %c8 : index
     %route_id_index = index.add %scaled_slot, %c7 : index
     %route_id = index.cast %route_id_index : index to i32
-    view.store %route_id, %route_ids_view[%element] : i32, view<32xi32, #dense>
+    view.store %route_id, %route_ids_view[%element] : i32, view<32xi32>
   }
   kernel.return
 }

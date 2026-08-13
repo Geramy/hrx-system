@@ -53,11 +53,11 @@ kernel.def target(@qwen_token_embedding_gfx11_wave64) export("qwen_token_embeddi
   %load_packet0 = index.rem %block_packet, %c8 : index
   %load_packet = index.assume %load_packet0 [range(%load_packet0, 0, 7)] : index
   %token_ids_noalias, %weight_noalias, %output_noalias = buffer.assume.noalias %token_ids, %weight, %output : buffer, buffer, buffer
-  %token_ids_view = buffer.view %token_ids_noalias[%c0_offset] : buffer -> view<[%launch_token_count]xi32, #dense>
-  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x2048xf32, #dense>
+  %token_ids_view = buffer.view %token_ids_noalias[%c0_offset] : buffer -> view<[%launch_token_count]xi32>
+  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x2048xf32>
   // Token IDs are validated at the request boundary. This trusted consumer
   // carries that fact into row addressing instead of adding a fallback row.
-  %token_id_raw = view.load %token_ids_view[%token] : view<[%launch_token_count]xi32, #dense> -> i32
+  %token_id_raw = view.load %token_ids_view[%token] : view<[%launch_token_count]xi32> -> i32
   %token_id_i32 = scalar.assume %token_id_raw [range(%token_id_raw, 0, 262143)] : i32
   %token_id0 = index.cast %token_id_i32 : i32 to index
   %token_id, %weight_vocabulary_count = index.assume %token_id0, %bounded_vocabulary_count [lt(%token_id0, %bounded_vocabulary_count)] : index, index
@@ -66,11 +66,11 @@ kernel.def target(@qwen_token_embedding_gfx11_wave64) export("qwen_token_embeddi
   %block_byte_base = index.add %row_byte_base, %block_byte_add : offset
   %scale_byte_base = index.add %block_byte_base, %scale_offset : offset
   %code_byte_base = index.add %block_byte_base, %code_offset : offset
-  %dm_view = buffer.view %weight_noalias[%block_byte_base] : buffer -> view<2xf16, #dense>
-  %scale_view = buffer.view %weight_noalias[%scale_byte_base] : buffer -> view<3xi32, #dense>
-  %code_view = buffer.view %weight_noalias[%code_byte_base] : buffer -> view<32xi32, #dense>
-  %dm = vector.load %dm_view[%c0] : view<2xf16, #dense> -> vector<2xf16>
-  %scales = vector.load %scale_view[%c0] : view<3xi32, #dense> -> vector<3xi32>
+  %dm_view = buffer.view %weight_noalias[%block_byte_base] : buffer -> view<2xf16>
+  %scale_view = buffer.view %weight_noalias[%scale_byte_base] : buffer -> view<3xi32>
+  %code_view = buffer.view %weight_noalias[%code_byte_base] : buffer -> view<32xi32>
+  %dm = vector.load %dm_view[%c0] : view<2xf16> -> vector<2xf16>
+  %scales = vector.load %scale_view[%c0] : view<3xi32> -> vector<3xi32>
   %d_f16 = vector.extract %dm[0] : vector<2xf16> -> f16
   %dmin_f16 = vector.extract %dm[1] : vector<2xf16> -> f16
   %d = scalar.extf %d_f16 : f16 to f32
@@ -116,7 +116,7 @@ kernel.def target(@qwen_token_embedding_gfx11_wave64) export("qwen_token_embeddi
   %minimum_scale_vector1 = vector.mulf %dmin_vector1, %minimum_f32 : vector<1xf32>
   %d_scale = vector.extract %d_scale_vector1[0] : vector<1xf32> -> f32
   %minimum_scale = vector.extract %minimum_scale_vector1[0] : vector<1xf32> -> f32
-  %q_word = vector.load %code_view[%q_word_index] : view<32xi32, #dense> -> vector<1xi32>
+  %q_word = vector.load %code_view[%q_word_index] : view<32xi32> -> vector<1xi32>
   %q_half = index.rem %q4_group, %c2 : index
   %q_shift_index = index.mul %q_half, %c4 : index
   %q_shift_i32 = index.cast %q_shift_index : index to i32
@@ -136,7 +136,7 @@ kernel.def target(@qwen_token_embedding_gfx11_wave64) export("qwen_token_embeddi
   %value3 = scalar.fmaf %q3, %d_scale, %negative_minimum_scale : f32
   %values = vector.from_elements %value0, %value1, %value2, %value3 : vector<4xf32>
   %output_channel = index.mul %row_packet, %c4 : index
-  vector.store %values, %output_view[%token, %output_channel] : vector<4xf32>, view<[%launch_token_count]x2048xf32, #dense>
+  vector.store %values, %output_view[%token, %output_channel] : vector<4xf32>, view<[%launch_token_count]x2048xf32>
   kernel.return
 }
 

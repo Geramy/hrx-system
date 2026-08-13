@@ -58,10 +58,10 @@ kernel.def @ggml_linear_q6k_q8_1_x4_partial_argmax(%token_count: index, %input_s
     %partial_count = index.assume %partial_count0 [range(%partial_count0, 1, 18992)] : index
     %partial_index0 = kernel.workgroup.id<x> : index
     %partial_index, %partial_bound = index.assume %partial_index0, %partial_count [lt(%partial_index0, %partial_count)] : index, index
-    %partial_logits_view = buffer.view %partial_logits_noalias[%c0_offset] : buffer -> view<[%partial_bound]xf32, #dense>
-    %partial_ids_view = buffer.view %partial_ids_noalias[%c0_offset] : buffer -> view<[%partial_bound]xi32, #dense>
-    view.store %winning_logit, %partial_logits_view[%partial_index] : f32, view<[%partial_bound]xf32, #dense>
-    view.store %winning_id, %partial_ids_view[%partial_index] : i32, view<[%partial_bound]xi32, #dense>
+    %partial_logits_view = buffer.view %partial_logits_noalias[%c0_offset] : buffer -> view<[%partial_bound]xf32>
+    %partial_ids_view = buffer.view %partial_ids_noalias[%c0_offset] : buffer -> view<[%partial_bound]xi32>
+    view.store %winning_logit, %partial_logits_view[%partial_index] : f32, view<[%partial_bound]xf32>
+    view.store %winning_id, %partial_ids_view[%partial_index] : i32, view<[%partial_bound]xi32>
   }
   kernel.return
 }

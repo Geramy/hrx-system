@@ -49,9 +49,9 @@ kernel.def @qwen3_moe_flash_attention_decode_split_mask_513_of_576() {
   %valid = index.cmp ult, %workitem, %c63 : index
   %row0 = index.add %c513, %workitem : index
   %row = scf.select %valid, %row0, %c0 : index
-  %mask_view = buffer.view %mask[%c0_offset] : buffer -> view<576xf16, #dense>
+  %mask_view = buffer.view %mask[%c0_offset] : buffer -> view<576xf16>
   scf.if %valid {
-    view.store %negative_infinity, %mask_view[%row] : f16, view<576xf16, #dense>
+    view.store %negative_infinity, %mask_view[%row] : f16, view<576xf16>
   }
   kernel.return
 }

@@ -54,17 +54,17 @@ kernel.def target(@qwen3_moe_router_projection_gfx11_wave32) @qwen3_moe_router_p
   %safe_token0 = scf.select %valid_token, %token0, %c0 : index
   %token, %launch_token_count = index.assume %safe_token0, %token_count [lt(%safe_token0, %token_count)] : index, index
   %input_noalias, %weight_noalias, %output_noalias = buffer.assume.noalias %input, %weight, %output : buffer, buffer, buffer
-  %input_view = buffer.view %input_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32, #dense>
-  %weight_view = buffer.view %weight_noalias[%c0_offset] : buffer -> view<[%expert_count]x[%hidden_size]xf32, #dense>
-  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%expert_count]xf32, #dense>
+  %input_view = buffer.view %input_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32>
+  %weight_view = buffer.view %weight_noalias[%c0_offset] : buffer -> view<[%expert_count]x[%hidden_size]xf32>
+  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%expert_count]xf32>
   %sum = scf.for %channel = [%c0 to %hidden_size step %c1](%accumulator = %c0_f32 : f32) -> (f32) {
-    %input_value = view.load %input_view[%token, %channel] : view<[%launch_token_count]x[%hidden_size]xf32, #dense> -> f32
-    %weight_value = view.load %weight_view[%expert, %channel] : view<[%expert_count]x[%hidden_size]xf32, #dense> -> f32
+    %input_value = view.load %input_view[%token, %channel] : view<[%launch_token_count]x[%hidden_size]xf32> -> f32
+    %weight_value = view.load %weight_view[%expert, %channel] : view<[%expert_count]x[%hidden_size]xf32> -> f32
     %next_accumulator = scalar.fmaf %input_value, %weight_value, %accumulator : f32
     scf.yield %next_accumulator : f32
   }
   scf.if %valid_token {
-    view.store %sum, %output_view[%token, %expert] : f32, view<[%launch_token_count]x[%expert_count]xf32, #dense>
+    view.store %sum, %output_view[%token, %expert] : f32, view<[%launch_token_count]x[%expert_count]xf32>
   }
   kernel.return
 }
@@ -97,24 +97,24 @@ kernel.def target(@qwen3_moe_router_projection_gfx11_wave64) @qwen3_moe_router_p
   %lane_channel = index.mul %lane, %c4 : index
   %input_storage, %weight_storage, %output_storage = func.apply<qwen3_moe.router_projection.storage>(%input, %weight, %output) : (buffer, buffer, buffer) -> (buffer, buffer, buffer)
   %input_noalias, %weight_noalias, %output_noalias = buffer.assume.noalias %input_storage, %weight_storage, %output_storage : buffer, buffer, buffer
-  %input_view = buffer.view %input_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32, #dense>
-  %weight_view = buffer.view %weight_noalias[%c0_offset] : buffer -> view<[%expert_count]x[%hidden_size]xf32, #dense>
-  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%expert_count]xf32, #dense>
+  %input_view = buffer.view %input_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32>
+  %weight_view = buffer.view %weight_noalias[%c0_offset] : buffer -> view<[%expert_count]x[%hidden_size]xf32>
+  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%expert_count]xf32>
   %full_channel_limit = index.sub %hidden_size, %c3 : index
   %unroll_remainder = index.rem %hidden_size, %c1024 : index
   %uses_unrolled_schedule = index.cmp eq, %unroll_remainder, %c0 : index
   %lane_sum = scf.if %uses_unrolled_schedule -> (f32) {
     %unrolled_sum = scf.for %channel = [%lane_channel to %full_channel_limit step %c256](%accumulator = %c0_f32 : f32) -> (f32) unroll(%c4) schedule(interleaved) {
-      %input_values = vector.load %input_view[%token, %channel] : view<[%launch_token_count]x[%hidden_size]xf32, #dense> -> vector<4xf32>
-      %weight_values = vector.load %weight_view[%expert, %channel] : view<[%expert_count]x[%hidden_size]xf32, #dense> -> vector<4xf32>
+      %input_values = vector.load %input_view[%token, %channel] : view<[%launch_token_count]x[%hidden_size]xf32> -> vector<4xf32>
+      %weight_values = vector.load %weight_view[%expert, %channel] : view<[%expert_count]x[%hidden_size]xf32> -> vector<4xf32>
       %next_accumulator = vector.dotf %input_values, %weight_values, %accumulator : vector<4xf32>, vector<4xf32>, f32
       scf.yield %next_accumulator : f32
     }
     scf.yield %unrolled_sum : f32
   } else {
     %general_sum = scf.for %channel = [%lane_channel to %full_channel_limit step %c256](%accumulator = %c0_f32 : f32) -> (f32) {
-      %input_values = vector.load %input_view[%token, %channel] : view<[%launch_token_count]x[%hidden_size]xf32, #dense> -> vector<4xf32>
-      %weight_values = vector.load %weight_view[%expert, %channel] : view<[%expert_count]x[%hidden_size]xf32, #dense> -> vector<4xf32>
+      %input_values = vector.load %input_view[%token, %channel] : view<[%launch_token_count]x[%hidden_size]xf32> -> vector<4xf32>
+      %weight_values = vector.load %weight_view[%expert, %channel] : view<[%expert_count]x[%hidden_size]xf32> -> vector<4xf32>
       %next_accumulator = vector.dotf %input_values, %weight_values, %accumulator : vector<4xf32>, vector<4xf32>, f32
       scf.yield %next_accumulator : f32
     }
@@ -125,7 +125,7 @@ kernel.def target(@qwen3_moe_router_projection_gfx11_wave64) @qwen3_moe_router_p
   %writes_output = scalar.cmpi eq, %lane_i32, %c0_i32 : i32
   %publishes_output = scalar.andi %valid_token, %writes_output : i1
   scf.if %publishes_output {
-    view.store %sum, %output_view[%token, %expert] : f32, view<[%launch_token_count]x[%expert_count]xf32, #dense>
+    view.store %sum, %output_view[%token, %expert] : f32, view<[%launch_token_count]x[%expert_count]xf32>
   }
   kernel.return
 }
@@ -167,19 +167,19 @@ kernel.def target(@qwen3_moe_router_projection_gfx11_wave32) @qwen3_moe_router_p
   %lane_channel = index.mul %lane, %c4 : index
   %c0_f32x4 = vector.splat %c0_f32 : vector<4xf32>
   %input_noalias, %weight_noalias, %output_noalias = buffer.assume.noalias %input, %weight, %output : buffer, buffer, buffer
-  %input_view = buffer.view %input_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32, #dense>
-  %weight_view = buffer.view %weight_noalias[%c0_offset] : buffer -> view<[%expert_count]x[%hidden_size]xf32, #dense>
-  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%expert_count]xf32, #dense>
+  %input_view = buffer.view %input_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32>
+  %weight_view = buffer.view %weight_noalias[%c0_offset] : buffer -> view<[%expert_count]x[%hidden_size]xf32>
+  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%expert_count]xf32>
   %full_channel_limit = index.sub %hidden_size, %c3 : index
   %unroll_remainder = index.rem %hidden_size, %c1024 : index
   %uses_unrolled_schedule = index.cmp eq, %unroll_remainder, %c0 : index
   %unroll_count = scf.select %uses_unrolled_schedule, %c4, %c1 : index
   %lane_sums = scf.for %channel = [%lane_channel to %full_channel_limit step %c128](%accumulators = %c0_f32x4 : vector<4xf32>) -> (vector<4xf32>) unroll(%unroll_count) schedule(interleaved) {
-    %input_values = vector.load %input_view[%token, %channel] : view<[%launch_token_count]x[%hidden_size]xf32, #dense> -> vector<4xf32>
-    %weight_values0 = vector.load %weight_view[%expert_base, %channel] : view<[%expert_count]x[%hidden_size]xf32, #dense> -> vector<4xf32>
-    %weight_values1 = vector.load %weight_view[%expert1, %channel] : view<[%expert_count]x[%hidden_size]xf32, #dense> -> vector<4xf32>
-    %weight_values2 = vector.load %weight_view[%expert2, %channel] : view<[%expert_count]x[%hidden_size]xf32, #dense> -> vector<4xf32>
-    %weight_values3 = vector.load %weight_view[%expert3, %channel] : view<[%expert_count]x[%hidden_size]xf32, #dense> -> vector<4xf32>
+    %input_values = vector.load %input_view[%token, %channel] : view<[%launch_token_count]x[%hidden_size]xf32> -> vector<4xf32>
+    %weight_values0 = vector.load %weight_view[%expert_base, %channel] : view<[%expert_count]x[%hidden_size]xf32> -> vector<4xf32>
+    %weight_values1 = vector.load %weight_view[%expert1, %channel] : view<[%expert_count]x[%hidden_size]xf32> -> vector<4xf32>
+    %weight_values2 = vector.load %weight_view[%expert2, %channel] : view<[%expert_count]x[%hidden_size]xf32> -> vector<4xf32>
+    %weight_values3 = vector.load %weight_view[%expert3, %channel] : view<[%expert_count]x[%hidden_size]xf32> -> vector<4xf32>
     %accumulator0 = vector.extract %accumulators[0] : vector<4xf32> -> f32
     %accumulator1 = vector.extract %accumulators[1] : vector<4xf32> -> f32
     %accumulator2 = vector.extract %accumulators[2] : vector<4xf32> -> f32
@@ -196,7 +196,7 @@ kernel.def target(@qwen3_moe_router_projection_gfx11_wave32) @qwen3_moe_router_p
   %writes_output = scalar.cmpi eq, %lane_i32, %c0_i32 : i32
   %publishes_output = scalar.andi %valid_token, %writes_output : i1
   scf.if %publishes_output {
-    vector.store %sums, %output_view[%token, %expert_base] : vector<4xf32>, view<[%launch_token_count]x[%expert_count]xf32, #dense>
+    vector.store %sums, %output_view[%token, %expert_base] : vector<4xf32>, view<[%launch_token_count]x[%expert_count]xf32>
   }
   kernel.return
 }

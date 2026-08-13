@@ -73,9 +73,9 @@ func.template<qwen3_moe.routed_down.q4k_q8_1_x4.body> device @qwen3_moe_routed_d
   %padded_route_count = index.add %bounded_route_count, %c3 : index
   %route_batch_count = index.div %padded_route_count, %c4 : index
   %q8_noalias, %route_id_noalias, %route_weight_noalias, %weight_noalias, %output_noalias = buffer.assume.noalias %q8_input, %route_ids, %route_weights, %weight, %output : buffer, buffer, buffer, buffer, buffer
-  %route_id_view = buffer.view %route_id_noalias[%c0_offset] : buffer -> view<[%body_token_count]x[%bounded_route_id_stride]xi32, #dense>
-  %route_weight_view = buffer.view %route_weight_noalias[%c0_offset] : buffer -> view<[%body_token_count]x[%bounded_route_count]xf32, #dense>
-  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%body_token_count]x[%bounded_output_size]xf32, #dense>
+  %route_id_view = buffer.view %route_id_noalias[%c0_offset] : buffer -> view<[%body_token_count]x[%bounded_route_id_stride]xi32>
+  %route_weight_view = buffer.view %route_weight_noalias[%c0_offset] : buffer -> view<[%body_token_count]x[%bounded_route_count]xf32>
+  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%body_token_count]x[%bounded_output_size]xf32>
   %lane_has_route = index.cmp ult, %lane, %bounded_route_count : index
   %lane_within_route_stride = index.cmp ult, %lane, %bounded_route_id_stride : index
   %loads_active_route = scalar.andi %publish_output, %lane_has_route : i1
@@ -83,8 +83,8 @@ func.template<qwen3_moe.routed_down.q4k_q8_1_x4.body> device @qwen3_moe_routed_d
   %lane_expert_i32, %lane_route_weight = scf.if %loads_route_metadata -> (i32, f32) {
     %route_lane0, %metadata_route_count = index.assume %lane, %bounded_route_count [lt(%lane, %bounded_route_count)] : index, index
     %route_lane, %metadata_route_id_stride = index.assume %route_lane0, %bounded_route_id_stride [lt(%route_lane0, %bounded_route_id_stride)] : index, index
-    %expert_i32 = view.load %route_id_view[%bounded_token, %route_lane] : view<[%body_token_count]x[%bounded_route_id_stride]xi32, #dense> -> i32
-    %route_weight = view.load %route_weight_view[%bounded_token, %route_lane0] : view<[%body_token_count]x[%bounded_route_count]xf32, #dense> -> f32
+    %expert_i32 = view.load %route_id_view[%bounded_token, %route_lane] : view<[%body_token_count]x[%bounded_route_id_stride]xi32> -> i32
+    %route_weight = view.load %route_weight_view[%bounded_token, %route_lane0] : view<[%body_token_count]x[%bounded_route_count]xf32> -> f32
     scf.yield %expert_i32, %route_weight : i32, f32
   } else {
     scf.yield %c0_i32, %c0_f32 : i32, f32
@@ -130,9 +130,9 @@ func.template<qwen3_moe.routed_down.q4k_q8_1_x4.body> device @qwen3_moe_routed_d
   %writes_output = scalar.andi %writes_active_channel, %is_lane_zero : i1
   scf.if %writes_output {
     %bounded_channel, %body_output_size = index.assume %channel, %bounded_output_size [lt(%channel, %bounded_output_size)] : index, index
-    %residual = view.load %output_view[%bounded_token, %bounded_channel] : view<[%body_token_count]x[%bounded_output_size]xf32, #dense> -> f32
+    %residual = view.load %output_view[%bounded_token, %bounded_channel] : view<[%body_token_count]x[%bounded_output_size]xf32> -> f32
     %result = scalar.addf %residual, %routed_sum : f32
-    view.store %result, %output_view[%bounded_token, %bounded_channel] : f32, view<[%body_token_count]x[%bounded_output_size]xf32, #dense>
+    view.store %result, %output_view[%bounded_token, %bounded_channel] : f32, view<[%body_token_count]x[%bounded_output_size]xf32>
   }
   func.return
 }
