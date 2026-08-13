@@ -30,8 +30,8 @@ kernel.def target(@qwen3_moe_decode_split_gfx11_wave64) export("qwen_flash_atten
   %c0_f32 = scalar.constant 0.0 : f32
   %negative_large = scalar.constant -1e+30 : f32
   %publish_q8 = scalar.constant true : i1
-  %control_view = buffer.view %control[%c0_offset] : buffer -> view<1xi32, #dense>
-  %context_base_raw = view.load %control_view[%c0] : view<1xi32, #dense> -> i32
+  %control_view = buffer.view %control[%c0_offset] : buffer -> view<1xi32>
+  %context_base_raw = view.load %control_view[%c0] : view<1xi32> -> i32
   %context_base_i32 = scalar.assume %context_base_raw [range(%context_base_raw, 0, 32767)] : i32
   %context_base0 = index.cast %context_base_i32 : i32 to index
   %context_base = index.assume %context_base0 [range(%context_base0, 0, 32767)] : index

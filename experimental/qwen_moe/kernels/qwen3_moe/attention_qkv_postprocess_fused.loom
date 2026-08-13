@@ -60,18 +60,18 @@ func.template<qwen3_moe.attention.qkv_postprocess_fused_decode.body> device @qwe
   %head_domain, %completion_counter_count = index.assume %head_domain0, %head_domain_count [lt(%head_domain0, %head_domain_count)] : index, index
   %is_arrival_workitem = index.cmp eq, %workitem, %c0 : index
   %completion_counters_aligned = buffer.assume.alignment %completion_counters {minimum_alignment = 16} : buffer
-  %completion_counters_view = buffer.view %completion_counters_aligned[%c0_offset] : buffer -> view<[%completion_counter_count]xi32, #dense>
+  %completion_counters_view = buffer.view %completion_counters_aligned[%c0_offset] : buffer -> view<[%completion_counter_count]xi32>
   %counter_scratch = buffer.alloca<workgroup> align(4) %counter_scratch_bytes : buffer
-  %counter_scratch_view = buffer.view %counter_scratch[%c0_offset] : buffer -> view<1xi32, #dense>
+  %counter_scratch_view = buffer.view %counter_scratch[%c0_offset] : buffer -> view<1xi32>
   // Publish every producer's projection stores before the leader advances one
   // workgroup arrival. The last arrival then acquires the complete head.
   kernel.barrier<global> scope(workgroup) ordering(release)
   scf.if %is_arrival_workitem {
-    %old_counter = view.atomic.rmw<addi> %c1_i32, %completion_counters_view[%head_domain] {ordering = acq_rel, scope = device} : i32, view<[%completion_counter_count]xi32, #dense> -> i32
-    view.store %old_counter, %counter_scratch_view[%c0] : i32, view<1xi32, #dense>
+    %old_counter = view.atomic.rmw<addi> %c1_i32, %completion_counters_view[%head_domain] {ordering = acq_rel, scope = device} : i32, view<[%completion_counter_count]xi32> -> i32
+    view.store %old_counter, %counter_scratch_view[%c0] : i32, view<1xi32>
   }
   kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
-  %old_counter = view.load %counter_scratch_view[%c0] : view<1xi32, #dense> -> i32
+  %old_counter = view.load %counter_scratch_view[%c0] : view<1xi32> -> i32
   %head_tile_count_i32 = index.cast %head_tile_count : index to i32
   %last_head_tile_i32 = scalar.subi %head_tile_count_i32, %c1_i32 : i32
   %negative_head_tile_count_i32 = scalar.subi %c0_i32, %head_tile_count_i32 : i32
@@ -83,7 +83,7 @@ func.template<qwen3_moe.attention.qkv_postprocess_fused_decode.body> device @qwe
     // The counter becomes reusable only after all semantic output stores.
     kernel.barrier<global> scope(workgroup) ordering(release)
     scf.if %is_arrival_workitem {
-      view.atomic.reduce<addi> %negative_head_tile_count_i32, %completion_counters_view[%head_domain] {ordering = release, scope = device} : i32, view<[%completion_counter_count]xi32, #dense>
+      view.atomic.reduce<addi> %negative_head_tile_count_i32, %completion_counters_view[%head_domain] {ordering = release, scope = device} : i32, view<[%completion_counter_count]xi32>
     }
   }
   func.return

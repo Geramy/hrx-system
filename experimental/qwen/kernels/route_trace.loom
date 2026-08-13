@@ -13,26 +13,26 @@ func.template<qwen3_moe.route_trace.capture> device @qwen3_moe_route_trace_captu
   %token, %launch_token_count = index.assume %token0, %bounded_token_count [range(%token0, 0, 2047), lt(%token0, %bounded_token_count)] : index, index
   %lane = index.assume %lane0 [range(%lane0, 0, 31)] : index
   %route_ids_noalias, %route_weights_noalias, %control_noalias, %trace_ids_noalias, %trace_weights_noalias = buffer.assume.noalias %route_ids, %route_weights, %control, %trace_ids, %trace_weights : buffer, buffer, buffer, buffer, buffer
-  %route_ids_view = buffer.view %route_ids_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x8xi32, #dense>
-  %route_weights_view = buffer.view %route_weights_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x8xf32, #dense>
-  %control_view = buffer.view %control_noalias[%c0_offset] : buffer -> view<1xi32, #dense>
-  %trace_ids_view = buffer.view %trace_ids_noalias[%c0_offset] : buffer -> view<[%bounded_context_capacity]x48x8xi32, #dense>
-  %trace_weights_view = buffer.view %trace_weights_noalias[%c0_offset] : buffer -> view<[%bounded_context_capacity]x48x8xf32, #dense>
+  %route_ids_view = buffer.view %route_ids_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x8xi32>
+  %route_weights_view = buffer.view %route_weights_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x8xf32>
+  %control_view = buffer.view %control_noalias[%c0_offset] : buffer -> view<1xi32>
+  %trace_ids_view = buffer.view %trace_ids_noalias[%c0_offset] : buffer -> view<[%bounded_context_capacity]x48x8xi32>
+  %trace_weights_view = buffer.view %trace_weights_noalias[%c0_offset] : buffer -> view<[%bounded_context_capacity]x48x8xf32>
 
   %has_route = index.cmp ult, %lane, %route_count : index
   scf.if %has_route {
     %route = index.assume %lane [range(%lane, 0, 7)] : index
-    %context_base_raw = view.load %control_view[%c0] : view<1xi32, #dense> -> i32
+    %context_base_raw = view.load %control_view[%c0] : view<1xi32> -> i32
     %context_base_i32 = scalar.assume %context_base_raw [range(%context_base_raw, 0, 32767)] : i32
     %context_base0 = index.cast %context_base_i32 : i32 to index
     %context_base = index.assume %context_base0 [range(%context_base0, 0, 32767)] : index
     %logical_token_base = index.add %context_base, %bounded_source_token_offset : index
     %logical_token0 = index.add %logical_token_base, %token : index
     %logical_token, %trace_context_capacity = index.assume %logical_token0, %bounded_context_capacity [range(%logical_token0, 0, 32767), lt(%logical_token0, %bounded_context_capacity)] : index, index
-    %route_id = view.load %route_ids_view[%token, %route] : view<[%bounded_token_count]x8xi32, #dense> -> i32
-    %route_weight = view.load %route_weights_view[%token, %route] : view<[%bounded_token_count]x8xf32, #dense> -> f32
-    view.store %route_id, %trace_ids_view[%logical_token, %layer, %route] : i32, view<[%bounded_context_capacity]x48x8xi32, #dense>
-    view.store %route_weight, %trace_weights_view[%logical_token, %layer, %route] : f32, view<[%bounded_context_capacity]x48x8xf32, #dense>
+    %route_id = view.load %route_ids_view[%token, %route] : view<[%bounded_token_count]x8xi32> -> i32
+    %route_weight = view.load %route_weights_view[%token, %route] : view<[%bounded_token_count]x8xf32> -> f32
+    view.store %route_id, %trace_ids_view[%logical_token, %layer, %route] : i32, view<[%bounded_context_capacity]x48x8xi32>
+    view.store %route_weight, %trace_weights_view[%logical_token, %layer, %route] : f32, view<[%bounded_context_capacity]x48x8xf32>
   }
   func.return
 }
@@ -93,17 +93,17 @@ kernel.def @qwen3_moe_route_trace_inspect_four_test(%layer_ordinal: index, %cont
   %token, %trace_context_capacity = index.assume %token_in_launch, %bounded_context_capacity [lt(%token_in_launch, %bounded_context_capacity)] : index, index
   %lane = index.assume %lane0 [range(%lane0, 0, 31)] : index
   %trace_ids_noalias, %trace_weights_noalias, %output_ids_noalias, %output_weights_noalias = buffer.assume.noalias %trace_ids, %trace_weights, %output_ids, %output_weights : buffer, buffer, buffer, buffer
-  %trace_ids_view = buffer.view %trace_ids_noalias[%c0_offset] : buffer -> view<[%bounded_context_capacity]x48x8xi32, #dense>
-  %trace_weights_view = buffer.view %trace_weights_noalias[%c0_offset] : buffer -> view<[%bounded_context_capacity]x48x8xf32, #dense>
-  %output_ids_view = buffer.view %output_ids_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x8xi32, #dense>
-  %output_weights_view = buffer.view %output_weights_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x8xf32, #dense>
+  %trace_ids_view = buffer.view %trace_ids_noalias[%c0_offset] : buffer -> view<[%bounded_context_capacity]x48x8xi32>
+  %trace_weights_view = buffer.view %trace_weights_noalias[%c0_offset] : buffer -> view<[%bounded_context_capacity]x48x8xf32>
+  %output_ids_view = buffer.view %output_ids_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x8xi32>
+  %output_weights_view = buffer.view %output_weights_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x8xf32>
   %has_route = index.cmp ult, %lane, %route_count : index
   scf.if %has_route {
     %route = index.assume %lane [range(%lane, 0, 7)] : index
-    %route_id = view.load %trace_ids_view[%token, %layer, %route] : view<[%bounded_context_capacity]x48x8xi32, #dense> -> i32
-    %route_weight = view.load %trace_weights_view[%token, %layer, %route] : view<[%bounded_context_capacity]x48x8xf32, #dense> -> f32
-    view.store %route_id, %output_ids_view[%token_in_launch, %route] : i32, view<[%bounded_token_count]x8xi32, #dense>
-    view.store %route_weight, %output_weights_view[%token_in_launch, %route] : f32, view<[%bounded_token_count]x8xf32, #dense>
+    %route_id = view.load %trace_ids_view[%token, %layer, %route] : view<[%bounded_context_capacity]x48x8xi32> -> i32
+    %route_weight = view.load %trace_weights_view[%token, %layer, %route] : view<[%bounded_context_capacity]x48x8xf32> -> f32
+    view.store %route_id, %output_ids_view[%token_in_launch, %route] : i32, view<[%bounded_token_count]x8xi32>
+    view.store %route_weight, %output_weights_view[%token_in_launch, %route] : f32, view<[%bounded_token_count]x8xf32>
   }
   kernel.return
 }

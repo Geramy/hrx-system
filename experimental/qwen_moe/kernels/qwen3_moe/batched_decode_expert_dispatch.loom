@@ -72,10 +72,10 @@ kernel.def target(@qwen3_moe_batched_decode_dispatch_gfx11_wave32) @qwen3_moe_bu
   %c0_offset = index.constant 0 : offset
   %assignment_count = index.mul %bounded_token_count, %configured_route_count : index
   %route_ids_noalias, %assignment_ordinals_noalias, %queue_counts_noalias, %queue_descriptors_noalias = buffer.assume.noalias %route_ids, %assignment_ordinals, %queue_counts, %queue_descriptors : buffer, buffer, buffer, buffer
-  %route_view = buffer.view %route_ids_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x[%bounded_route_stride]xi32, #dense>
-  %assignment_view = buffer.view %assignment_ordinals_noalias[%c0_offset] : buffer -> view<[%assignment_count]xi32, #dense>
-  %queue_count_view = buffer.view %queue_counts_noalias[%c0_offset] : buffer -> view<4xi32, #dense>
-  %queue_descriptor_view = buffer.view %queue_descriptors_noalias[%c0_offset] : buffer -> view<4x[%configured_expert_count]x4xi32, #dense>
+  %route_view = buffer.view %route_ids_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x[%bounded_route_stride]xi32>
+  %assignment_view = buffer.view %assignment_ordinals_noalias[%c0_offset] : buffer -> view<[%assignment_count]xi32>
+  %queue_count_view = buffer.view %queue_counts_noalias[%c0_offset] : buffer -> view<4xi32>
+  %queue_descriptor_view = buffer.view %queue_descriptors_noalias[%c0_offset] : buffer -> view<4x[%configured_expert_count]x4xi32>
   %expert_i32 = index.cast %expert : index to i32
 
   // Every lane walks the same tiny, cache-resident route plane. The serial
@@ -86,7 +86,7 @@ kernel.def target(@qwen3_moe_batched_decode_dispatch_gfx11_wave32) @qwen3_moe_bu
     %route0 = index.rem %assignment, %configured_route_count : index
     %token, %route_token_count = index.assume %token0, %bounded_token_count [lt(%token0, %bounded_token_count)] : index, index
     %route, %route_row_stride = index.assume %route0, %bounded_route_stride [lt(%route0, %bounded_route_stride)] : index, index
-    %route_expert_i32 = view.load %route_view[%token, %route] : view<[%bounded_token_count]x[%bounded_route_stride]xi32, #dense> -> i32
+    %route_expert_i32 = view.load %route_view[%token, %route] : view<[%bounded_token_count]x[%bounded_route_stride]xi32> -> i32
     %matches = scalar.cmpi eq, %route_expert_i32, %expert_i32 : i32
     %match_increment = scf.select %matches, %c1_i32, %c0_i32 : i32
     %next_matched_count = scalar.addi %matched_count, %match_increment : i32
@@ -103,14 +103,14 @@ kernel.def target(@qwen3_moe_batched_decode_dispatch_gfx11_wave32) @qwen3_moe_bu
     %route0 = index.rem %assignment, %configured_route_count : index
     %token, %route_token_count = index.assume %token0, %bounded_token_count [lt(%token0, %bounded_token_count)] : index, index
     %route, %route_row_stride = index.assume %route0, %bounded_route_stride [lt(%route0, %bounded_route_stride)] : index, index
-    %route_expert_i32 = view.load %route_view[%token, %route] : view<[%bounded_token_count]x[%bounded_route_stride]xi32, #dense> -> i32
+    %route_expert_i32 = view.load %route_view[%token, %route] : view<[%bounded_token_count]x[%bounded_route_stride]xi32> -> i32
     %matches = scalar.cmpi eq, %route_expert_i32, %expert_i32 : i32
     scf.if %matches {
       %compact_ordinal_i32 = scalar.addi %expert_assignment_base_i32, %matched_count : i32
       %compact_ordinal0 = index.cast %compact_ordinal_i32 : i32 to index
       %bounded_compact_ordinal, %bounded_assignment_count = index.assume %compact_ordinal0, %assignment_count [range(%compact_ordinal0, 0, 65535), lt(%compact_ordinal0, %assignment_count)] : index, index
       %assignment_i32 = index.cast %assignment : index to i32
-      view.store %assignment_i32, %assignment_view[%bounded_compact_ordinal] : i32, view<[%assignment_count]xi32, #dense>
+      view.store %assignment_i32, %assignment_view[%bounded_compact_ordinal] : i32, view<[%assignment_count]xi32>
     }
     %match_increment = scf.select %matches, %c1_i32, %c0_i32 : i32
     %next_matched_count = scalar.addi %matched_count, %match_increment : i32
@@ -154,29 +154,29 @@ kernel.def target(@qwen3_moe_batched_decode_dispatch_gfx11_wave32) @qwen3_moe_bu
   %schedule0_ordinal0 = index.cast %safe_schedule0_ordinal_i32 : i32 to index
   %schedule0_ordinal, %schedule0_queue_capacity = index.assume %schedule0_ordinal0, %configured_expert_count [range(%schedule0_ordinal0, 0, 511), lt(%schedule0_ordinal0, %configured_expert_count)] : index, index
   %schedule0_mask = vector.splat %is_schedule0 : vector<4xi1>
-  vector.store.mask %descriptor, %queue_descriptor_view[0, %schedule0_ordinal, 0], %schedule0_mask : vector<4xi32>, view<4x[%configured_expert_count]x4xi32, #dense>, vector<4xi1>
+  vector.store.mask %descriptor, %queue_descriptor_view[0, %schedule0_ordinal, 0], %schedule0_mask : vector<4xi32>, view<4x[%configured_expert_count]x4xi32>, vector<4xi1>
   %safe_schedule1_ordinal_i32 = scf.select %is_schedule1, %schedule1_ordinal_i32, %c0_i32 : i32
   %schedule1_ordinal0 = index.cast %safe_schedule1_ordinal_i32 : i32 to index
   %schedule1_ordinal, %schedule1_queue_capacity = index.assume %schedule1_ordinal0, %configured_expert_count [range(%schedule1_ordinal0, 0, 511), lt(%schedule1_ordinal0, %configured_expert_count)] : index, index
   %schedule1_mask = vector.splat %is_schedule1 : vector<4xi1>
-  vector.store.mask %descriptor, %queue_descriptor_view[1, %schedule1_ordinal, 0], %schedule1_mask : vector<4xi32>, view<4x[%configured_expert_count]x4xi32, #dense>, vector<4xi1>
+  vector.store.mask %descriptor, %queue_descriptor_view[1, %schedule1_ordinal, 0], %schedule1_mask : vector<4xi32>, view<4x[%configured_expert_count]x4xi32>, vector<4xi1>
   %safe_schedule2_ordinal_i32 = scf.select %is_schedule2, %schedule2_ordinal_i32, %c0_i32 : i32
   %schedule2_ordinal0 = index.cast %safe_schedule2_ordinal_i32 : i32 to index
   %schedule2_ordinal, %schedule2_queue_capacity = index.assume %schedule2_ordinal0, %configured_expert_count [range(%schedule2_ordinal0, 0, 511), lt(%schedule2_ordinal0, %configured_expert_count)] : index, index
   %schedule2_mask = vector.splat %is_schedule2 : vector<4xi1>
-  vector.store.mask %descriptor, %queue_descriptor_view[2, %schedule2_ordinal, 0], %schedule2_mask : vector<4xi32>, view<4x[%configured_expert_count]x4xi32, #dense>, vector<4xi1>
+  vector.store.mask %descriptor, %queue_descriptor_view[2, %schedule2_ordinal, 0], %schedule2_mask : vector<4xi32>, view<4x[%configured_expert_count]x4xi32>, vector<4xi1>
   %safe_schedule3_ordinal_i32 = scf.select %is_schedule3, %schedule3_ordinal_i32, %c0_i32 : i32
   %schedule3_ordinal0 = index.cast %safe_schedule3_ordinal_i32 : i32 to index
   %schedule3_ordinal, %schedule3_queue_capacity = index.assume %schedule3_ordinal0, %configured_expert_count [range(%schedule3_ordinal0, 0, 511), lt(%schedule3_ordinal0, %configured_expert_count)] : index, index
   %schedule3_mask = vector.splat %is_schedule3 : vector<4xi1>
-  vector.store.mask %descriptor, %queue_descriptor_view[3, %schedule3_ordinal, 0], %schedule3_mask : vector<4xi32>, view<4x[%configured_expert_count]x4xi32, #dense>, vector<4xi1>
+  vector.store.mask %descriptor, %queue_descriptor_view[3, %schedule3_ordinal, 0], %schedule3_mask : vector<4xi32>, view<4x[%configured_expert_count]x4xi32>, vector<4xi1>
 
   %is_lane_zero = index.cmp eq, %expert, %c0 : index
   scf.if %is_lane_zero {
-    view.store %schedule0_count, %queue_count_view[0] : i32, view<4xi32, #dense>
-    view.store %schedule1_count, %queue_count_view[1] : i32, view<4xi32, #dense>
-    view.store %schedule2_count, %queue_count_view[2] : i32, view<4xi32, #dense>
-    view.store %schedule3_count, %queue_count_view[3] : i32, view<4xi32, #dense>
+    view.store %schedule0_count, %queue_count_view[0] : i32, view<4xi32>
+    view.store %schedule1_count, %queue_count_view[1] : i32, view<4xi32>
+    view.store %schedule2_count, %queue_count_view[2] : i32, view<4xi32>
+    view.store %schedule3_count, %queue_count_view[3] : i32, view<4xi32>
   }
   kernel.return
 }
@@ -207,10 +207,10 @@ kernel.def target(@qwen3_moe_batched_decode_dispatch_gfx11_wave32) @qwen3_moe_bu
   %c0_offset = index.constant 0 : offset
   %assignment_count = index.mul %bounded_token_count, %configured_route_count : index
   %route_ids_noalias, %assignment_ordinals_noalias, %queue_counts_noalias, %queue_descriptors_noalias = buffer.assume.noalias %route_ids, %assignment_ordinals, %queue_counts, %queue_descriptors : buffer, buffer, buffer, buffer
-  %route_view = buffer.view %route_ids_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x[%bounded_route_stride]xi32, #dense>
-  %assignment_view = buffer.view %assignment_ordinals_noalias[%c0_offset] : buffer -> view<[%assignment_count]xi32, #dense>
-  %queue_count_view = buffer.view %queue_counts_noalias[%c0_offset] : buffer -> view<4xi32, #dense>
-  %queue_descriptor_view = buffer.view %queue_descriptors_noalias[%c0_offset] : buffer -> view<4x[%configured_expert_count]x4xi32, #dense>
+  %route_view = buffer.view %route_ids_noalias[%c0_offset] : buffer -> view<[%bounded_token_count]x[%bounded_route_stride]xi32>
+  %assignment_view = buffer.view %assignment_ordinals_noalias[%c0_offset] : buffer -> view<[%assignment_count]xi32>
+  %queue_count_view = buffer.view %queue_counts_noalias[%c0_offset] : buffer -> view<4xi32>
+  %queue_descriptor_view = buffer.view %queue_descriptors_noalias[%c0_offset] : buffer -> view<4x[%configured_expert_count]x4xi32>
 
   %final_assignment_base, %final_schedule0_count, %final_schedule1_count, %final_schedule2_count, %final_schedule3_count = scf.for %expert = [%c0 to %bounded_expert_count step %c1](%assignment_base = %c0_i32 : i32, %schedule0_count = %c0_i32 : i32, %schedule1_count = %c0_i32 : i32, %schedule2_count = %c0_i32 : i32, %schedule3_count = %c0_i32 : i32) -> (i32, i32, i32, i32, i32) {
     %expert_i32 = index.cast %expert : index to i32
@@ -219,14 +219,14 @@ kernel.def target(@qwen3_moe_batched_decode_dispatch_gfx11_wave32) @qwen3_moe_bu
       %route0 = index.rem %assignment, %configured_route_count : index
       %token, %route_token_count = index.assume %token0, %bounded_token_count [lt(%token0, %bounded_token_count)] : index, index
       %route, %route_row_stride = index.assume %route0, %bounded_route_stride [lt(%route0, %bounded_route_stride)] : index, index
-      %route_expert_i32 = view.load %route_view[%token, %route] : view<[%bounded_token_count]x[%bounded_route_stride]xi32, #dense> -> i32
+      %route_expert_i32 = view.load %route_view[%token, %route] : view<[%bounded_token_count]x[%bounded_route_stride]xi32> -> i32
       %matches = scalar.cmpi eq, %route_expert_i32, %expert_i32 : i32
       scf.if %matches {
         %compact_ordinal_i32 = scalar.addi %assignment_base, %matched_count : i32
         %compact_ordinal0 = index.cast %compact_ordinal_i32 : i32 to index
         %bounded_compact_ordinal, %bounded_assignment_count = index.assume %compact_ordinal0, %assignment_count [range(%compact_ordinal0, 0, 65535), lt(%compact_ordinal0, %assignment_count)] : index, index
         %assignment_i32 = index.cast %assignment : index to i32
-        view.store %assignment_i32, %assignment_view[%bounded_compact_ordinal] : i32, view<[%assignment_count]xi32, #dense>
+        view.store %assignment_i32, %assignment_view[%bounded_compact_ordinal] : i32, view<[%assignment_count]xi32>
       }
       %match_increment = scf.select %matches, %c1_i32, %c0_i32 : i32
       %next_matched_count = scalar.addi %matched_count, %match_increment : i32
@@ -254,22 +254,22 @@ kernel.def target(@qwen3_moe_batched_decode_dispatch_gfx11_wave32) @qwen3_moe_bu
     %schedule0_ordinal0 = index.cast %safe_schedule0_count : i32 to index
     %schedule0_ordinal, %schedule0_capacity = index.assume %schedule0_ordinal0, %configured_expert_count [range(%schedule0_ordinal0, 0, 511), lt(%schedule0_ordinal0, %configured_expert_count)] : index, index
     %schedule0_mask = vector.splat %is_schedule0 : vector<4xi1>
-    vector.store.mask %descriptor, %queue_descriptor_view[0, %schedule0_ordinal, 0], %schedule0_mask : vector<4xi32>, view<4x[%configured_expert_count]x4xi32, #dense>, vector<4xi1>
+    vector.store.mask %descriptor, %queue_descriptor_view[0, %schedule0_ordinal, 0], %schedule0_mask : vector<4xi32>, view<4x[%configured_expert_count]x4xi32>, vector<4xi1>
     %safe_schedule1_count = scf.select %is_schedule1, %schedule1_count, %c0_i32 : i32
     %schedule1_ordinal0 = index.cast %safe_schedule1_count : i32 to index
     %schedule1_ordinal, %schedule1_capacity = index.assume %schedule1_ordinal0, %configured_expert_count [range(%schedule1_ordinal0, 0, 511), lt(%schedule1_ordinal0, %configured_expert_count)] : index, index
     %schedule1_mask = vector.splat %is_schedule1 : vector<4xi1>
-    vector.store.mask %descriptor, %queue_descriptor_view[1, %schedule1_ordinal, 0], %schedule1_mask : vector<4xi32>, view<4x[%configured_expert_count]x4xi32, #dense>, vector<4xi1>
+    vector.store.mask %descriptor, %queue_descriptor_view[1, %schedule1_ordinal, 0], %schedule1_mask : vector<4xi32>, view<4x[%configured_expert_count]x4xi32>, vector<4xi1>
     %safe_schedule2_count = scf.select %is_schedule2, %schedule2_count, %c0_i32 : i32
     %schedule2_ordinal0 = index.cast %safe_schedule2_count : i32 to index
     %schedule2_ordinal, %schedule2_capacity = index.assume %schedule2_ordinal0, %configured_expert_count [range(%schedule2_ordinal0, 0, 511), lt(%schedule2_ordinal0, %configured_expert_count)] : index, index
     %schedule2_mask = vector.splat %is_schedule2 : vector<4xi1>
-    vector.store.mask %descriptor, %queue_descriptor_view[2, %schedule2_ordinal, 0], %schedule2_mask : vector<4xi32>, view<4x[%configured_expert_count]x4xi32, #dense>, vector<4xi1>
+    vector.store.mask %descriptor, %queue_descriptor_view[2, %schedule2_ordinal, 0], %schedule2_mask : vector<4xi32>, view<4x[%configured_expert_count]x4xi32>, vector<4xi1>
     %safe_schedule3_count = scf.select %is_schedule3, %schedule3_count, %c0_i32 : i32
     %schedule3_ordinal0 = index.cast %safe_schedule3_count : i32 to index
     %schedule3_ordinal, %schedule3_capacity = index.assume %schedule3_ordinal0, %configured_expert_count [range(%schedule3_ordinal0, 0, 511), lt(%schedule3_ordinal0, %configured_expert_count)] : index, index
     %schedule3_mask = vector.splat %is_schedule3 : vector<4xi1>
-    vector.store.mask %descriptor, %queue_descriptor_view[3, %schedule3_ordinal, 0], %schedule3_mask : vector<4xi32>, view<4x[%configured_expert_count]x4xi32, #dense>, vector<4xi1>
+    vector.store.mask %descriptor, %queue_descriptor_view[3, %schedule3_ordinal, 0], %schedule3_mask : vector<4xi32>, view<4x[%configured_expert_count]x4xi32>, vector<4xi1>
 
     %schedule0_increment = scf.select %is_schedule0, %c1_i32, %c0_i32 : i32
     %schedule1_increment = scf.select %is_schedule1, %c1_i32, %c0_i32 : i32
@@ -283,10 +283,10 @@ kernel.def target(@qwen3_moe_batched_decode_dispatch_gfx11_wave32) @qwen3_moe_bu
     scf.yield %next_assignment_base, %next_schedule0_count, %next_schedule1_count, %next_schedule2_count, %next_schedule3_count : i32, i32, i32, i32, i32
   }
 
-  view.store %final_schedule0_count, %queue_count_view[0] : i32, view<4xi32, #dense>
-  view.store %final_schedule1_count, %queue_count_view[1] : i32, view<4xi32, #dense>
-  view.store %final_schedule2_count, %queue_count_view[2] : i32, view<4xi32, #dense>
-  view.store %final_schedule3_count, %queue_count_view[3] : i32, view<4xi32, #dense>
+  view.store %final_schedule0_count, %queue_count_view[0] : i32, view<4xi32>
+  view.store %final_schedule1_count, %queue_count_view[1] : i32, view<4xi32>
+  view.store %final_schedule2_count, %queue_count_view[2] : i32, view<4xi32>
+  view.store %final_schedule3_count, %queue_count_view[3] : i32, view<4xi32>
   kernel.return
 }
 

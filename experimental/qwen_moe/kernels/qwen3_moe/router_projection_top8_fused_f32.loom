@@ -40,14 +40,14 @@ func.template<qwen3_moe.router.fused.projection> device target(@qwen3_moe_router
   %expert_base = index.mul %expert_tile, %c2 : index
   %expert1 = index.add %expert_base, %c1 : index
   %lane_channel = index.mul %lane, %c4 : index
-  %input_view = buffer.view %input[%c0_offset] : buffer -> view<[%token_count]x[%hidden_size]xf32, #dense>
-  %weight_view = buffer.view %weight[%c0_offset] : buffer -> view<[%expert_count]x[%hidden_size]xf32, #dense>
-  %logits_view = buffer.view %logits[%c0_offset] : buffer -> view<[%token_count]x[%expert_count]xf32, #dense>
+  %input_view = buffer.view %input[%c0_offset] : buffer -> view<[%token_count]x[%hidden_size]xf32>
+  %weight_view = buffer.view %weight[%c0_offset] : buffer -> view<[%expert_count]x[%hidden_size]xf32>
+  %logits_view = buffer.view %logits[%c0_offset] : buffer -> view<[%token_count]x[%expert_count]xf32>
   %c0_f32x2 = vector.splat %c0_f32 : vector<2xf32>
   %lane_sums = scf.for %channel = [%lane_channel to %hidden_size step %c256](%accumulators = %c0_f32x2 : vector<2xf32>) -> (vector<2xf32>) unroll(%c4) schedule(interleaved) {
-    %input_values = vector.load %input_view[%token, %channel] : view<[%token_count]x[%hidden_size]xf32, #dense> -> vector<4xf32>
-    %weight_values0 = vector.load %weight_view[%expert_base, %channel] : view<[%expert_count]x[%hidden_size]xf32, #dense> -> vector<4xf32>
-    %weight_values1 = vector.load %weight_view[%expert1, %channel] : view<[%expert_count]x[%hidden_size]xf32, #dense> -> vector<4xf32>
+    %input_values = vector.load %input_view[%token, %channel] : view<[%token_count]x[%hidden_size]xf32> -> vector<4xf32>
+    %weight_values0 = vector.load %weight_view[%expert_base, %channel] : view<[%expert_count]x[%hidden_size]xf32> -> vector<4xf32>
+    %weight_values1 = vector.load %weight_view[%expert1, %channel] : view<[%expert_count]x[%hidden_size]xf32> -> vector<4xf32>
     %accumulator0 = vector.extract %accumulators[0] : vector<2xf32> -> f32
     %accumulator1 = vector.extract %accumulators[1] : vector<2xf32> -> f32
     %next0 = vector.dotf %input_values, %weight_values0, %accumulator0 : vector<4xf32>, vector<4xf32>, f32
@@ -57,7 +57,7 @@ func.template<qwen3_moe.router.fused.projection> device target(@qwen3_moe_router
   }
   %sums = kernel.subgroup.reduce<addf> %lane_sums : vector<2xf32>
   scf.if %writes_projection {
-    vector.store %sums, %logits_view[%token, %expert_base] : vector<2xf32>, view<[%token_count]x[%expert_count]xf32, #dense>
+    vector.store %sums, %logits_view[%token, %expert_base] : vector<2xf32>, view<[%token_count]x[%expert_count]xf32>
   }
   func.return
 }
@@ -75,16 +75,16 @@ func.template<qwen3_moe.router.fused.projection> device requires [#target.subgro
   %expert2 = index.add %expert_base, %c2 : index
   %expert3 = index.add %expert_base, %c3 : index
   %lane_channel = index.mul %lane, %c4 : index
-  %input_view = buffer.view %input[%c0_offset] : buffer -> view<[%token_count]x[%hidden_size]xf32, #dense>
-  %weight_view = buffer.view %weight[%c0_offset] : buffer -> view<[%expert_count]x[%hidden_size]xf32, #dense>
-  %logits_view = buffer.view %logits[%c0_offset] : buffer -> view<[%token_count]x[%expert_count]xf32, #dense>
+  %input_view = buffer.view %input[%c0_offset] : buffer -> view<[%token_count]x[%hidden_size]xf32>
+  %weight_view = buffer.view %weight[%c0_offset] : buffer -> view<[%expert_count]x[%hidden_size]xf32>
+  %logits_view = buffer.view %logits[%c0_offset] : buffer -> view<[%token_count]x[%expert_count]xf32>
   %c0_f32x4 = vector.splat %c0_f32 : vector<4xf32>
   %lane_sums = scf.for %channel = [%lane_channel to %hidden_size step %c256](%accumulators = %c0_f32x4 : vector<4xf32>) -> (vector<4xf32>) unroll(%c4) schedule(interleaved) {
-    %input_values = vector.load %input_view[%token, %channel] : view<[%token_count]x[%hidden_size]xf32, #dense> -> vector<4xf32>
-    %weight_values0 = vector.load %weight_view[%expert_base, %channel] : view<[%expert_count]x[%hidden_size]xf32, #dense> -> vector<4xf32>
-    %weight_values1 = vector.load %weight_view[%expert1, %channel] : view<[%expert_count]x[%hidden_size]xf32, #dense> -> vector<4xf32>
-    %weight_values2 = vector.load %weight_view[%expert2, %channel] : view<[%expert_count]x[%hidden_size]xf32, #dense> -> vector<4xf32>
-    %weight_values3 = vector.load %weight_view[%expert3, %channel] : view<[%expert_count]x[%hidden_size]xf32, #dense> -> vector<4xf32>
+    %input_values = vector.load %input_view[%token, %channel] : view<[%token_count]x[%hidden_size]xf32> -> vector<4xf32>
+    %weight_values0 = vector.load %weight_view[%expert_base, %channel] : view<[%expert_count]x[%hidden_size]xf32> -> vector<4xf32>
+    %weight_values1 = vector.load %weight_view[%expert1, %channel] : view<[%expert_count]x[%hidden_size]xf32> -> vector<4xf32>
+    %weight_values2 = vector.load %weight_view[%expert2, %channel] : view<[%expert_count]x[%hidden_size]xf32> -> vector<4xf32>
+    %weight_values3 = vector.load %weight_view[%expert3, %channel] : view<[%expert_count]x[%hidden_size]xf32> -> vector<4xf32>
     %accumulator0 = vector.extract %accumulators[0] : vector<4xf32> -> f32
     %accumulator1 = vector.extract %accumulators[1] : vector<4xf32> -> f32
     %accumulator2 = vector.extract %accumulators[2] : vector<4xf32> -> f32
@@ -98,7 +98,7 @@ func.template<qwen3_moe.router.fused.projection> device requires [#target.subgro
   }
   %sums = kernel.subgroup.reduce<addf> %lane_sums : vector<4xf32>
   scf.if %writes_projection {
-    vector.store %sums, %logits_view[%token, %expert_base] : vector<4xf32>, view<[%token_count]x[%expert_count]xf32, #dense>
+    vector.store %sums, %logits_view[%token, %expert_base] : vector<4xf32>, view<[%token_count]x[%expert_count]xf32>
   }
   func.return
 }
@@ -132,9 +132,9 @@ kernel.def target(@qwen3_moe_router_fused_gfx11_wave64) @qwen3_moe_router_projec
   %input_storage, %weight_storage, %logits_storage = func.apply<qwen3_moe.router_projection.storage>(%input, %weight, %logits) : (buffer, buffer, buffer) -> (buffer, buffer, buffer)
   %input_noalias, %weight_noalias, %logits_noalias, %completion_counter_noalias, %route_ids_noalias, %route_weights_noalias = buffer.assume.noalias %input_storage, %weight_storage, %logits_storage, %completion_counter, %route_ids, %route_weights : buffer, buffer, buffer, buffer, buffer, buffer
   %completion_counter_aligned = buffer.assume.alignment %completion_counter_noalias {minimum_alignment = 16} : buffer
-  %completion_counter_view = buffer.view %completion_counter_aligned[%c0_offset] : buffer -> view<1xi32, #dense>
+  %completion_counter_view = buffer.view %completion_counter_aligned[%c0_offset] : buffer -> view<1xi32>
   %counter_scratch = buffer.alloca<workgroup> align(4) %counter_scratch_bytes : buffer
-  %counter_scratch_view = buffer.view %counter_scratch[%c0_offset] : buffer -> view<1xi32, #dense>
+  %counter_scratch_view = buffer.view %counter_scratch[%c0_offset] : buffer -> view<1xi32>
 
   %lane_i32 = index.cast %lane : index to i32
   %writes_projection = scalar.cmpi eq, %lane_i32, %c0_i32 : i32
@@ -144,11 +144,11 @@ kernel.def target(@qwen3_moe_router_fused_gfx11_wave64) @qwen3_moe_router_projec
   // acquires all preceding releases before any lane loads the complete row.
   kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   scf.if %writes_projection {
-    %old_counter = view.atomic.rmw<addi> %c1_i32, %completion_counter_view[%c0] {ordering = acq_rel, scope = device} : i32, view<1xi32, #dense> -> i32
-    view.store %old_counter, %counter_scratch_view[%c0] : i32, view<1xi32, #dense>
+    %old_counter = view.atomic.rmw<addi> %c1_i32, %completion_counter_view[%c0] {ordering = acq_rel, scope = device} : i32, view<1xi32> -> i32
+    view.store %old_counter, %counter_scratch_view[%c0] : i32, view<1xi32>
   }
   kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
-  %old_counter = view.load %counter_scratch_view[%c0] : view<1xi32, #dense> -> i32
+  %old_counter = view.load %counter_scratch_view[%c0] : view<1xi32> -> i32
   %expert_tile_count_i32 = index.cast %expert_tile_count : index to i32
   %last_expert_tile_i32 = scalar.subi %expert_tile_count_i32, %c1_i32 : i32
   %negative_expert_tile_count_i32 = scalar.subi %c0_i32, %expert_tile_count_i32 : i32
@@ -158,7 +158,7 @@ kernel.def target(@qwen3_moe_router_fused_gfx11_wave64) @qwen3_moe_router_projec
     // The counter cannot become reusable until all route stores complete.
     kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     scf.if %writes_projection {
-      view.atomic.reduce<addi> %negative_expert_tile_count_i32, %completion_counter_view[%c0] {ordering = release, scope = device} : i32, view<1xi32, #dense>
+      view.atomic.reduce<addi> %negative_expert_tile_count_i32, %completion_counter_view[%c0] {ordering = release, scope = device} : i32, view<1xi32>
     }
   }
   kernel.return

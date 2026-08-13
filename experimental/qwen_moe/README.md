@@ -89,7 +89,7 @@ blocks, and tensor extents remain `index`; byte strides and buffer offsets are
     : index, offset -> offset
 %payload_byte_offset = index.add %group_byte_offset, %payload_byte_add : offset
 %payload = buffer.view %packed[%payload_byte_offset]
-    : buffer -> view<32xi32, #dense>
+    : buffer -> view<32xi32>
 ```
 
 `kernels/ggml/quantize_q8_1_x4.loom` is the compact reference for this packed

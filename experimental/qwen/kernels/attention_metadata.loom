@@ -30,8 +30,8 @@ kernel.def target(@qwen_attention_metadata_gfx11_wave64) export("qwen_attention_
   %negative_infinity_i16 = scalar.constant -1024 : i16
   %c0_offset = index.constant 0 : offset
   %control_noalias, %positions_noalias, %key_cache_indices_noalias, %value_cache_indices_noalias, %attention_mask_noalias = buffer.assume.noalias %control, %positions, %key_cache_indices, %value_cache_indices, %attention_mask : buffer, buffer, buffer, buffer, buffer
-  %control_view = buffer.view %control_noalias[%c0_offset] : buffer -> view<1xi32, #dense>
-  %context_base_raw = view.load %control_view[%c0] : view<1xi32, #dense> -> i32
+  %control_view = buffer.view %control_noalias[%c0_offset] : buffer -> view<1xi32>
+  %context_base_raw = view.load %control_view[%c0] : view<1xi32> -> i32
   %context_base_i32 = scalar.assume %context_base_raw [range(%context_base_raw, 0, 32767)] : i32
   %context_base0 = index.cast %context_base_i32 : i32 to index
   %context_base = index.assume %context_base0 [range(%context_base0, 0, 32767)] : index
@@ -46,10 +46,10 @@ kernel.def target(@qwen_attention_metadata_gfx11_wave64) export("qwen_attention_
   %mask_row_base = index.mul %query, %launch_context_capacity : index
   %mask_element0 = index.add %mask_row_base, %key : index
   %mask_element = index.assume %mask_element0 [lt(%mask_element0, %mask_element_count)] : index
-  %positions_view = buffer.view %positions_noalias[%c0_offset] : buffer -> view<[%launch_token_count]xi32, #dense>
-  %key_cache_indices_view = buffer.view %key_cache_indices_noalias[%c0_offset] : buffer -> view<[%launch_token_count]xi64, #dense>
-  %value_cache_indices_view = buffer.view %value_cache_indices_noalias[%c0_offset] : buffer -> view<[%launch_token_count]xi64, #dense>
-  %attention_mask_view = buffer.view %attention_mask_noalias[%c0_offset] : buffer -> view<[%mask_element_count]xi16, #dense>
+  %positions_view = buffer.view %positions_noalias[%c0_offset] : buffer -> view<[%launch_token_count]xi32>
+  %key_cache_indices_view = buffer.view %key_cache_indices_noalias[%c0_offset] : buffer -> view<[%launch_token_count]xi64>
+  %value_cache_indices_view = buffer.view %value_cache_indices_noalias[%c0_offset] : buffer -> view<[%launch_token_count]xi64>
+  %attention_mask_view = buffer.view %attention_mask_noalias[%c0_offset] : buffer -> view<[%mask_element_count]xi16>
   %query_position0 = index.add %context_base, %query : index
   %query_position = index.assume %query_position0 [lt(%query_position0, %visible_count)] : index
   %causal_end = index.add %query_position, %c1 : index
@@ -58,7 +58,7 @@ kernel.def target(@qwen_attention_metadata_gfx11_wave64) export("qwen_attention_
   %is_visible = scalar.andi %before_causal_end, %before_visible_count : i1
   %mask_bits = scf.select %is_visible, %c0_i16, %negative_infinity_i16 : i16
   scf.if %valid_key {
-    view.store %mask_bits, %attention_mask_view[%mask_element] : i16, view<[%mask_element_count]xi16, #dense>
+    view.store %mask_bits, %attention_mask_view[%mask_element] : i16, view<[%mask_element_count]xi16>
   }
   %is_first_key_workgroup = index.cmp eq, %key_workgroup, %c0 : index
   %is_first_workitem = index.cmp eq, %workitem, %c0 : index
@@ -68,9 +68,9 @@ kernel.def target(@qwen_attention_metadata_gfx11_wave64) export("qwen_attention_
     %cache_index_i64 = index.cast %query_position : index to i64
     // This fixed no-ring experiment maps each logical position directly to
     // the same physical row in both cache planes.
-    view.store %absolute_position_i32, %positions_view[%query] : i32, view<[%launch_token_count]xi32, #dense>
-    view.store %cache_index_i64, %key_cache_indices_view[%query] : i64, view<[%launch_token_count]xi64, #dense>
-    view.store %cache_index_i64, %value_cache_indices_view[%query] : i64, view<[%launch_token_count]xi64, #dense>
+    view.store %absolute_position_i32, %positions_view[%query] : i32, view<[%launch_token_count]xi32>
+    view.store %cache_index_i64, %key_cache_indices_view[%query] : i64, view<[%launch_token_count]xi64>
+    view.store %cache_index_i64, %value_cache_indices_view[%query] : i64, view<[%launch_token_count]xi64>
   }
   kernel.return
 }
@@ -85,16 +85,16 @@ kernel.def target(@qwen_attention_metadata_gfx11_wave64) export("qwen_decode_att
   %c0 = index.constant 0 : index
   %c0_offset = index.constant 0 : offset
   %control_noalias, %positions_noalias, %key_cache_indices_noalias, %value_cache_indices_noalias = buffer.assume.noalias %control, %positions, %key_cache_indices, %value_cache_indices : buffer, buffer, buffer, buffer
-  %control_view = buffer.view %control_noalias[%c0_offset] : buffer -> view<1xi32, #dense>
-  %positions_view = buffer.view %positions_noalias[%c0_offset] : buffer -> view<1xi32, #dense>
-  %key_cache_indices_view = buffer.view %key_cache_indices_noalias[%c0_offset] : buffer -> view<1xi64, #dense>
-  %value_cache_indices_view = buffer.view %value_cache_indices_noalias[%c0_offset] : buffer -> view<1xi64, #dense>
-  %context_base_raw = view.load %control_view[%c0] : view<1xi32, #dense> -> i32
+  %control_view = buffer.view %control_noalias[%c0_offset] : buffer -> view<1xi32>
+  %positions_view = buffer.view %positions_noalias[%c0_offset] : buffer -> view<1xi32>
+  %key_cache_indices_view = buffer.view %key_cache_indices_noalias[%c0_offset] : buffer -> view<1xi64>
+  %value_cache_indices_view = buffer.view %value_cache_indices_noalias[%c0_offset] : buffer -> view<1xi64>
+  %context_base_raw = view.load %control_view[%c0] : view<1xi32> -> i32
   %context_base = scalar.assume %context_base_raw [range(%context_base_raw, 0, 32767)] : i32
   %cache_index = scalar.extsi %context_base : i32 to i64
-  view.store %context_base, %positions_view[%c0] : i32, view<1xi32, #dense>
-  view.store %cache_index, %key_cache_indices_view[%c0] : i64, view<1xi64, #dense>
-  view.store %cache_index, %value_cache_indices_view[%c0] : i64, view<1xi64, #dense>
+  view.store %context_base, %positions_view[%c0] : i32, view<1xi32>
+  view.store %cache_index, %key_cache_indices_view[%c0] : i64, view<1xi64>
+  view.store %cache_index, %value_cache_indices_view[%c0] : i64, view<1xi64>
   kernel.return
 }
 

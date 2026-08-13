@@ -96,12 +96,12 @@ func.def inline @qwen3_moe_batched_decode_q4k_rows2_lane(%input_size: index, %we
       %q8_group1_byte_base = index.add %q8_row1_byte_base, %q8_group_byte_add : offset
       %q8_payload0_byte_base = index.add %q8_group0_byte_base, %q8_payload_byte_add : offset
       %q8_payload1_byte_base = index.add %q8_group1_byte_base, %q8_payload_byte_add : offset
-      %q8_ds0_view = buffer.view %q8_input[%q8_group0_byte_base] : buffer -> view<8xf16, #dense>
-      %q8_ds1_view = buffer.view %q8_input[%q8_group1_byte_base] : buffer -> view<8xf16, #dense>
-      %q8_words0_view = buffer.view %q8_input[%q8_payload0_byte_base] : buffer -> view<32xi32, #dense>
-      %q8_words1_view = buffer.view %q8_input[%q8_payload1_byte_base] : buffer -> view<32xi32, #dense>
-      %q8_ds0 = vector.load %q8_ds0_view[%q8_low_ds_index] : view<8xf16, #dense> -> vector<4xf16>
-      %q8_ds1 = vector.load %q8_ds1_view[%q8_low_ds_index] : view<8xf16, #dense> -> vector<4xf16>
+      %q8_ds0_view = buffer.view %q8_input[%q8_group0_byte_base] : buffer -> view<8xf16>
+      %q8_ds1_view = buffer.view %q8_input[%q8_group1_byte_base] : buffer -> view<8xf16>
+      %q8_words0_view = buffer.view %q8_input[%q8_payload0_byte_base] : buffer -> view<32xi32>
+      %q8_words1_view = buffer.view %q8_input[%q8_payload1_byte_base] : buffer -> view<32xi32>
+      %q8_ds0 = vector.load %q8_ds0_view[%q8_low_ds_index] : view<8xf16> -> vector<4xf16>
+      %q8_ds1 = vector.load %q8_ds1_view[%q8_low_ds_index] : view<8xf16> -> vector<4xf16>
       %q8_low_d0_f16 = vector.extract %q8_ds0[0] : vector<4xf16> -> f16
       %q8_low_s0_f16 = vector.extract %q8_ds0[1] : vector<4xf16> -> f16
       %q8_high_d0_f16 = vector.extract %q8_ds0[2] : vector<4xf16> -> f16
@@ -118,18 +118,18 @@ func.def inline @qwen3_moe_batched_decode_q4k_rows2_lane(%input_size: index, %we
       %q8_low_s1 = scalar.extf %q8_low_s1_f16 : f16 to f32
       %q8_high_d1 = scalar.extf %q8_high_d1_f16 : f16 to f32
       %q8_high_s1 = scalar.extf %q8_high_s1_f16 : f16 to f32
-      %q8_low_words0 = vector.load %q8_words0_view[%q8_low_word_index] : view<32xi32, #dense> -> vector<4xi32>
-      %q8_high_words0 = vector.load %q8_words0_view[%q8_high_word_index] : view<32xi32, #dense> -> vector<4xi32>
-      %q8_low_words1 = vector.load %q8_words1_view[%q8_low_word_index] : view<32xi32, #dense> -> vector<4xi32>
-      %q8_high_words1 = vector.load %q8_words1_view[%q8_high_word_index] : view<32xi32, #dense> -> vector<4xi32>
+      %q8_low_words0 = vector.load %q8_words0_view[%q8_low_word_index] : view<32xi32> -> vector<4xi32>
+      %q8_high_words0 = vector.load %q8_words0_view[%q8_high_word_index] : view<32xi32> -> vector<4xi32>
+      %q8_low_words1 = vector.load %q8_words1_view[%q8_low_word_index] : view<32xi32> -> vector<4xi32>
+      %q8_high_words1 = vector.load %q8_words1_view[%q8_high_word_index] : view<32xi32> -> vector<4xi32>
       %q8_low_values0 = vector.bitcast %q8_low_words0 : vector<4xi32> to vector<16xi8>
       %q8_high_values0 = vector.bitcast %q8_high_words0 : vector<4xi32> to vector<16xi8>
       %q8_low_values1 = vector.bitcast %q8_low_words1 : vector<4xi32> to vector<16xi8>
       %q8_high_values1 = vector.bitcast %q8_high_words1 : vector<4xi32> to vector<16xi8>
       %q4_block_byte_add = index.scale %q4_block, %q4_block_bytes : index, offset -> offset
       %q4_block_byte_base = index.add %weight_row_byte_base, %q4_block_byte_add : offset
-      %header_view = buffer.view %weight[%q4_block_byte_base] : buffer -> view<4xi32, #dense>
-      %header_words = vector.load %header_view[0] : view<4xi32, #dense> -> vector<4xi32>
+      %header_view = buffer.view %weight[%q4_block_byte_base] : buffer -> view<4xi32>
+      %header_words = vector.load %header_view[0] : view<4xi32> -> vector<4xi32>
       %q4_low, %low_d_scale, %low_dmin_scale, %q4_high, %high_d_scale, %high_dmin_scale = func.call @qwen3_moe_q4k_chunk_pair_global(%weight, %weight_row_byte_base, %q4_block, %q4_group_pair, %q4_half, %header_words) : (buffer, offset, index, index, index, vector<4xi32>) -> (vector<16xi8>, f32, f32, vector<16xi8>, f32, f32)
       %row0_low = func.call @qwen3_moe_q4k_q8_1_dot(%q4_low, %low_d_scale, %low_dmin_scale, %q8_low_values0, %q8_low_d0, %q8_low_s0) : (vector<16xi8>, f32, f32, vector<16xi8>, f32, f32) -> (f32)
       %row0_high = func.call @qwen3_moe_q4k_q8_1_dot(%q4_high, %high_d_scale, %high_dmin_scale, %q8_high_values0, %q8_high_d0, %q8_high_s0) : (vector<16xi8>, f32, f32, vector<16xi8>, f32, f32) -> (f32)
@@ -208,17 +208,17 @@ kernel.def target(@qwen3_moe_batched_decode_gate_up_gfx11_wave32) @qwen3_moe_bat
   %q8_group_count = index.div %input_size, %c128 : index
   %q8_bytes_per_token = index.mul %q8_group_count, %q4_block_bytes : index
   %queue_descriptors_noalias, %assignment_ordinals_noalias, %q8_noalias, %gate_noalias, %up_noalias, %output_noalias = buffer.assume.noalias %queue_descriptors, %assignment_ordinals, %q8_input, %gate_weight, %up_weight, %output : buffer, buffer, buffer, buffer, buffer, buffer
-  %queue_descriptor_view = buffer.view %queue_descriptors_noalias[%c0_offset] : buffer -> view<4x[%configured_expert_count]x4xi32, #dense>
-  %assignment_view = buffer.view %assignment_ordinals_noalias[%c0_offset] : buffer -> view<[%assignment_count]xi32, #dense>
-  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%assignment_count]x[%bounded_output_size]xf32, #dense>
-  %descriptor = vector.load %queue_descriptor_view[%bounded_queue_ordinal, %descriptor_ordinal, 0] : view<4x[%configured_expert_count]x4xi32, #dense> -> vector<4xi32>
+  %queue_descriptor_view = buffer.view %queue_descriptors_noalias[%c0_offset] : buffer -> view<4x[%configured_expert_count]x4xi32>
+  %assignment_view = buffer.view %assignment_ordinals_noalias[%c0_offset] : buffer -> view<[%assignment_count]xi32>
+  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%assignment_count]x[%bounded_output_size]xf32>
+  %descriptor = vector.load %queue_descriptor_view[%bounded_queue_ordinal, %descriptor_ordinal, 0] : view<4x[%configured_expert_count]x4xi32> -> vector<4xi32>
   %expert, %assignment_base0, %row_count0 = func.call @qwen3_moe_unpack_batched_decode_expert_descriptor(%descriptor) : (vector<4xi32>) -> (index, index, index)
   %assignment_base, %consumer_assignment_count = index.assume %assignment_base0, %assignment_count [lt(%assignment_base0, %assignment_count)] : index, index
   %row_count = index.assume %row_count0 [range(%row_count0, 2, 2)] : index
   %assignment1_ordinal0 = index.add %assignment_base, %c1 : index
   %assignment1_ordinal, %pair_assignment_count = index.assume %assignment1_ordinal0, %assignment_count [lt(%assignment1_ordinal0, %assignment_count)] : index, index
-  %assignment0_i32 = view.load %assignment_view[%assignment_base] : view<[%assignment_count]xi32, #dense> -> i32
-  %assignment1_i32 = view.load %assignment_view[%assignment1_ordinal] : view<[%assignment_count]xi32, #dense> -> i32
+  %assignment0_i32 = view.load %assignment_view[%assignment_base] : view<[%assignment_count]xi32> -> i32
+  %assignment1_i32 = view.load %assignment_view[%assignment1_ordinal] : view<[%assignment_count]xi32> -> i32
   %assignment0_index0 = index.cast %assignment0_i32 : i32 to index
   %assignment1_index0 = index.cast %assignment1_i32 : i32 to index
   %assignment0, %assignment1, %routed_assignment_count = index.assume %assignment0_index0, %assignment1_index0, %assignment_count [range(%assignment0_index0, 0, 65535), range(%assignment1_index0, 0, 65535), lt(%assignment0_index0, %assignment_count), lt(%assignment1_index0, %assignment_count)] : index, index, index
@@ -253,8 +253,8 @@ kernel.def target(@qwen3_moe_batched_decode_gate_up_gfx11_wave32) @qwen3_moe_bat
     %gate1_silu = scalar.siluf %gate1_dot : f32
     %result0 = scalar.mulf %gate0_silu, %up0_dot : f32
     %result1 = scalar.mulf %gate1_silu, %up1_dot : f32
-    view.store %result0, %output_view[%assignment0, %channel] : f32, view<[%assignment_count]x[%bounded_output_size]xf32, #dense>
-    view.store %result1, %output_view[%assignment1, %channel] : f32, view<[%assignment_count]x[%bounded_output_size]xf32, #dense>
+    view.store %result0, %output_view[%assignment0, %channel] : f32, view<[%assignment_count]x[%bounded_output_size]xf32>
+    view.store %result1, %output_view[%assignment1, %channel] : f32, view<[%assignment_count]x[%bounded_output_size]xf32>
   }
   kernel.return
 }

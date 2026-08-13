@@ -69,7 +69,7 @@ command.program.def public @qwen3_30b_decode(
        le(%visible_context_count, %context_capacity0)] : index, index
 
   %output_weight = command.parameter
-      %parameters, "output.weight"[] : view<255252480xi8, #dense>
+      %parameters, "output.weight"[] : view<255252480xi8>
 
   %projection_input = buffer.alloca %projection_bytes {
     base_alignment = 256, memory_space = global

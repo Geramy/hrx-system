@@ -118,19 +118,19 @@ func.template<qwen3_moe.attention.qkv_quantized.body> device @qwen3_moe_attentio
     scf.yield %c0_f32 : f32
   }
   %dot = kernel.subgroup.reduce<addf> %lane_sum : f32
-  %query_output_view = buffer.view %query_output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%query_size]xf32, #dense>
-  %key_output_view = buffer.view %key_output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%key_value_size]xf32, #dense>
-  %value_output_view = buffer.view %value_output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%key_value_size]xf32, #dense>
+  %query_output_view = buffer.view %query_output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%query_size]xf32>
+  %key_output_view = buffer.view %key_output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%key_value_size]xf32>
+  %value_output_view = buffer.view %value_output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%key_value_size]xf32>
   scf.if %publish_output {
     scf.if %valid_channel {
       scf.if %is_lane_zero {
         scf.if %is_query {
-          view.store %dot, %query_output_view[%token, %global_channel] : f32, view<[%launch_token_count]x[%query_size]xf32, #dense>
+          view.store %dot, %query_output_view[%token, %global_channel] : f32, view<[%launch_token_count]x[%query_size]xf32>
         } else {
           scf.if %is_key {
-            view.store %dot, %key_output_view[%token, %key_value_channel] : f32, view<[%launch_token_count]x[%key_value_size]xf32, #dense>
+            view.store %dot, %key_output_view[%token, %key_value_channel] : f32, view<[%launch_token_count]x[%key_value_size]xf32>
           } else {
-            view.store %dot, %value_output_view[%token, %key_value_channel] : f32, view<[%launch_token_count]x[%key_value_size]xf32, #dense>
+            view.store %dot, %value_output_view[%token, %key_value_channel] : f32, view<[%launch_token_count]x[%key_value_size]xf32>
           }
         }
       }

@@ -69,13 +69,13 @@ command.program.def public @qwen3_30b_decode(%visible_context_count: index) laun
   %hidden_size = index.constant 2048 : index
 
   // The GGUF stores these three roots before the transformer layers.
-  %output_weight = command.parameter %parameters, "output.weight" : view<255252480xi8, #dense>
-  %output_norm = command.parameter %parameters, "output_norm.weight" : view<8192xi8, #dense>
-  %token_embedding = command.parameter %parameters, "token_embd.weight" : view<175030272xi8, #dense>
+  %output_weight = command.parameter %parameters, "output.weight" : view<255252480xi8>
+  %output_norm = command.parameter %parameters, "output_norm.weight" : view<8192xi8>
+  %token_embedding = command.parameter %parameters, "token_embd.weight" : view<175030272xi8>
 
   // Runtime-derived immutable model data occupies an independent fixed root.
   // The host may bind this as a subrange of its existing model allocation.
-  %rope_inverse_frequencies = command.parameter %auxiliary_parameters, "rope.inverse_frequencies" : view<64xf32, #dense>
+  %rope_inverse_frequencies = command.parameter %auxiliary_parameters, "rope.inverse_frequencies" : view<64xf32>
 
   // Request-local persistent state retains the allocation shape selected by
   // the host even though decode consumes only its first row. The source
@@ -93,13 +93,13 @@ command.program.def public @qwen3_30b_decode(%visible_context_count: index) laun
   %key_indices_bytes = index.scale %request_token_capacity, %cache_index_row_bytes : index, offset -> offset
   %value_indices_bytes = index.scale %request_token_capacity, %cache_index_row_bytes : index, offset -> offset
   %request_bytes, %hidden_offset, %token_ids_offset, %control_offset, %positions_offset, %key_indices_offset, %value_indices_offset = buffer.pack [align(256) %hidden_bytes, align(4) %token_ids_bytes, align(4) %control_bytes, align(4) %positions_bytes, align(8) %key_indices_bytes, align(8) %value_indices_bytes] : offset
-  %hidden_state = buffer.view %request_state[%hidden_offset] : buffer -> view<2048xf32, #dense>
-  %token_ids = buffer.view %request_state[%token_ids_offset] : buffer -> view<1xi32, #dense>
-  %control = buffer.view %request_state[%control_offset] : buffer -> view<1xi32, #dense>
-  %positions = buffer.view %request_state[%positions_offset] : buffer -> view<1xi32, #dense>
-  %key_cache_indices = buffer.view %request_state[%key_indices_offset] : buffer -> view<1xi64, #dense>
-  %value_cache_indices = buffer.view %request_state[%value_indices_offset] : buffer -> view<1xi64, #dense>
-  %selected_token = buffer.view %output_staging[%zero] : buffer -> view<1xi32, #dense>
+  %hidden_state = buffer.view %request_state[%hidden_offset] : buffer -> view<2048xf32>
+  %token_ids = buffer.view %request_state[%token_ids_offset] : buffer -> view<1xi32>
+  %control = buffer.view %request_state[%control_offset] : buffer -> view<1xi32>
+  %positions = buffer.view %request_state[%positions_offset] : buffer -> view<1xi32>
+  %key_cache_indices = buffer.view %request_state[%key_indices_offset] : buffer -> view<1xi64>
+  %value_cache_indices = buffer.view %request_state[%value_indices_offset] : buffer -> view<1xi64>
+  %selected_token = buffer.view %output_staging[%zero] : buffer -> view<1xi32>
 
   // A one-record pack derives the aligned, tile-padded per-layer cache stride
   // instead of repeating placement arithmetic. Logical capacity still bounds
@@ -129,25 +129,25 @@ command.program.def public @qwen3_30b_decode(%visible_context_count: index) laun
   %attention_partial_sums = buffer.alloca<global> align(256) %attention_partial_bytes : buffer
   %attention_partial_outputs = buffer.alloca<global> align(256) %attention_partial_output_bytes : buffer
   %completion_storage = buffer.alloca<global> align(256) %completion_bytes : buffer
-  %grouped_completion = buffer.view %completion_storage[%grouped_completion_offset] : buffer -> view<192xi8, #dense>
-  %attention_completion = buffer.view %completion_storage[%attention_completion_offset] : buffer -> view<16xi8, #dense>
-  %shared_completion = buffer.view %completion_storage[%shared_completion_offset] : buffer -> view<4xi8, #dense>
+  %grouped_completion = buffer.view %completion_storage[%grouped_completion_offset] : buffer -> view<192xi8>
+  %attention_completion = buffer.view %completion_storage[%attention_completion_offset] : buffer -> view<16xi8>
+  %shared_completion = buffer.view %completion_storage[%shared_completion_offset] : buffer -> view<4xi8>
 
   %layer_begin = index.constant 0 : index
   %layer_end = index.constant 48 : index
   %layer_step = index.constant 1 : index
-  %layer0_key = command.parameter %parameters, "blk.{}.attn_k.weight"[%layer_begin] : view<589824xi8, #dense>
-  %layer0_key_norm = command.parameter %parameters, "blk.{}.attn_k_norm.weight"[%layer_begin] : view<512xi8, #dense>
-  %layer0_attention_norm = command.parameter %parameters, "blk.{}.attn_norm.weight"[%layer_begin] : view<8192xi8, #dense>
+  %layer0_key = command.parameter %parameters, "blk.{}.attn_k.weight"[%layer_begin] : view<589824xi8>
+  %layer0_key_norm = command.parameter %parameters, "blk.{}.attn_k_norm.weight"[%layer_begin] : view<512xi8>
+  %layer0_attention_norm = command.parameter %parameters, "blk.{}.attn_norm.weight"[%layer_begin] : view<8192xi8>
 
-  kernel.launch @qwen_token_embedding_q4k[%token_count, %vocabulary_count](%token_count, %vocabulary_count, %token_ids, %token_embedding, %hidden_state) : [index, index](index, index, view<1xi32, #dense>, view<175030272xi8, #dense>, view<2048xf32, #dense>)
-  kernel.launch @qwen_decode_attention_metadata(%control, %positions, %key_cache_indices, %value_cache_indices) : (view<1xi32, #dense>, view<1xi32, #dense>, view<1xi64, #dense>, view<1xi64, #dense>)
-  kernel.launch @qwen3_moe_attention_rmsnorm_quantize_q8_1_x4[%token_count](%token_count, %hidden_state, %layer0_attention_norm, %projection_input) : [index](index, view<2048xf32, #dense>, view<8192xi8, #dense>, buffer)
+  kernel.launch @qwen_token_embedding_q4k[%token_count, %vocabulary_count](%token_count, %vocabulary_count, %token_ids, %token_embedding, %hidden_state) : [index, index](index, index, view<1xi32>, view<175030272xi8>, view<2048xf32>)
+  kernel.launch @qwen_decode_attention_metadata(%control, %positions, %key_cache_indices, %value_cache_indices) : (view<1xi32>, view<1xi32>, view<1xi64>, view<1xi64>)
+  kernel.launch @qwen3_moe_attention_rmsnorm_quantize_q8_1_x4[%token_count](%token_count, %hidden_state, %layer0_attention_norm, %projection_input) : [index](index, view<2048xf32>, view<8192xi8>, buffer)
 
-  %final_key, %final_key_norm, %final_attention_norm = scf.for %layer = [%layer_begin to %layer_end step %layer_step](%key_weight = %layer0_key : view<589824xi8, #dense>, %key_norm = %layer0_key_norm : view<512xi8, #dense>, %attention_norm = %layer0_attention_norm : view<8192xi8, #dense>) -> (view<589824xi8, #dense>, view<512xi8, #dense>, view<8192xi8, #dense>) unroll {
-    %attention_output_weight = command.parameter %parameters, "blk.{}.attn_output.weight"[%layer] : view<4718592xi8, #dense>
-    %query_weight = command.parameter %parameters, "blk.{}.attn_q.weight"[%layer] : view<4718592xi8, #dense>
-    %query_norm = command.parameter %parameters, "blk.{}.attn_q_norm.weight"[%layer] : view<512xi8, #dense>
+  %final_key, %final_key_norm, %final_attention_norm = scf.for %layer = [%layer_begin to %layer_end step %layer_step](%key_weight = %layer0_key : view<589824xi8>, %key_norm = %layer0_key_norm : view<512xi8>, %attention_norm = %layer0_attention_norm : view<8192xi8>) -> (view<589824xi8>, view<512xi8>, view<8192xi8>) unroll {
+    %attention_output_weight = command.parameter %parameters, "blk.{}.attn_output.weight"[%layer] : view<4718592xi8>
+    %query_weight = command.parameter %parameters, "blk.{}.attn_q.weight"[%layer] : view<4718592xi8>
+    %query_norm = command.parameter %parameters, "blk.{}.attn_q_norm.weight"[%layer] : view<512xi8>
 
     %c6 = index.constant 6 : index
     %c7 = index.constant 7 : index
@@ -188,68 +188,68 @@ command.program.def public @qwen3_30b_decode(%visible_context_count: index) laun
 
     %layer_cache_relative_offset = index.scale %layer, %layer_cache_stride : index, offset -> offset
     %layer_cache_offset = index.add %layer_cache_base, %layer_cache_relative_offset : offset
-    %layer_key_cache = buffer.view %key_cache[%layer_cache_offset] : buffer -> view<[%cache_storage_capacity]x4x128xf16, #dense>
-    %layer_value_cache = buffer.view %value_cache[%layer_cache_offset] : buffer -> view<[%cache_storage_capacity]x4x128xf16, #dense>
+    %layer_key_cache = buffer.view %key_cache[%layer_cache_offset] : buffer -> view<[%cache_storage_capacity]x4x128xf16>
+    %layer_value_cache = buffer.view %value_cache[%layer_cache_offset] : buffer -> view<[%cache_storage_capacity]x4x128xf16>
 
-    %next_key, %next_key_norm, %next_attention_norm = scf.if %uses_q6 -> (view<589824xi8, #dense>, view<512xi8, #dense>, view<8192xi8, #dense>) {
-      %value_weight = command.parameter %parameters, "blk.{}.attn_v.weight"[%layer] : view<860160xi8, #dense>
-      %down_weight = command.parameter %parameters, "blk.{}.ffn_down_exps.weight"[%layer] : view<165150720xi8, #dense>
-      %gate_weight = command.parameter %parameters, "blk.{}.ffn_gate_exps.weight"[%layer] : view<113246208xi8, #dense>
-      %router_weight = command.parameter %parameters, "blk.{}.ffn_gate_inp.weight"[%layer] : view<1048576xi8, #dense>
-      %feed_forward_norm_weight = command.parameter %parameters, "blk.{}.ffn_norm.weight"[%layer] : view<8192xi8, #dense>
-      %up_weight = command.parameter %parameters, "blk.{}.ffn_up_exps.weight"[%layer] : view<113246208xi8, #dense>
-      %following_key, %following_key_norm, %following_attention_norm = scf.if %is_last_layer -> (view<589824xi8, #dense>, view<512xi8, #dense>, view<8192xi8, #dense>) {
-        scf.yield %key_weight, %key_norm, %output_norm : view<589824xi8, #dense>, view<512xi8, #dense>, view<8192xi8, #dense>
+    %next_key, %next_key_norm, %next_attention_norm = scf.if %uses_q6 -> (view<589824xi8>, view<512xi8>, view<8192xi8>) {
+      %value_weight = command.parameter %parameters, "blk.{}.attn_v.weight"[%layer] : view<860160xi8>
+      %down_weight = command.parameter %parameters, "blk.{}.ffn_down_exps.weight"[%layer] : view<165150720xi8>
+      %gate_weight = command.parameter %parameters, "blk.{}.ffn_gate_exps.weight"[%layer] : view<113246208xi8>
+      %router_weight = command.parameter %parameters, "blk.{}.ffn_gate_inp.weight"[%layer] : view<1048576xi8>
+      %feed_forward_norm_weight = command.parameter %parameters, "blk.{}.ffn_norm.weight"[%layer] : view<8192xi8>
+      %up_weight = command.parameter %parameters, "blk.{}.ffn_up_exps.weight"[%layer] : view<113246208xi8>
+      %following_key, %following_key_norm, %following_attention_norm = scf.if %is_last_layer -> (view<589824xi8>, view<512xi8>, view<8192xi8>) {
+        scf.yield %key_weight, %key_norm, %output_norm : view<589824xi8>, view<512xi8>, view<8192xi8>
       } else {
-        %queried_key = command.parameter %parameters, "blk.{}.attn_k.weight"[%next_layer] : view<589824xi8, #dense>
-        %queried_key_norm = command.parameter %parameters, "blk.{}.attn_k_norm.weight"[%next_layer] : view<512xi8, #dense>
-        %queried_attention_norm = command.parameter %parameters, "blk.{}.attn_norm.weight"[%next_layer] : view<8192xi8, #dense>
-        scf.yield %queried_key, %queried_key_norm, %queried_attention_norm : view<589824xi8, #dense>, view<512xi8, #dense>, view<8192xi8, #dense>
+        %queried_key = command.parameter %parameters, "blk.{}.attn_k.weight"[%next_layer] : view<589824xi8>
+        %queried_key_norm = command.parameter %parameters, "blk.{}.attn_k_norm.weight"[%next_layer] : view<512xi8>
+        %queried_attention_norm = command.parameter %parameters, "blk.{}.attn_norm.weight"[%next_layer] : view<8192xi8>
+        scf.yield %queried_key, %queried_key_norm, %queried_attention_norm : view<589824xi8>, view<512xi8>, view<8192xi8>
       }
-      kernel.launch @qwen3_moe_attention_qkv_postprocess_fused_decode_q6[%token_count, %context_capacity](%token_count, %context_capacity, %projection_input, %query_weight, %key_weight, %value_weight, %positions, %key_cache_indices, %value_cache_indices, %raw_query, %raw_key, %raw_value, %query_norm, %key_norm, %rope_inverse_frequencies, %rotated_query, %layer_key_cache, %layer_value_cache, %grouped_completion) : [index, index](index, index, buffer, view<4718592xi8, #dense>, view<589824xi8, #dense>, view<860160xi8, #dense>, view<1xi32, #dense>, view<1xi64, #dense>, view<1xi64, #dense>, buffer, buffer, buffer, view<512xi8, #dense>, view<512xi8, #dense>, view<64xf32, #dense>, buffer, view<[%cache_storage_capacity]x4x128xf16, #dense>, view<[%cache_storage_capacity]x4x128xf16, #dense>, view<192xi8, #dense>)
+      kernel.launch @qwen3_moe_attention_qkv_postprocess_fused_decode_q6[%token_count, %context_capacity](%token_count, %context_capacity, %projection_input, %query_weight, %key_weight, %value_weight, %positions, %key_cache_indices, %value_cache_indices, %raw_query, %raw_key, %raw_value, %query_norm, %key_norm, %rope_inverse_frequencies, %rotated_query, %layer_key_cache, %layer_value_cache, %grouped_completion) : [index, index](index, index, buffer, view<4718592xi8>, view<589824xi8>, view<860160xi8>, view<1xi32>, view<1xi64>, view<1xi64>, buffer, buffer, buffer, view<512xi8>, view<512xi8>, view<64xf32>, buffer, view<[%cache_storage_capacity]x4x128xf16>, view<[%cache_storage_capacity]x4x128xf16>, view<192xi8>)
       %attention_output = buffer.alloca<global> align(256) %attention_output_bytes : buffer
-      kernel.launch @qwen_flash_attention_decode_dynamic_f32_f16_wmma_next_q8[%visible_context_count](%control, %rotated_query, %layer_key_cache, %layer_value_cache, %attention_partial_maximums, %attention_partial_sums, %attention_partial_outputs, %attention_completion, %attention_output, %projection_input) : [index](view<1xi32, #dense>, buffer, view<[%cache_storage_capacity]x4x128xf16, #dense>, view<[%cache_storage_capacity]x4x128xf16, #dense>, buffer, buffer, buffer, view<16xi8, #dense>, buffer, buffer)
+      kernel.launch @qwen_flash_attention_decode_dynamic_f32_f16_wmma_next_q8[%visible_context_count](%control, %rotated_query, %layer_key_cache, %layer_value_cache, %attention_partial_maximums, %attention_partial_sums, %attention_partial_outputs, %attention_completion, %attention_output, %projection_input) : [index](view<1xi32>, buffer, view<[%cache_storage_capacity]x4x128xf16>, view<[%cache_storage_capacity]x4x128xf16>, buffer, buffer, buffer, view<16xi8>, buffer, buffer)
       %feed_forward_norm = buffer.alloca<global> align(256) %feed_forward_norm_bytes : buffer
-      kernel.launch @qwen3_moe_dense_linear_q4k_q8_1_x4_next_q8[%token_count](%token_count, %projection_input, %attention_output_weight, %hidden_state, %feed_forward_norm_weight, %feed_forward_norm, %shared_completion, %projection_input) : [index](index, buffer, view<4718592xi8, #dense>, view<2048xf32, #dense>, view<8192xi8, #dense>, buffer, view<4xi8, #dense>, buffer)
+      kernel.launch @qwen3_moe_dense_linear_q4k_q8_1_x4_next_q8[%token_count](%token_count, %projection_input, %attention_output_weight, %hidden_state, %feed_forward_norm_weight, %feed_forward_norm, %shared_completion, %projection_input) : [index](index, buffer, view<4718592xi8>, view<2048xf32>, view<8192xi8>, buffer, view<4xi8>, buffer)
       %router_logits = buffer.alloca<global> align(256) %router_logits_bytes : buffer
       %route_ids = buffer.alloca<global> align(256) %route_ids_bytes : buffer
       %route_weights = buffer.alloca<global> align(256) %route_weights_bytes : buffer
-      kernel.launch @qwen3_moe_router_projection_top8_fused_decode_f32[%token_count, %route_count](%token_count, %route_count, %feed_forward_norm, %router_weight, %router_logits, %shared_completion, %route_ids, %route_weights) : [index, index](index, index, buffer, view<1048576xi8, #dense>, buffer, view<4xi8, #dense>, buffer, buffer)
+      kernel.launch @qwen3_moe_router_projection_top8_fused_decode_f32[%token_count, %route_count](%token_count, %route_count, %feed_forward_norm, %router_weight, %router_logits, %shared_completion, %route_ids, %route_weights) : [index, index](index, index, buffer, view<1048576xi8>, buffer, view<4xi8>, buffer, buffer)
       %swiglu = buffer.alloca<global> align(256) %swiglu_bytes : buffer
-      kernel.launch @qwen3_moe_routed_gate_up_swiglu_q4k_q8[%token_count, %route_count, %route_count, %expert_count, %intermediate_size](%token_count, %route_count, %route_count, %expert_count, %intermediate_size, %projection_input, %route_ids, %gate_weight, %up_weight, %swiglu) : [index, index, index, index, index](index, index, index, index, index, buffer, buffer, view<113246208xi8, #dense>, view<113246208xi8, #dense>, buffer)
-      kernel.launch @qwen3_moe_routed_down_q6k_f32_wave64_next_q8[%token_count, %intermediate_size, %route_count, %route_count, %expert_count, %hidden_size](%token_count, %intermediate_size, %route_count, %route_count, %expert_count, %hidden_size, %swiglu, %route_ids, %route_weights, %down_weight, %hidden_state, %following_attention_norm, %shared_completion, %projection_input) : [index, index, index, index, index, index](index, index, index, index, index, index, buffer, buffer, buffer, view<165150720xi8, #dense>, view<2048xf32, #dense>, view<8192xi8, #dense>, view<4xi8, #dense>, buffer)
-      scf.yield %following_key, %following_key_norm, %following_attention_norm : view<589824xi8, #dense>, view<512xi8, #dense>, view<8192xi8, #dense>
+      kernel.launch @qwen3_moe_routed_gate_up_swiglu_q4k_q8[%token_count, %route_count, %route_count, %expert_count, %intermediate_size](%token_count, %route_count, %route_count, %expert_count, %intermediate_size, %projection_input, %route_ids, %gate_weight, %up_weight, %swiglu) : [index, index, index, index, index](index, index, index, index, index, buffer, buffer, view<113246208xi8>, view<113246208xi8>, buffer)
+      kernel.launch @qwen3_moe_routed_down_q6k_f32_wave64_next_q8[%token_count, %intermediate_size, %route_count, %route_count, %expert_count, %hidden_size](%token_count, %intermediate_size, %route_count, %route_count, %expert_count, %hidden_size, %swiglu, %route_ids, %route_weights, %down_weight, %hidden_state, %following_attention_norm, %shared_completion, %projection_input) : [index, index, index, index, index, index](index, index, index, index, index, index, buffer, buffer, buffer, view<165150720xi8>, view<2048xf32>, view<8192xi8>, view<4xi8>, buffer)
+      scf.yield %following_key, %following_key_norm, %following_attention_norm : view<589824xi8>, view<512xi8>, view<8192xi8>
     } else {
-      %value_weight = command.parameter %parameters, "blk.{}.attn_v.weight"[%layer] : view<589824xi8, #dense>
-      %down_weight = command.parameter %parameters, "blk.{}.ffn_down_exps.weight"[%layer] : view<113246208xi8, #dense>
-      %gate_weight = command.parameter %parameters, "blk.{}.ffn_gate_exps.weight"[%layer] : view<113246208xi8, #dense>
-      %router_weight = command.parameter %parameters, "blk.{}.ffn_gate_inp.weight"[%layer] : view<1048576xi8, #dense>
-      %feed_forward_norm_weight = command.parameter %parameters, "blk.{}.ffn_norm.weight"[%layer] : view<8192xi8, #dense>
-      %up_weight = command.parameter %parameters, "blk.{}.ffn_up_exps.weight"[%layer] : view<113246208xi8, #dense>
-      %following_key, %following_key_norm, %following_attention_norm = scf.if %is_last_layer -> (view<589824xi8, #dense>, view<512xi8, #dense>, view<8192xi8, #dense>) {
-        scf.yield %key_weight, %key_norm, %output_norm : view<589824xi8, #dense>, view<512xi8, #dense>, view<8192xi8, #dense>
+      %value_weight = command.parameter %parameters, "blk.{}.attn_v.weight"[%layer] : view<589824xi8>
+      %down_weight = command.parameter %parameters, "blk.{}.ffn_down_exps.weight"[%layer] : view<113246208xi8>
+      %gate_weight = command.parameter %parameters, "blk.{}.ffn_gate_exps.weight"[%layer] : view<113246208xi8>
+      %router_weight = command.parameter %parameters, "blk.{}.ffn_gate_inp.weight"[%layer] : view<1048576xi8>
+      %feed_forward_norm_weight = command.parameter %parameters, "blk.{}.ffn_norm.weight"[%layer] : view<8192xi8>
+      %up_weight = command.parameter %parameters, "blk.{}.ffn_up_exps.weight"[%layer] : view<113246208xi8>
+      %following_key, %following_key_norm, %following_attention_norm = scf.if %is_last_layer -> (view<589824xi8>, view<512xi8>, view<8192xi8>) {
+        scf.yield %key_weight, %key_norm, %output_norm : view<589824xi8>, view<512xi8>, view<8192xi8>
       } else {
-        %queried_key = command.parameter %parameters, "blk.{}.attn_k.weight"[%next_layer] : view<589824xi8, #dense>
-        %queried_key_norm = command.parameter %parameters, "blk.{}.attn_k_norm.weight"[%next_layer] : view<512xi8, #dense>
-        %queried_attention_norm = command.parameter %parameters, "blk.{}.attn_norm.weight"[%next_layer] : view<8192xi8, #dense>
-        scf.yield %queried_key, %queried_key_norm, %queried_attention_norm : view<589824xi8, #dense>, view<512xi8, #dense>, view<8192xi8, #dense>
+        %queried_key = command.parameter %parameters, "blk.{}.attn_k.weight"[%next_layer] : view<589824xi8>
+        %queried_key_norm = command.parameter %parameters, "blk.{}.attn_k_norm.weight"[%next_layer] : view<512xi8>
+        %queried_attention_norm = command.parameter %parameters, "blk.{}.attn_norm.weight"[%next_layer] : view<8192xi8>
+        scf.yield %queried_key, %queried_key_norm, %queried_attention_norm : view<589824xi8>, view<512xi8>, view<8192xi8>
       }
-      kernel.launch @qwen3_moe_attention_qkv_postprocess_fused_decode_q4[%token_count, %context_capacity](%token_count, %context_capacity, %projection_input, %query_weight, %key_weight, %value_weight, %positions, %key_cache_indices, %value_cache_indices, %raw_query, %raw_key, %raw_value, %query_norm, %key_norm, %rope_inverse_frequencies, %rotated_query, %layer_key_cache, %layer_value_cache, %grouped_completion) : [index, index](index, index, buffer, view<4718592xi8, #dense>, view<589824xi8, #dense>, view<589824xi8, #dense>, view<1xi32, #dense>, view<1xi64, #dense>, view<1xi64, #dense>, buffer, buffer, buffer, view<512xi8, #dense>, view<512xi8, #dense>, view<64xf32, #dense>, buffer, view<[%cache_storage_capacity]x4x128xf16, #dense>, view<[%cache_storage_capacity]x4x128xf16, #dense>, view<192xi8, #dense>)
+      kernel.launch @qwen3_moe_attention_qkv_postprocess_fused_decode_q4[%token_count, %context_capacity](%token_count, %context_capacity, %projection_input, %query_weight, %key_weight, %value_weight, %positions, %key_cache_indices, %value_cache_indices, %raw_query, %raw_key, %raw_value, %query_norm, %key_norm, %rope_inverse_frequencies, %rotated_query, %layer_key_cache, %layer_value_cache, %grouped_completion) : [index, index](index, index, buffer, view<4718592xi8>, view<589824xi8>, view<589824xi8>, view<1xi32>, view<1xi64>, view<1xi64>, buffer, buffer, buffer, view<512xi8>, view<512xi8>, view<64xf32>, buffer, view<[%cache_storage_capacity]x4x128xf16>, view<[%cache_storage_capacity]x4x128xf16>, view<192xi8>)
       %attention_output = buffer.alloca<global> align(256) %attention_output_bytes : buffer
-      kernel.launch @qwen_flash_attention_decode_dynamic_f32_f16_wmma_next_q8[%visible_context_count](%control, %rotated_query, %layer_key_cache, %layer_value_cache, %attention_partial_maximums, %attention_partial_sums, %attention_partial_outputs, %attention_completion, %attention_output, %projection_input) : [index](view<1xi32, #dense>, buffer, view<[%cache_storage_capacity]x4x128xf16, #dense>, view<[%cache_storage_capacity]x4x128xf16, #dense>, buffer, buffer, buffer, view<16xi8, #dense>, buffer, buffer)
+      kernel.launch @qwen_flash_attention_decode_dynamic_f32_f16_wmma_next_q8[%visible_context_count](%control, %rotated_query, %layer_key_cache, %layer_value_cache, %attention_partial_maximums, %attention_partial_sums, %attention_partial_outputs, %attention_completion, %attention_output, %projection_input) : [index](view<1xi32>, buffer, view<[%cache_storage_capacity]x4x128xf16>, view<[%cache_storage_capacity]x4x128xf16>, buffer, buffer, buffer, view<16xi8>, buffer, buffer)
       %feed_forward_norm = buffer.alloca<global> align(256) %feed_forward_norm_bytes : buffer
-      kernel.launch @qwen3_moe_dense_linear_q4k_q8_1_x4_next_q8[%token_count](%token_count, %projection_input, %attention_output_weight, %hidden_state, %feed_forward_norm_weight, %feed_forward_norm, %shared_completion, %projection_input) : [index](index, buffer, view<4718592xi8, #dense>, view<2048xf32, #dense>, view<8192xi8, #dense>, buffer, view<4xi8, #dense>, buffer)
+      kernel.launch @qwen3_moe_dense_linear_q4k_q8_1_x4_next_q8[%token_count](%token_count, %projection_input, %attention_output_weight, %hidden_state, %feed_forward_norm_weight, %feed_forward_norm, %shared_completion, %projection_input) : [index](index, buffer, view<4718592xi8>, view<2048xf32>, view<8192xi8>, buffer, view<4xi8>, buffer)
       %router_logits = buffer.alloca<global> align(256) %router_logits_bytes : buffer
       %route_ids = buffer.alloca<global> align(256) %route_ids_bytes : buffer
       %route_weights = buffer.alloca<global> align(256) %route_weights_bytes : buffer
-      kernel.launch @qwen3_moe_router_projection_top8_fused_decode_f32[%token_count, %route_count](%token_count, %route_count, %feed_forward_norm, %router_weight, %router_logits, %shared_completion, %route_ids, %route_weights) : [index, index](index, index, buffer, view<1048576xi8, #dense>, buffer, view<4xi8, #dense>, buffer, buffer)
+      kernel.launch @qwen3_moe_router_projection_top8_fused_decode_f32[%token_count, %route_count](%token_count, %route_count, %feed_forward_norm, %router_weight, %router_logits, %shared_completion, %route_ids, %route_weights) : [index, index](index, index, buffer, view<1048576xi8>, buffer, view<4xi8>, buffer, buffer)
       %swiglu = buffer.alloca<global> align(256) %swiglu_bytes : buffer
       %routed_projection = buffer.alloca<global> align(256) %routed_projection_bytes : buffer
-      kernel.launch @qwen3_moe_routed_gate_up_swiglu_q4k_q8_1_x4_next_q8[%token_count, %route_count, %route_count, %expert_count, %intermediate_size](%token_count, %route_count, %route_count, %expert_count, %intermediate_size, %projection_input, %route_ids, %gate_weight, %up_weight, %swiglu, %grouped_completion, %routed_projection) : [index, index, index, index, index](index, index, index, index, index, buffer, buffer, view<113246208xi8, #dense>, view<113246208xi8, #dense>, buffer, view<192xi8, #dense>, buffer)
-      kernel.launch @qwen3_moe_routed_down_q4k_q8_1_x4_next_q8[%token_count, %intermediate_size, %route_count, %route_count, %expert_count, %hidden_size](%token_count, %intermediate_size, %route_count, %route_count, %expert_count, %hidden_size, %routed_projection, %route_ids, %route_weights, %down_weight, %hidden_state, %following_attention_norm, %shared_completion, %projection_input) : [index, index, index, index, index, index](index, index, index, index, index, index, buffer, buffer, buffer, view<113246208xi8, #dense>, view<2048xf32, #dense>, view<8192xi8, #dense>, view<4xi8, #dense>, buffer)
-      scf.yield %following_key, %following_key_norm, %following_attention_norm : view<589824xi8, #dense>, view<512xi8, #dense>, view<8192xi8, #dense>
+      kernel.launch @qwen3_moe_routed_gate_up_swiglu_q4k_q8_1_x4_next_q8[%token_count, %route_count, %route_count, %expert_count, %intermediate_size](%token_count, %route_count, %route_count, %expert_count, %intermediate_size, %projection_input, %route_ids, %gate_weight, %up_weight, %swiglu, %grouped_completion, %routed_projection) : [index, index, index, index, index](index, index, index, index, index, buffer, buffer, view<113246208xi8>, view<113246208xi8>, buffer, view<192xi8>, buffer)
+      kernel.launch @qwen3_moe_routed_down_q4k_q8_1_x4_next_q8[%token_count, %intermediate_size, %route_count, %route_count, %expert_count, %hidden_size](%token_count, %intermediate_size, %route_count, %route_count, %expert_count, %hidden_size, %routed_projection, %route_ids, %route_weights, %down_weight, %hidden_state, %following_attention_norm, %shared_completion, %projection_input) : [index, index, index, index, index, index](index, index, index, index, index, index, buffer, buffer, buffer, view<113246208xi8>, view<2048xf32>, view<8192xi8>, view<4xi8>, buffer)
+      scf.yield %following_key, %following_key_norm, %following_attention_norm : view<589824xi8>, view<512xi8>, view<8192xi8>
     }
-    scf.yield %next_key, %next_key_norm, %next_attention_norm : view<589824xi8, #dense>, view<512xi8, #dense>, view<8192xi8, #dense>
+    scf.yield %next_key, %next_key_norm, %next_attention_norm : view<589824xi8>, view<512xi8>, view<8192xi8>
   }
 
   %partial_logits_bytes = index.constant 75968 : offset
@@ -257,7 +257,7 @@ command.program.def public @qwen3_30b_decode(%visible_context_count: index) laun
   %partial_logits = buffer.alloca<global> align(256) %partial_logits_bytes : buffer
   %partial_ids = buffer.alloca<global> align(256) %partial_ids_bytes : buffer
   %partial_count = index.constant 18992 : index
-  kernel.launch @ggml_linear_q6k_q8_1_x4_partial_argmax[%token_count, %hidden_size, %vocabulary_count](%token_count, %hidden_size, %vocabulary_count, %projection_input, %output_weight, %partial_logits, %partial_ids) : [index, index, index](index, index, index, buffer, view<255252480xi8, #dense>, buffer, buffer)
-  kernel.launch @qwen_greedy_argmax_partials[%partial_count, %token_count](%partial_count, %token_count, %partial_logits, %partial_ids, %token_ids, %control, %selected_token) : [index, index](index, index, buffer, buffer, view<1xi32, #dense>, view<1xi32, #dense>, view<1xi32, #dense>)
+  kernel.launch @ggml_linear_q6k_q8_1_x4_partial_argmax[%token_count, %hidden_size, %vocabulary_count](%token_count, %hidden_size, %vocabulary_count, %projection_input, %output_weight, %partial_logits, %partial_ids) : [index, index, index](index, index, index, buffer, view<255252480xi8>, buffer, buffer)
+  kernel.launch @qwen_greedy_argmax_partials[%partial_count, %token_count](%partial_count, %token_count, %partial_logits, %partial_ids, %token_ids, %control, %selected_token) : [index, index](index, index, buffer, buffer, view<1xi32>, view<1xi32>, view<1xi32>)
   command.return
 }

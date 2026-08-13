@@ -53,28 +53,28 @@ kernel.def target(@qwen3_moe_attention_prepare_gfx11_wave32) @qwen3_moe_rmsnorm_
   %hidden_size_i32 = index.cast %hidden_size : index to i32
   %hidden_size_f32 = scalar.sitofp %hidden_size_i32 : i32 to f32
   %input_noalias, %weight_noalias, %output_noalias = buffer.assume.noalias %input, %weight, %output : buffer, buffer, buffer
-  %input_view = buffer.view %input_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32, #dense>
-  %weight_view = buffer.view %weight_noalias[%c0_offset] : buffer -> view<[%hidden_size]xf32, #dense>
-  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32, #dense>
+  %input_view = buffer.view %input_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32>
+  %weight_view = buffer.view %weight_noalias[%c0_offset] : buffer -> view<[%hidden_size]xf32>
+  %output_view = buffer.view %output_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32>
   %thread_sum = scf.for %channel = [%workitem to %hidden_size step %c256](%running_sum = %c0_f32 : f32) -> (f32) {
-    %value = view.load %input_view[%token, %channel] : view<[%launch_token_count]x[%hidden_size]xf32, #dense> -> f32
+    %value = view.load %input_view[%token, %channel] : view<[%launch_token_count]x[%hidden_size]xf32> -> f32
     %square = scalar.mulf<reassoc|nnan|ninf|nsz> %value, %value : f32
     %next_sum = scalar.addf<reassoc|nnan|ninf|nsz> %running_sum, %square : f32
     scf.yield %next_sum : f32
   }
   %subgroup_sum = kernel.subgroup.reduce<addf> %thread_sum : f32
   %scratch = buffer.alloca<workgroup> align(16) %scratch_bytes : buffer
-  %scratch_view = buffer.view %scratch[%c0_offset] : buffer -> view<256xf32, #dense>
+  %scratch_view = buffer.view %scratch[%c0_offset] : buffer -> view<256xf32>
   %is_subgroup_leader = index.cmp eq, %lane, %c0 : index
   scf.if %is_subgroup_leader {
-    view.store %subgroup_sum, %scratch_view[%subgroup] : f32, view<256xf32, #dense>
+    view.store %subgroup_sum, %scratch_view[%subgroup] : f32, view<256xf32>
   }
   kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   %is_reduction_subgroup = index.cmp eq, %subgroup, %c0 : index
   %is_reduction_lane = index.cmp ult, %lane, %c8 : index
   %loads_subgroup_sum = scalar.andi %is_reduction_subgroup, %is_reduction_lane : i1
   %subgroup_partial = scf.if %loads_subgroup_sum -> (f32) {
-    %value = view.load %scratch_view[%lane] : view<256xf32, #dense> -> f32
+    %value = view.load %scratch_view[%lane] : view<256xf32> -> f32
     scf.yield %value : f32
   } else {
     scf.yield %c0_f32 : f32
@@ -85,17 +85,17 @@ kernel.def target(@qwen3_moe_attention_prepare_gfx11_wave32) @qwen3_moe_rmsnorm_
     %mean = scalar.divf<reassoc|nnan|ninf|nsz|arcp> %row_sum, %hidden_size_f32 : f32
     %biased_mean = scalar.addf<reassoc|nnan|ninf|nsz> %mean, %epsilon : f32
     %scale = scalar.rsqrtf<nnan|ninf|nsz|afn> %biased_mean : f32
-    view.store %scale, %scratch_view[%c0] : f32, view<256xf32, #dense>
+    view.store %scale, %scratch_view[%c0] : f32, view<256xf32>
   }
   kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
-  %scale = view.load %scratch_view[%c0] : view<256xf32, #dense> -> f32
+  %scale = view.load %scratch_view[%c0] : view<256xf32> -> f32
   scf.if %valid_token {
     scf.for %channel = [%workitem to %hidden_size step %c256] {
-      %value = view.load %input_view[%token, %channel] : view<[%launch_token_count]x[%hidden_size]xf32, #dense> -> f32
-      %learned_weight = view.load %weight_view[%channel] : view<[%hidden_size]xf32, #dense> -> f32
+      %value = view.load %input_view[%token, %channel] : view<[%launch_token_count]x[%hidden_size]xf32> -> f32
+      %learned_weight = view.load %weight_view[%channel] : view<[%hidden_size]xf32> -> f32
       %normalized = scalar.mulf<reassoc|nnan|ninf|nsz> %value, %scale : f32
       %result = scalar.mulf<reassoc|nnan|ninf|nsz> %normalized, %learned_weight : f32
-      view.store %result, %output_view[%token, %channel] : f32, view<[%launch_token_count]x[%hidden_size]xf32, #dense>
+      view.store %result, %output_view[%token, %channel] : f32, view<[%launch_token_count]x[%hidden_size]xf32>
     }
   }
   kernel.return
@@ -144,15 +144,15 @@ func.template<qwen3_moe.rmsnorm_quantize_q8_1_x4.body> device @qwen3_moe_rmsnorm
   %row_bytes = index.scale %physical_group_count, %group_bytes : index, offset -> offset
   %token_output_byte_base = index.scale %token, %row_bytes : index, offset -> offset
   %input_noalias, %weight_noalias, %q8_output_noalias = buffer.assume.noalias %input, %weight, %q8_output : buffer, buffer, buffer
-  %input_view = buffer.view %input_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32, #dense>
-  %weight_view = buffer.view %weight_noalias[%c0_offset] : buffer -> view<[%hidden_size]xf32, #dense>
-  %normalized_output_view = buffer.view %normalized_output[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32, #dense>
+  %input_view = buffer.view %input_noalias[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32>
+  %weight_view = buffer.view %weight_noalias[%c0_offset] : buffer -> view<[%hidden_size]xf32>
+  %normalized_output_view = buffer.view %normalized_output[%c0_offset] : buffer -> view<[%launch_token_count]x[%hidden_size]xf32>
   %scratch = buffer.alloca<workgroup> align(16) %scratch_bytes : buffer
-  %scratch_values = buffer.view %scratch[%c0_offset] : buffer -> view<256xf32, #dense>
-  %scratch_d = buffer.view %scratch[%scratch_d_byte_add] : buffer -> view<32xf32, #dense>
+  %scratch_values = buffer.view %scratch[%c0_offset] : buffer -> view<256xf32>
+  %scratch_d = buffer.view %scratch[%scratch_d_byte_add] : buffer -> view<32xf32>
   // Reduce the complete row before any block-local quantization.
   %thread_sum = scf.for %channel = [%workitem to %hidden_size step %c256](%running_sum = %c0_f32 : f32) -> (f32) {
-    %value = view.load %input_view[%token, %channel] : view<[%launch_token_count]x[%hidden_size]xf32, #dense> -> f32
+    %value = view.load %input_view[%token, %channel] : view<[%launch_token_count]x[%hidden_size]xf32> -> f32
     %square = scalar.mulf<reassoc|nnan|ninf|nsz> %value, %value : f32
     %next_sum = scalar.addf<reassoc|nnan|ninf|nsz> %running_sum, %square : f32
     scf.yield %next_sum : f32
@@ -160,14 +160,14 @@ func.template<qwen3_moe.rmsnorm_quantize_q8_1_x4.body> device @qwen3_moe_rmsnorm
   %subgroup_sum = kernel.subgroup.reduce<addf> %thread_sum : f32
   %is_subgroup_leader = index.cmp eq, %lane, %c0 : index
   scf.if %is_subgroup_leader {
-    view.store %subgroup_sum, %scratch_values[%subgroup] : f32, view<256xf32, #dense>
+    view.store %subgroup_sum, %scratch_values[%subgroup] : f32, view<256xf32>
   }
   kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   %is_reduction_subgroup = index.cmp eq, %subgroup, %c0 : index
   %is_reduction_lane = index.cmp ult, %lane, %reduction_subgroup_count : index
   %loads_subgroup_sum = scalar.andi %is_reduction_subgroup, %is_reduction_lane : i1
   %subgroup_partial = scf.if %loads_subgroup_sum -> (f32) {
-    %value = view.load %scratch_values[%lane] : view<256xf32, #dense> -> f32
+    %value = view.load %scratch_values[%lane] : view<256xf32> -> f32
     scf.yield %value : f32
   } else {
     scf.yield %c0_f32 : f32
@@ -178,10 +178,10 @@ func.template<qwen3_moe.rmsnorm_quantize_q8_1_x4.body> device @qwen3_moe_rmsnorm
     %mean = scalar.divf<reassoc|nnan|ninf|nsz|arcp> %row_sum, %hidden_size_f32 : f32
     %biased_mean = scalar.addf<reassoc|nnan|ninf|nsz> %mean, %epsilon : f32
     %scale = scalar.rsqrtf<nnan|ninf|nsz|afn> %biased_mean : f32
-    view.store %scale, %scratch_values[%c0] : f32, view<256xf32, #dense>
+    view.store %scale, %scratch_values[%c0] : f32, view<256xf32>
   }
   kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
-  %row_scale = view.load %scratch_values[%c0] : view<256xf32, #dense> -> f32
+  %row_scale = view.load %scratch_values[%c0] : view<256xf32> -> f32
   %row_scale_vector = vector.splat %row_scale : vector<4xf32>
   %publishes_normalized = scalar.andi %publish_normalized, %valid_token : i1
   // Reuse one scratch frame for each 1024-element stripe. Hidden sizes need
@@ -192,16 +192,16 @@ func.template<qwen3_moe.rmsnorm_quantize_q8_1_x4.body> device @qwen3_moe_rmsnorm
     %channel = index.add %stripe_base, %word_element_add : index
     %valid_word = index.cmp ult, %channel, %hidden_size : index
     %mask = vector.mask.range [%channel to %hidden_size step %c1] : index -> vector<4xi1>
-    %input_values = vector.load.mask %input_view[%token, %channel], %mask, %c0_f32x4 : view<[%launch_token_count]x[%hidden_size]xf32, #dense>, vector<4xi1>, vector<4xf32>
-    %learned_weights = vector.load.mask %weight_view[%channel], %mask, %c0_f32x4 : view<[%hidden_size]xf32, #dense>, vector<4xi1>, vector<4xf32>
+    %input_values = vector.load.mask %input_view[%token, %channel], %mask, %c0_f32x4 : view<[%launch_token_count]x[%hidden_size]xf32>, vector<4xi1>, vector<4xf32>
+    %learned_weights = vector.load.mask %weight_view[%channel], %mask, %c0_f32x4 : view<[%hidden_size]xf32>, vector<4xi1>, vector<4xf32>
     %normalized0 = vector.mulf %input_values, %row_scale_vector : vector<4xf32>
     %normalized = vector.mulf %normalized0, %learned_weights : vector<4xf32>
     scf.if %publishes_normalized {
-      vector.store.mask %normalized, %normalized_output_view[%token, %channel], %mask : vector<4xf32>, view<[%launch_token_count]x[%hidden_size]xf32, #dense>, vector<4xi1>
+      vector.store.mask %normalized, %normalized_output_view[%token, %channel], %mask : vector<4xf32>, view<[%launch_token_count]x[%hidden_size]xf32>, vector<4xi1>
     }
     %absolute_values = vector.absf %normalized : vector<4xf32>
     %thread_max = vector.reduce<maxnumf> %absolute_values, %c0_f32 : vector<4xf32>, f32
-    view.store %thread_max, %scratch_values[%workitem] : f32, view<256xf32, #dense>
+    view.store %thread_max, %scratch_values[%workitem] : f32, view<256xf32>
     kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     %word_in_block = index.rem %workitem, %c8 : index
     %block_in_stripe = index.div %workitem, %c8 : index
@@ -209,14 +209,14 @@ func.template<qwen3_moe.rmsnorm_quantize_q8_1_x4.body> device @qwen3_moe_rmsnorm
     %writes_block_d = scalar.andi %valid_word, %is_block_leader : i1
     scf.if %writes_block_d {
       %cohort_base = index.mul %block_in_stripe, %c8 : index
-      %cohort_maxima = vector.load %scratch_values[%cohort_base] : view<256xf32, #dense> -> vector<8xf32>
+      %cohort_maxima = vector.load %scratch_values[%cohort_base] : view<256xf32> -> vector<8xf32>
       %amax = vector.reduce<maxnumf> %cohort_maxima, %c0_f32 : vector<8xf32>, f32
       %d = scalar.divf<reassoc|nnan|ninf|nsz|arcp> %amax, %c127 : f32
-      view.store %d, %scratch_d[%block_in_stripe] : f32, view<32xf32, #dense>
+      view.store %d, %scratch_d[%block_in_stripe] : f32, view<32xf32>
     }
     kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     %d = scf.if %valid_word -> (f32) {
-      %block_d = view.load %scratch_d[%block_in_stripe] : view<32xf32, #dense> -> f32
+      %block_d = view.load %scratch_d[%block_in_stripe] : view<32xf32> -> f32
       scf.yield %block_d : f32
     } else {
       scf.yield %c0_f32 : f32
@@ -241,20 +241,20 @@ func.template<qwen3_moe.rmsnorm_quantize_q8_1_x4.body> device @qwen3_moe_rmsnorm
       %group_byte_add = index.scale %physical_group, %group_bytes : index, offset -> offset
       %group_byte_offset = index.add %token_output_byte_base, %group_byte_add : offset
       %payload_byte_offset = index.add %group_byte_offset, %payload_byte_add : offset
-      %group_ds = buffer.view %q8_output_noalias[%group_byte_offset] : buffer -> view<8xf16, #dense>
-      %group_qs = buffer.view %q8_output_noalias[%payload_byte_offset] : buffer -> view<32xi32, #dense>
+      %group_ds = buffer.view %q8_output_noalias[%group_byte_offset] : buffer -> view<8xf16>
+      %group_qs = buffer.view %q8_output_noalias[%payload_byte_offset] : buffer -> view<32xi32>
       %block_word_base = index.mul %block_in_group, %c8 : index
       %packed_word_index0 = index.add %block_word_base, %word_in_block : index
       %packed_word_index = index.assume %packed_word_index0 [range(%packed_word_index0, 0, 31)] : index
-      vector.store %packed_word, %group_qs[%packed_word_index] : vector<1xi32>, view<32xi32, #dense>
+      vector.store %packed_word, %group_qs[%packed_word_index] : vector<1xi32>, view<32xi32>
     }
     %thread_quantized_sum = vector.reduce<addf> %rounded_values, %c0_f32 : vector<4xf32>, f32
-    view.store %thread_quantized_sum, %scratch_values[%workitem] : f32, view<256xf32, #dense>
+    view.store %thread_quantized_sum, %scratch_values[%workitem] : f32, view<256xf32>
     kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
     %publishes_block_ds = scalar.andi %writes_block_d, %valid_token : i1
     scf.if %publishes_block_ds {
       %cohort_base = index.mul %block_in_stripe, %c8 : index
-      %cohort_sums = vector.load %scratch_values[%cohort_base] : view<256xf32, #dense> -> vector<8xf32>
+      %cohort_sums = vector.load %scratch_values[%cohort_base] : view<256xf32> -> vector<8xf32>
       %quantized_sum = vector.reduce<addf> %cohort_sums, %c0_f32 : vector<8xf32>, f32
       %s = scalar.mulf<reassoc|nnan|ninf|nsz> %quantized_sum, %d : f32
       %q8_block = index.div %channel, %c32 : index
@@ -262,13 +262,13 @@ func.template<qwen3_moe.rmsnorm_quantize_q8_1_x4.body> device @qwen3_moe_rmsnorm
       %block_in_group = index.rem %q8_block, %c4 : index
       %group_byte_add = index.scale %physical_group, %group_bytes : index, offset -> offset
       %group_byte_offset = index.add %token_output_byte_base, %group_byte_add : offset
-      %group_ds = buffer.view %q8_output_noalias[%group_byte_offset] : buffer -> view<8xf16, #dense>
+      %group_ds = buffer.view %q8_output_noalias[%group_byte_offset] : buffer -> view<8xf16>
       %d_f16 = scalar.fptrunc %d : f32 to f16
       %s_f16 = scalar.fptrunc %s : f32 to f16
       %ds_index = index.mul %block_in_group, %c2 : index
       %s_index = index.add %ds_index, %c1 : index
-      view.store %d_f16, %group_ds[%ds_index] : f16, view<8xf16, #dense>
-      view.store %s_f16, %group_ds[%s_index] : f16, view<8xf16, #dense>
+      view.store %d_f16, %group_ds[%ds_index] : f16, view<8xf16>
+      view.store %s_f16, %group_ds[%s_index] : f16, view<8xf16>
     }
     kernel.barrier<workgroup> scope(workgroup) ordering(acq_rel)
   }
