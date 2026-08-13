@@ -22,6 +22,7 @@ py_library(
         "cmake_fuzz.py",
         "cmake_try.py",
         "command_plan.py",
+        "commit_isolation.py",
         "ctest.py",
         "doctor.py",
         "environment.py",
@@ -120,6 +121,7 @@ py_test(
         "cmake_fuzz.py",
         "cmake_try.py",
         "command_plan.py",
+        "commit_isolation.py",
         "ctest.py",
         "doctor.py",
         "environment.py",
@@ -132,6 +134,16 @@ py_test(
     ],
     main = "cli_test.py",
     deps = ["//build_tools/bazel:compile_commands_merge_lib"],
+)
+
+py_test(
+    name = "commit_isolation_test",
+    srcs = [
+        "command_plan.py",
+        "commit_isolation.py",
+        "commit_isolation_test.py",
+    ],
+    main = "commit_isolation_test.py",
 )
 
 py_test(

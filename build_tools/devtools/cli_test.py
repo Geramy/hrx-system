@@ -23,6 +23,7 @@ from build_tools.devtools.command_plan import (
     ExecCommandStep,
     WriteFileStep,
 )
+from build_tools.devtools.commit_isolation import CommitIsolationStep
 
 
 def normalized_plan_description(plan) -> str:
@@ -1168,13 +1169,17 @@ class CliTest(unittest.TestCase):
         plan = args.handler(args)
         description = plan.describe()
 
-        self.assertEqual(len(plan.steps), 2)
-        self.assertIn("--fix", plan.steps[0].argv)
-        self.assertIn("--hygiene", plan.steps[0].argv)
-        self.assertIn("--check", plan.steps[1].argv)
-        self.assertNotIn("--hygiene", plan.steps[1].argv)
-        self.assertIn("--tests", plan.steps[1].argv)
-        self.assertIn("--static-analysis", plan.steps[1].argv)
+        self.assertEqual(len(plan.steps), 1)
+        self.assertIsInstance(plan.steps[0], CommitIsolationStep)
+        nested_steps = plan.steps[0].plan.steps
+        self.assertEqual(len(nested_steps), 2)
+        self.assertIn("--fix", nested_steps[0].argv)
+        self.assertIn("--hygiene", nested_steps[0].argv)
+        self.assertIn("--check", nested_steps[1].argv)
+        self.assertNotIn("--hygiene", nested_steps[1].argv)
+        self.assertIn("--tests", nested_steps[1].argv)
+        self.assertIn("--static-analysis", nested_steps[1].argv)
+        self.assertIn("isolate non-index changes", description)
         self.assertIn("--commit", description)
         self.assertNotIn("--changed", description)
 

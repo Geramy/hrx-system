@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from build_tools.devtools.command_plan import CommandPlan, CommandStep
+from build_tools.devtools.commit_isolation import CommitIsolationStep
 from build_tools.devtools.environment import REPO_ROOT, ToolEnvironment
 
 CMAKE_BUILD_DIR_ENV = "IREE_CMAKE_BUILD_DIR"
@@ -190,6 +191,8 @@ def precommit_plan(
             label=f"run {label_name} precommit",
         )
     )
+    if commit:
+        return CommandPlan([CommitIsolationStep(plan, REPO_ROOT)])
     return plan
 
 

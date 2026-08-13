@@ -399,6 +399,8 @@ Use `python dev.py {lane} precommit` for local changes only.""",
 
 With no input option, precommit checks staged, unstaged, and untracked files.
 `--commit` checks the Git hook scope: staged files plus files changed by HEAD.
+It isolates non-index tracked and untracked work in an exactly identified stash
+for the complete fix-and-test transaction, then restores that exact stash.
 `--base` checks branch changes from the merge base with the given ref through
 HEAD, plus local staged, unstaged, and untracked files.
 Explicit paths check only those files for narrow manual runs.
