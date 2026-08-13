@@ -978,7 +978,7 @@ iree_status_t stage_windows_dpu_code_buffer(
   }
   if (is_partial_elf) {
     mcdm::Error error;
-    if (!mcdm::RefreshPathBSingleCodeMappingAfterWrite(
+    if (!mcdm::RefreshPathBCodeMappingAfterWrite(
             command->device->api, command->device->device, &aperture, &error)) {
       return status_from_mcdm_error(
           "amdxdna Windows MCDM path-B single aperture remap failed", error);
@@ -2093,6 +2093,13 @@ iree_status_t sync_prepared_pathb_chain_batch(
       return status_from_mcdm_error(
           "amdxdna Windows MCDM path-B batch descriptor commit failed", error);
     }
+  }
+  if ((code_bytes || descriptor_bytes) &&
+      !mcdm::RefreshPathBCodeMappingAfterWrite(
+          queue->context->device->api, queue->context->device->device,
+          &aperture, &error)) {
+    return status_from_mcdm_error(
+        "amdxdna Windows MCDM path-B batch aperture refresh failed", error);
   }
   return iree_ok_status();
 }

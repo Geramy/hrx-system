@@ -485,7 +485,7 @@ bool CopyAndCommitPathBCodeWrites(const CommandAperture& aperture,
                                   const CpuCopyRange* ranges,
                                   size_t range_count, Error* out_error);
 
-bool RefreshPathBSingleCodeMappingAfterWrite(
+bool RefreshPathBCodeMappingAfterWrite(
     const KmtApi& api, const Device& device, CommandAperture* aperture,
     Error* out_error);
 

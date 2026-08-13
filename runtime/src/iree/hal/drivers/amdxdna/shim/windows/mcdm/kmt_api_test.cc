@@ -1588,7 +1588,7 @@ TEST(KmtApiTest, CodeRangeLifecycleMatchesNegotiatedAbi) {
   EXPECT_EQ(g_wait_fences[0], 9u);
 }
 
-TEST(KmtApiTest, SingleCodeWriteRemapMatchesNegotiatedAbi) {
+TEST(KmtApiTest, CodeWriteRemapMatchesNegotiatedAbi) {
   auto run = [](McdmAbi mcdm_abi) {
     ResetFakes();
     KmtApi api = {};
@@ -1605,7 +1605,7 @@ TEST(KmtApiTest, SingleCodeWriteRemapMatchesNegotiatedAbi) {
     Error error = {};
     ASSERT_TRUE(ConfigurePathBCodeRangeForSetupPayload(
         mcdm_abi, 9952, &aperture, &error));
-    EXPECT_TRUE(RefreshPathBSingleCodeMappingAfterWrite(
+    EXPECT_TRUE(RefreshPathBCodeMappingAfterWrite(
         api, device, &aperture, &error))
         << ErrorMessage(&error);
   };

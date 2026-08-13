@@ -2405,7 +2405,7 @@ bool CopyAndCommitPathBCodeWrites(const CommandAperture& aperture,
   return true;
 }
 
-bool RefreshPathBSingleCodeMappingAfterWrite(
+bool RefreshPathBCodeMappingAfterWrite(
     const KmtApi& api, const Device& device, CommandAperture* aperture,
     Error* out_error) {
   const McdmAbiInfo abi = GetMcdmAbiInfo(device.mcdm_abi);
