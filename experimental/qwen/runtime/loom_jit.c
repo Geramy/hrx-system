@@ -100,6 +100,10 @@ struct qwen_loom_executable_t {
   iree_hal_executable_t* hal_executable;
   // Resolved exported function.
   iree_hal_executable_function_t function;
+  // Compiled host companion used to evaluate exact launch configurations.
+  loomc_launch_config_program_t* launch_program;
+  // Resolved launch-config function matching |function|.
+  loomc_launch_config_function_t launch_function;
   // Static workgroup count evaluated from exact workload arguments.
   iree_hal_dispatch_config_t dispatch_config;
 };
@@ -484,16 +488,6 @@ static iree_status_t qwen_loom_jit_make_dispatch_config(
     iree_string_view_t function_name,
     iree_hal_dispatch_config_t* out_dispatch_config) {
   memset(out_dispatch_config, 0, sizeof(*out_dispatch_config));
-  const loomc_launch_config_field_flags_t required_fields =
-      LOOMC_LAUNCH_CONFIG_FIELD_FLAG_WORKGROUP_COUNT |
-      LOOMC_LAUNCH_CONFIG_FIELD_FLAG_WORKGROUP_SIZE;
-  if (!iree_all_bits_set(launch_config->fields, required_fields)) {
-    return iree_make_status(
-        IREE_STATUS_FAILED_PRECONDITION,
-        "launch config for %.*s:%.*s did not resolve static geometry",
-        (int)module_path.size, module_path.data, (int)function_name.size,
-        function_name.data);
-  }
   if (launch_config->workgroup_count.x == 0 ||
       launch_config->workgroup_count.y == 0 ||
       launch_config->workgroup_count.z == 0 ||
@@ -569,12 +563,30 @@ static const loomc_artifact_t* qwen_loom_jit_find_executable_artifact(
   return NULL;
 }
 
+static const loomc_artifact_t* qwen_loom_jit_find_launch_config_artifact(
+    const loomc_result_t* result) {
+  if (!result) return NULL;
+  const loomc_string_view_t expected_format =
+      loomc_make_cstring_view(LOOMC_ARTIFACT_FORMAT_LOOM_BYTECODE);
+  for (loomc_host_size_t i = 0; i < loomc_result_artifact_count(result); ++i) {
+    const loomc_artifact_t* artifact = loomc_result_artifact_at(result, i);
+    if (artifact && artifact->kind == LOOMC_ARTIFACT_KIND_LAUNCH_CONFIG &&
+        loomc_string_view_equal(artifact->format, expected_format)) {
+      return artifact;
+    }
+  }
+  return NULL;
+}
+
 static iree_status_t qwen_loom_executable_create(
     iree_hal_executable_t* hal_executable,
     iree_hal_executable_function_t function,
+    loomc_launch_config_program_t* launch_program,
+    loomc_launch_config_function_t launch_function,
     iree_hal_dispatch_config_t dispatch_config, iree_allocator_t host_allocator,
     qwen_loom_executable_t** out_executable) {
   IREE_ASSERT_ARGUMENT(hal_executable);
+  IREE_ASSERT_ARGUMENT(launch_program);
   IREE_ASSERT_ARGUMENT(out_executable);
   *out_executable = NULL;
 
@@ -587,6 +599,9 @@ static iree_status_t qwen_loom_executable_create(
   executable->hal_executable = hal_executable;
   iree_hal_executable_retain(hal_executable);
   executable->function = function;
+  executable->launch_program = launch_program;
+  loomc_launch_config_program_retain(launch_program);
+  executable->launch_function = launch_function;
   executable->dispatch_config = dispatch_config;
   *out_executable = executable;
   return iree_ok_status();
@@ -935,45 +950,24 @@ static iree_status_t qwen_loom_jit_link_code_group(
 }
 
 static iree_status_t qwen_loom_jit_evaluate_dispatch_config(
-    qwen_loom_jit_t* jit, loomc_workspace_t* workspace,
-    const qwen_loom_jit_linked_code_group_t* linked_group,
+    loomc_launch_config_program_t* launch_program,
+    loomc_launch_config_function_t launch_function,
     const qwen_loom_jit_prepare_options_t* options,
     iree_hal_dispatch_config_t* out_dispatch_config) {
-  qwen_loom_jit_target_specialization_t target_specialization;
-  qwen_loom_jit_target_specialization_initialize(jit, linked_group,
-                                                 &target_specialization);
-  const loomc_launch_config_eval_options_t launch_options = {
-      .type = LOOMC_STRUCTURE_TYPE_LAUNCH_CONFIG_EVAL_OPTIONS,
-      .structure_size = sizeof(launch_options),
-      .next = &target_specialization.options,
-      .function_symbol = linked_group->root_symbol,
-      .config = {0},
-      .workload_arguments = options->workload_arguments,
-      .workload_argument_count = options->workload_argument_count,
-      .required_fields = LOOMC_LAUNCH_CONFIG_FIELD_FLAG_WORKGROUP_COUNT |
-                         LOOMC_LAUNCH_CONFIG_FIELD_FLAG_WORKGROUP_SIZE,
-  };
   loomc_launch_config_t launch_config = {
       .type = LOOMC_STRUCTURE_TYPE_LAUNCH_CONFIG,
       .structure_size = sizeof(launch_config),
   };
-  loomc_result_t* launch_config_result = NULL;
   iree_status_t status =
-      iree_status_from_loomc(loomc_module_evaluate_launch_config(
-          linked_group->module, workspace, &launch_options,
-          loomc_allocator_from_iree(jit->host_allocator), &launch_config,
-          &launch_config_result));
-  if (iree_status_is_ok(status)) {
-    status = qwen_loom_jit_require_result(
-        IREE_SV("launch config"), options->source_module->module_path,
-        options->function_name, launch_config_result);
-  }
+      iree_status_from_loomc(loomc_launch_config_program_invoke(
+          launch_program, launch_function,
+          (const uint64_t*)options->workload_arguments,
+          options->workload_argument_count, &launch_config));
   if (iree_status_is_ok(status)) {
     status = qwen_loom_jit_make_dispatch_config(
         &launch_config, options->source_module->module_path,
         options->function_name, out_dispatch_config);
   }
-  loomc_result_release(launch_config_result);
   return status;
 }
 
@@ -982,13 +976,20 @@ static iree_status_t qwen_loom_jit_compile_code_group(
     const qwen_loom_jit_prepare_options_t* options,
     qwen_loom_jit_linked_code_group_t* linked_group,
     iree_hal_executable_t** out_hal_executable,
-    iree_hal_executable_function_t* out_function) {
+    iree_hal_executable_function_t* out_function,
+    loomc_launch_config_program_t** out_launch_program,
+    loomc_launch_config_function_t* out_launch_function) {
   *out_hal_executable = NULL;
   memset(out_function, 0, sizeof(*out_function));
+  *out_launch_program = NULL;
+  *out_launch_function = loomc_launch_config_function_invalid();
   loomc_result_t* compile_result = NULL;
   loomc_result_t* emit_result = NULL;
   iree_hal_executable_t* hal_executable = NULL;
   iree_hal_executable_function_t function = {0};
+  loomc_launch_config_program_t* launch_program = NULL;
+  loomc_launch_config_function_t launch_function =
+      loomc_launch_config_function_invalid();
 
   qwen_loom_jit_target_specialization_t target_specialization;
   qwen_loom_jit_target_specialization_initialize(jit, linked_group,
@@ -999,7 +1000,7 @@ static iree_status_t qwen_loom_jit_compile_code_group(
       .next = &target_specialization.options,
       .module_name =
           loomc_string_view_from_iree(options->source_module->module_path),
-      .artifact_flags = 0,
+      .artifact_flags = LOOMC_COMPILE_ARTIFACT_FLAG_LAUNCH_CONFIG,
       .config = {0},
   };
   iree_status_t status = iree_status_from_loomc(loomc_compile_module(
@@ -1010,6 +1011,28 @@ static iree_status_t qwen_loom_jit_compile_code_group(
     status = qwen_loom_jit_require_result(
         IREE_SV("compile"), options->source_module->module_path,
         options->function_name, compile_result);
+  }
+
+  const loomc_artifact_t* launch_config_artifact = NULL;
+  if (iree_status_is_ok(status)) {
+    launch_config_artifact =
+        qwen_loom_jit_find_launch_config_artifact(compile_result);
+    if (!launch_config_artifact) {
+      status = iree_make_status(
+          IREE_STATUS_NOT_FOUND,
+          "Loom did not compile a launch-config companion artifact");
+    }
+  }
+  if (iree_status_is_ok(status)) {
+    status = iree_status_from_loomc(loomc_launch_config_program_load(
+        launch_config_artifact, /*release=*/NULL,
+        /*release_user_data=*/NULL,
+        loomc_allocator_from_iree(jit->host_allocator), &launch_program));
+  }
+  if (iree_status_is_ok(status)) {
+    status = iree_status_from_loomc(loomc_launch_config_program_lookup_function(
+        launch_program, loomc_string_view_from_iree(options->function_name),
+        &launch_function));
   }
 
   if (iree_status_is_ok(status)) {
@@ -1091,9 +1114,13 @@ static iree_status_t qwen_loom_jit_compile_code_group(
     *out_hal_executable = hal_executable;
     hal_executable = NULL;
     *out_function = function;
+    *out_launch_program = launch_program;
+    launch_program = NULL;
+    *out_launch_function = launch_function;
   }
 
   iree_hal_executable_release(hal_executable);
+  loomc_launch_config_program_release(launch_program);
   loomc_result_release(emit_result);
   loomc_result_release(compile_result);
   return status;
@@ -1245,9 +1272,30 @@ static iree_status_t qwen_loom_jit_batch_prepare_code_group(
       batch->items[code_group->leader_item_ordinal].options;
   loomc_workspace_t* workspace = jit->worker_workspaces[worker_ordinal];
 
-  qwen_loom_jit_linked_code_group_t linked_group;
-  iree_status_t status = qwen_loom_jit_link_code_group(
-      jit, workspace, leader_options, &linked_group);
+  qwen_loom_jit_linked_code_group_t linked_group = {0};
+  iree_hal_executable_t* hal_executable = NULL;
+  iree_hal_executable_function_t function = {0};
+  loomc_launch_config_program_t* launch_program = NULL;
+  loomc_launch_config_function_t launch_function =
+      loomc_launch_config_function_invalid();
+  iree_status_t status = iree_ok_status();
+  if (code_group->cached_code_executable) {
+    hal_executable = code_group->cached_code_executable->hal_executable;
+    iree_hal_executable_retain(hal_executable);
+    function = code_group->cached_code_executable->function;
+    launch_program = code_group->cached_code_executable->launch_program;
+    loomc_launch_config_program_retain(launch_program);
+    launch_function = code_group->cached_code_executable->launch_function;
+  } else {
+    status = qwen_loom_jit_link_code_group(jit, workspace, leader_options,
+                                           &linked_group);
+    if (iree_status_is_ok(status)) {
+      status = qwen_loom_jit_compile_code_group(
+          jit, workspace, leader_options, &linked_group, &hal_executable,
+          &function, &launch_program, &launch_function);
+    }
+  }
+
   for (iree_host_size_t i = 0;
        i < batch->item_count && iree_status_is_ok(status); ++i) {
     qwen_loom_jit_batch_item_t* item = &batch->items[i];
@@ -1256,39 +1304,21 @@ static iree_status_t qwen_loom_jit_batch_prepare_code_group(
       continue;
     }
     status = qwen_loom_jit_evaluate_dispatch_config(
-        jit, workspace, &linked_group, item->options, &item->dispatch_config);
-  }
-
-  iree_hal_executable_t* hal_executable = NULL;
-  iree_hal_executable_function_t function = {0};
-  if (iree_status_is_ok(status) && code_group->cached_code_executable) {
-    hal_executable = code_group->cached_code_executable->hal_executable;
-    iree_hal_executable_retain(hal_executable);
-    function = code_group->cached_code_executable->function;
-  } else if (iree_status_is_ok(status)) {
-    status = qwen_loom_jit_compile_code_group(jit, workspace, leader_options,
-                                              &linked_group, &hal_executable,
-                                              &function);
-  }
-
-  for (iree_host_size_t i = 0;
-       i < batch->item_count && iree_status_is_ok(status); ++i) {
-    qwen_loom_jit_batch_item_t* item = &batch->items[i];
-    if (item->canonical_item_ordinal != i || !item->cache_miss ||
-        item->code_group_ordinal != code_group_ordinal) {
-      continue;
+        launch_program, launch_function, item->options, &item->dispatch_config);
+    if (iree_status_is_ok(status)) {
+      status = qwen_loom_jit_use_executable_workgroup_size(
+          hal_executable, function, item->options->source_module->module_path,
+          item->options->function_name, &item->dispatch_config);
     }
-    status = qwen_loom_jit_use_executable_workgroup_size(
-        hal_executable, function, item->options->source_module->module_path,
-        item->options->function_name, &item->dispatch_config);
     if (iree_status_is_ok(status)) {
       status = qwen_loom_executable_create(
-          hal_executable, function, item->dispatch_config, jit->host_allocator,
-          &item->executable);
+          hal_executable, function, launch_program, launch_function,
+          item->dispatch_config, jit->host_allocator, &item->executable);
     }
   }
 
   iree_hal_executable_release(hal_executable);
+  loomc_launch_config_program_release(launch_program);
   qwen_loom_jit_linked_code_group_deinitialize(&linked_group);
   return status;
 }
@@ -1386,6 +1416,7 @@ void qwen_loom_executable_retain(qwen_loom_executable_t* executable) {
 
 static void qwen_loom_executable_destroy(qwen_loom_executable_t* executable) {
   iree_allocator_t host_allocator = executable->host_allocator;
+  loomc_launch_config_program_release(executable->launch_program);
   iree_hal_executable_release(executable->hal_executable);
   iree_allocator_free(host_allocator, executable);
 }
