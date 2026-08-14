@@ -141,15 +141,13 @@ typedef struct iree_hal_amdxdna_native_c_device_caps_t {
   uint32_t completion_models;
   bool supports_command_chain;
   bool supports_submit_many;
-  // Native submission consumes a native-owned staged copy of command control
-  // code. Common code must leave control BO publication to the native command
-  // builder when this is true.
-  bool command_stages_control_code;
-  // Native issue may complete after the call returns. Common code retains the
-  // submission resources and publishes signal semaphores only after native
-  // completion. This does not imply multiple hardware queues or concurrent
-  // access to queue-scoped native staging.
-  bool supports_async_submit;
+  // Native submission owns publication of command control code. Common code
+  // must not publish the source control BO when this is true.
+  bool native_owns_control_code_publication;
+  // Native issue may return before completion. Common code must retain
+  // submission resources and defer signal semaphores until native completion.
+  // This does not imply multiple hardware queues or concurrent queue access.
+  bool submit_completion_is_deferred;
   bool supports_external_buffer_import;
   bool supports_external_buffer_export;
   bool supports_real_multi_queue;

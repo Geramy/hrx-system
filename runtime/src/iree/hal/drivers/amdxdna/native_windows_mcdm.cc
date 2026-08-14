@@ -2384,13 +2384,14 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
       IREE_HAL_AMDXDNA_NATIVE_C_COMPLETION_MODEL_COMPLETION_SLOT;
   caps.supports_command_chain = true;
   caps.supports_submit_many = true;
-  caps.command_stages_control_code = true;
+  caps.native_owns_control_code_publication = true;
   // Issue may return before the native completion wait finishes. The HAL
   // retains native resources and keeps cache entries in flight until the
   // completion batch publishes its signal semaphores.
   const mcdm::McdmSubmissionPolicy submission_policy =
       mcdm::GetMcdmSubmissionPolicy(device->device.mcdm_abi);
-  caps.supports_async_submit = submission_policy.supports_async_submit;
+  caps.submit_completion_is_deferred =
+      submission_policy.submit_completion_is_deferred;
   caps.supports_external_buffer_import = false;
   caps.supports_external_buffer_export = false;
   caps.supports_real_multi_queue = false;

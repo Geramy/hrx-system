@@ -636,7 +636,8 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
       IREE_HAL_AMDXDNA_NATIVE_C_COMPLETION_MODEL_NATIVE_FENCE;
   caps.supports_command_chain = device->supports_command_chain;
   caps.supports_submit_many = device->supports_command_chain;
-  caps.supports_async_submit = true;
+  caps.native_owns_control_code_publication = false;
+  caps.submit_completion_is_deferred = true;
   caps.supports_external_buffer_import = false;
   caps.supports_external_buffer_export = false;
   caps.supports_real_multi_queue = false;

@@ -64,7 +64,7 @@ typedef struct iree_hal_amdxdna_cached_chain_release_t {
 static bool iree_hal_amdxdna_direct_command_buffer_uses_async_completion(
     const iree_hal_amdxdna_direct_command_buffer* command_buffer) {
   return command_buffer->completion_batch &&
-         command_buffer->device->native_caps.supports_async_submit;
+         command_buffer->device->native_caps.submit_completion_is_deferred;
 }
 
 static void iree_hal_amdxdna_completion_destroy_native_command(
@@ -587,7 +587,8 @@ iree_status_t iree_hal_amdxdna_make_npu_cmd(
     arg_offsets = out_cmd->binding_offsets;
     arg_lengths = out_cmd->binding_lengths;
   }
-  if (!command_buffer->device->native_caps.command_stages_control_code) {
+  if (!command_buffer->device->native_caps
+           .native_owns_control_code_publication) {
     IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_buffer_c_sync_all(
         out_cmd->ctrl_code,
         IREE_HAL_AMDXDNA_NATIVE_BUFFER_SYNC_HOST_TO_DEVICE));
@@ -742,7 +743,8 @@ static iree_status_t iree_hal_amdxdna_rewrite_cached_start_npu_cmd(
   memcpy(cached->binding_lengths, fresh->binding_lengths,
          fresh->binding_count * sizeof(*cached->binding_lengths));
 
-  if (!command_buffer->device->native_caps.command_stages_control_code) {
+  if (!command_buffer->device->native_caps
+           .native_owns_control_code_publication) {
     IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_buffer_c_sync_all(
         cached->ctrl_code, IREE_HAL_AMDXDNA_NATIVE_BUFFER_SYNC_HOST_TO_DEVICE));
   }
@@ -857,7 +859,8 @@ static iree_status_t iree_hal_amdxdna_rewrite_cached_single_start_npu_cmd(
   memcpy(cached->binding_lengths, fresh->binding_lengths,
          fresh->binding_count * sizeof(*cached->binding_lengths));
 
-  if (!command_buffer->device->native_caps.command_stages_control_code) {
+  if (!command_buffer->device->native_caps
+           .native_owns_control_code_publication) {
     IREE_RETURN_IF_ERROR(iree_hal_amdxdna_native_buffer_c_sync_all(
         cached->ctrl_code_buffer,
         IREE_HAL_AMDXDNA_NATIVE_BUFFER_SYNC_HOST_TO_DEVICE));
@@ -1755,7 +1758,8 @@ iree_hal_amdxdna_direct_command_buffer_submit_accumulated_single(
     }
     if (iree_status_is_ok(status)) {
       memcpy(instr_buffer_ptr, prepared_ctrl_words, ctrl_code_size);
-      if (!command_buffer->device->native_caps.command_stages_control_code) {
+      if (!command_buffer->device->native_caps
+               .native_owns_control_code_publication) {
         status = iree_hal_amdxdna_native_buffer_c_sync_all(
             ctrl_code_buffer,
             IREE_HAL_AMDXDNA_NATIVE_BUFFER_SYNC_HOST_TO_DEVICE);
@@ -2363,7 +2367,8 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_normal_run(
       }
     }
     if (iree_status_is_ok(status) &&
-        !command_buffer->device->native_caps.command_stages_control_code) {
+        !command_buffer->device->native_caps
+             .native_owns_control_code_publication) {
       status = iree_hal_amdxdna_native_buffer_c_sync_all(
           ctrl_code_buffer, IREE_HAL_AMDXDNA_NATIVE_BUFFER_SYNC_HOST_TO_DEVICE);
     }

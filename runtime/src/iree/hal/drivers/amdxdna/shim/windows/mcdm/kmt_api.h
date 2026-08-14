@@ -86,7 +86,7 @@ enum class McdmAbi {
 struct McdmSubmissionPolicy {
   bool supports_command_chaining = false;
   bool uses_shared_command_code_view = false;
-  bool supports_async_submit = false;
+  bool submit_completion_is_deferred = false;
 };
 
 McdmSubmissionPolicy GetMcdmSubmissionPolicy(McdmAbi abi);

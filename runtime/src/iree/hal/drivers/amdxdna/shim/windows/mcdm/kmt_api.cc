@@ -695,12 +695,12 @@ McdmSubmissionPolicy GetMcdmSubmissionPolicy(McdmAbi abi) {
     case McdmAbi::legacy_v2:
       return {/*supports_command_chaining=*/false,
               /*uses_shared_command_code_view=*/true,
-              /*supports_async_submit=*/false};
+              /*submit_completion_is_deferred=*/false};
     case McdmAbi::legacy:
     case McdmAbi::compact:
       return {/*supports_command_chaining=*/true,
               /*uses_shared_command_code_view=*/false,
-              /*supports_async_submit=*/true};
+              /*submit_completion_is_deferred=*/true};
   }
   return {};
 }
