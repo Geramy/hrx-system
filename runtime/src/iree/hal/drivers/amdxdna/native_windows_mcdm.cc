@@ -103,6 +103,10 @@ static_assert(offsetof(WindowsDpuChainNpuDescriptor, selector) == 0x34,
 // this layer.
 constexpr size_t kWindowsDpuRunlistSubmitSize = 24;
 constexpr uint64_t kWindowsDpuPathBExecBoSize = 0x1000;
+// Retain the complete FLM chain working set. A 1024-child budget avoids cache
+// reconstruction seen with the common 896-child default; 1280 showed no
+// further throughput benefit in the validating workload.
+constexpr uint32_t kWindowsChainCacheChildCommandBudget = 1024;
 
 struct BoundBuffer {
   size_t position = 0;
@@ -2371,7 +2375,8 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
   const size_t chain_exec_bo_size =
       static_cast<size_t>(windows_dpu_pathb_chain_exec_bo_size());
   caps.max_command_chain_slots = chain_slot_capacity(chain_exec_bo_size);
-  caps.max_cached_chain_child_commands = 1024;
+  caps.max_cached_chain_child_commands =
+      kWindowsChainCacheChildCommandBudget;
   caps.context_image_models =
       IREE_HAL_AMDXDNA_NATIVE_C_CONTEXT_IMAGE_MODEL_XCLBIN;
   caps.dispatch_models = IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_START_CU |
