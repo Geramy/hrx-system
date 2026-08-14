@@ -865,12 +865,14 @@ TEST(KmtApiTest, SubmissionPolicyFollowsNegotiatedAbiContract) {
     EXPECT_FALSE(policy.supports_command_chaining);
     EXPECT_TRUE(policy.uses_shared_command_code_view);
     EXPECT_FALSE(policy.submit_completion_is_deferred);
+    EXPECT_FALSE(SupportsHostBufferReuse(abi));
   }
   for (McdmAbi abi : {McdmAbi::legacy, McdmAbi::compact}) {
     const McdmSubmissionPolicy policy = GetMcdmSubmissionPolicy(abi);
     EXPECT_TRUE(policy.supports_command_chaining);
     EXPECT_FALSE(policy.uses_shared_command_code_view);
     EXPECT_TRUE(policy.submit_completion_is_deferred);
+    EXPECT_TRUE(SupportsHostBufferReuse(abi));
   }
 }
 

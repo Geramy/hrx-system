@@ -30,7 +30,6 @@ iree_cc_library(
   HDRS
     "api.h"
     "native.h"
-    "native_windows_mcdm_internal.h"
     "util.h"
   SRCS
     "native_linux_kmq.cc"
@@ -50,6 +49,7 @@ iree_cc_library(
   HDRS
     "api.h"
     "native.h"
+    "native_windows_mcdm_internal.h"
   SRCS
     "native_windows_mcdm.cc"
   DEPS

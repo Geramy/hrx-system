@@ -1543,6 +1543,11 @@ iree_hal_amdxdna_direct_command_buffer_submit_accumulated_single(
     if (iree_status_is_ok(status) && single_cache_entry) {
       status = iree_hal_amdxdna_rewrite_cached_single_start_npu_cmd(
           command_buffer, single_cache_entry, cmd);
+      if (!iree_status_is_ok(status)) {
+        iree_hal_amdxdna_single_command_cache_entry_discard(
+            single_command_cache, single_cache_entry);
+        single_cache_entry = NULL;
+      }
       if (iree_status_is_ok(status)) {
         iree_hal_amdxdna_single_command_cache_entry_acquire_in_flight(
             single_cache_entry);
@@ -1559,7 +1564,7 @@ iree_hal_amdxdna_direct_command_buffer_submit_accumulated_single(
           release_single_cache_entry_after_submit = true;
         }
       }
-      submit_command = single_cache_entry->command;
+      if (single_cache_entry) submit_command = single_cache_entry->command;
     } else if (iree_status_is_ok(status)) {
       if (!cmd->built) {
         status = iree_hal_amdxdna_make_npu_cmd(
@@ -2275,12 +2280,8 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_normal_run(
     }
   }
 
-  // Production policy: reuse a prepared single-dispatch native command across
-  // queue_execute calls (keyed by the dispatch signature in the device single-
-  // command cache) instead of rebuilding it each time. Always on; kept as a
-  // named flag until the prepared-command model in the native-DDI follow-ups
-  // replaces the device-global caches.
-  const bool use_single_command_cache = true;
+  // Reuse a prepared single-dispatch native command across queue_execute calls,
+  // keyed by the dispatch signature in the device single-command cache.
   if (use_single_partial_elf) {
     status = iree_allocator_malloc_array(
         command_buffer->host_allocator, asm_inst->count,
@@ -2300,7 +2301,7 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_normal_run(
           "amdxdna PARTIAL_ELF single dispatch has an invalid host "
           "patch table");
     }
-    if (iree_status_is_ok(status) && use_single_command_cache) {
+    if (iree_status_is_ok(status)) {
       single_command_cache =
           iree_hal_amdxdna_get_single_command_cache(command_buffer->device);
       if (!single_command_cache) {
@@ -2444,8 +2445,7 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_normal_run(
     }
   }
 
-  if (iree_status_is_ok(status) && use_single_partial_elf &&
-      use_single_command_cache && !submit_command) {
+  if (iree_status_is_ok(status) && use_single_partial_elf && !submit_command) {
     if (!single_command_cache) {
       single_command_cache =
           iree_hal_amdxdna_get_single_command_cache(command_buffer->device);
@@ -2467,11 +2467,13 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_normal_run(
           asm_inst->count, binding_buffers, binding_addrs, binding_offsets,
           binding_lengths, bindings.count, &single_cache_entry);
     }
+    bool transferred_to_cache = false;
     if (iree_status_is_ok(status) && !single_cache_entry) {
       single_cache_entry = iree_hal_amdxdna_store_single_command_cache_entry(
           single_command_cache, queue, cu_idx.index, prepared_ctrl_words,
           asm_inst->count, binding_buffers, binding_addrs, binding_offsets,
           binding_lengths, bindings.count, ctrl_code_buffer, command);
+      transferred_to_cache = single_cache_entry != NULL;
     }
     if (iree_status_is_ok(status) && single_cache_entry) {
       if (iree_hal_amdxdna_direct_command_buffer_uses_async_completion(
@@ -2486,8 +2488,10 @@ static iree_status_t iree_hal_amdxdna_direct_command_buffer_normal_run(
               single_command_cache, single_cache_entry);
         }
       }
-      ctrl_code_buffer = NULL;
-      command = NULL;
+      if (transferred_to_cache) {
+        ctrl_code_buffer = NULL;
+        command = NULL;
+      }
       submit_command = single_cache_entry->command;
     }
   }

@@ -276,23 +276,13 @@ iree_hal_amdxdna_native_c_command_chain_status_t select_command_chain_status(
     }
   }
 
-  switch (IREE_HAL_AMDXDNA_COMMAND_CHAIN_OVERRIDE) {
-    case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_OVERRIDE_FORCE_ENABLED:
-      return IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_ENABLED_FOR_TESTING;
-    case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_OVERRIDE_FORCE_DISABLED:
-      return IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_DISABLED_FOR_TESTING;
-    case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_OVERRIDE_AUTO:
-    default:
-      return status;
-  }
+  return status;
 }
 
 bool command_chain_enabled(
     iree_hal_amdxdna_native_c_command_chain_status_t status) {
   return status ==
-             IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_ENABLED_BY_DEFAULT ||
-         status ==
-             IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_ENABLED_FOR_TESTING;
+         IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_ENABLED_BY_DEFAULT;
 }
 
 void record_driver_stack_info(iree_hal_amdxdna_native_device_t* device,
@@ -611,7 +601,6 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
   IREE_ASSERT_ARGUMENT(device);
   IREE_ASSERT_ARGUMENT(out_caps);
   iree_hal_amdxdna_native_c_device_caps_t caps = {};
-  caps.ddi_version = 1;
   caps.max_effective_queues = 1;
   caps.max_command_chain_slots =
       device->supports_command_chain
@@ -635,8 +624,7 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
   caps.completion_models =
       IREE_HAL_AMDXDNA_NATIVE_C_COMPLETION_MODEL_SYNCHRONOUS_WAIT |
       IREE_HAL_AMDXDNA_NATIVE_C_COMPLETION_MODEL_NATIVE_FENCE;
-  caps.supports_command_chain = device->supports_command_chain;
-  caps.supports_submit_many = device->supports_command_chain;
+  caps.supports_host_buffer_reuse = true;
   caps.native_owns_control_code_publication = false;
   caps.submit_completion_is_deferred = true;
   caps.supports_external_buffer_import = false;

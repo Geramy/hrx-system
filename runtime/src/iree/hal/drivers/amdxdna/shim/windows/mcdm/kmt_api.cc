@@ -40,8 +40,10 @@ constexpr uint32_t kMaxSubmitPrivatePrefixSize = 0x78;
 constexpr size_t kLegacyContextCommandApertureCookieOffset = 0x40;
 constexpr size_t kLegacyV2ContextCommandApertureCookieOffset = 0x3c;
 constexpr size_t kCompactContextCommandApertureCookieOffset = 0x44;
-constexpr UINT kMaxComputeAdapters = 256;
 constexpr UINT kMaxDriverStorePathWarmupBytes = 4096;
+// The {0, 2} identity spans two incompatible context layouts. Captured .240
+// and .280 packages use the older layout; .314 and .329 use the modern one.
+constexpr uint32_t kFirstModernLegacyContextLayoutRevision = 314;
 template <typename Fn>
 Fn ResolveKmtProc(const char* name) {
   HMODULE modules[] = {
@@ -371,10 +373,10 @@ void CloseAdapterHandles(const KmtApi& api, const D3DKMT_ADAPTERINFO* adapters,
 
 bool AppendRetainedAdapterHandle(Adapter* adapter, D3DKMT_HANDLE handle,
                                  Error* out_error) {
-  if (adapter->retained_handle_count >= kMaxRetainedAdapterHandles) {
+  if (adapter->retained_handle_count >= kMaxComputeAdapterHandles) {
     SetErrorFormat(out_error,
                    "too many retained adapter handles (capacity=%zu)",
-                   kMaxRetainedAdapterHandles);
+                   kMaxComputeAdapterHandles);
     return false;
   }
   adapter->retained_handles[adapter->retained_handle_count++] = handle;
@@ -652,7 +654,7 @@ bool QueryDriverVersion(const KmtApi& api, D3DKMT_HANDLE adapter,
 
 bool UsesLegacyV2ContextLayout(const DriverVersion& version) {
   return version.major == 32 && version.minor == 0 && version.build == 203 &&
-         version.revision < 314;
+         version.revision < kFirstModernLegacyContextLayoutRevision;
 }
 
 }  // namespace
@@ -703,6 +705,13 @@ McdmSubmissionPolicy GetMcdmSubmissionPolicy(McdmAbi abi) {
               /*submit_completion_is_deferred=*/true};
   }
   return {};
+}
+
+bool SupportsHostBufferReuse(McdmAbi abi) {
+  // Legacy v0/v2 stacks are certified only with immediate native-allocation
+  // destruction. Later contracts support retaining device-scoped allocations
+  // across HAL wrapper lifetimes.
+  return abi == McdmAbi::legacy || abi == McdmAbi::compact;
 }
 
 bool QueryMcdmAbiDiagnostics(const KmtApi& api, D3DKMT_HANDLE adapter,
@@ -1075,9 +1084,9 @@ bool KmtApi::Load(Error* out_error) {
 }
 
 bool FindNpuAdapter(const KmtApi& api, Adapter* out_adapter, Error* out_error) {
-  D3DKMT_ADAPTERINFO adapters[kMaxComputeAdapters] = {};
+  D3DKMT_ADAPTERINFO adapters[kMaxComputeAdapterHandles] = {};
   UINT adapter_count = 0;
-  if (!EnumerateComputeAdapters(api, adapters, kMaxComputeAdapters,
+  if (!EnumerateComputeAdapters(api, adapters, kMaxComputeAdapterHandles,
                                 &adapter_count, out_error)) {
     return false;
   }
@@ -1098,7 +1107,7 @@ bool FindNpuAdapter(const KmtApi& api, Adapter* out_adapter, Error* out_error) {
   // handle for D3DKMTCreateDevice.
   std::memset(adapters, 0, sizeof(adapters));
   adapter_count = 0;
-  if (!EnumerateComputeAdapters(api, adapters, kMaxComputeAdapters,
+  if (!EnumerateComputeAdapters(api, adapters, kMaxComputeAdapterHandles,
                                 &adapter_count, out_error)) {
     return false;
   }

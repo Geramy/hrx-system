@@ -136,39 +136,6 @@ uint32_t chain_slot_capacity(size_t exec_bo_size) {
              : 1;
 }
 
-void apply_command_chain_override(
-    iree_hal_amdxdna_native_c_device_caps_t* caps) {
-  switch (IREE_HAL_AMDXDNA_COMMAND_CHAIN_OVERRIDE) {
-    case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_OVERRIDE_FORCE_ENABLED: {
-      const size_t chain_exec_bo_size =
-          static_cast<size_t>(windows_dpu_pathb_chain_exec_bo_size());
-      caps->max_command_chain_slots = chain_slot_capacity(chain_exec_bo_size);
-      // The override is intentionally scoped to the OS-neutral command-chain
-      // capability. It does not re-advertise Windows-specific dispatch models
-      // that were disabled for a known-bad driver stack.
-      caps->dispatch_models |=
-          IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_COMMAND_CHAIN;
-      caps->supports_command_chain = true;
-      caps->supports_submit_many = true;
-      caps->command_chain_status =
-          IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_ENABLED_FOR_TESTING;
-      break;
-    }
-    case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_OVERRIDE_FORCE_DISABLED:
-      caps->max_command_chain_slots = 0;
-      caps->dispatch_models &=
-          ~IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_COMMAND_CHAIN;
-      caps->supports_command_chain = false;
-      caps->supports_submit_many = false;
-      caps->command_chain_status =
-          IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_DISABLED_FOR_TESTING;
-      break;
-    case IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_OVERRIDE_AUTO:
-    default:
-      break;
-  }
-}
-
 iree_status_t status_from_mcdm_error(const char* label,
                                       const mcdm::Error& error) {
   return iree_make_status(IREE_STATUS_INTERNAL, "%s: %s", label,
@@ -2370,7 +2337,8 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
   IREE_ASSERT_ARGUMENT(device);
   IREE_ASSERT_ARGUMENT(out_caps);
   iree_hal_amdxdna_native_c_device_caps_t caps = {};
-  caps.ddi_version = 1;
+  const mcdm::McdmSubmissionPolicy submission_policy =
+      mcdm::GetMcdmSubmissionPolicy(device->device.mcdm_abi);
   caps.max_effective_queues = 1;
   const size_t chain_exec_bo_size =
       static_cast<size_t>(windows_dpu_pathb_chain_exec_bo_size());
@@ -2387,14 +2355,12 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
       IREE_HAL_AMDXDNA_NATIVE_C_COMPLETION_MODEL_SYNCHRONOUS_WAIT |
       IREE_HAL_AMDXDNA_NATIVE_C_COMPLETION_MODEL_PROGRESS_FENCE |
       IREE_HAL_AMDXDNA_NATIVE_C_COMPLETION_MODEL_COMPLETION_SLOT;
-  caps.supports_command_chain = true;
-  caps.supports_submit_many = true;
+  caps.supports_host_buffer_reuse =
+      mcdm::SupportsHostBufferReuse(device->device.mcdm_abi);
   caps.native_owns_control_code_publication = true;
   // Issue may return before the native completion wait finishes. The HAL
   // retains native resources and keeps cache entries in flight until the
   // completion batch publishes its signal semaphores.
-  const mcdm::McdmSubmissionPolicy submission_policy =
-      mcdm::GetMcdmSubmissionPolicy(device->device.mcdm_abi);
   caps.submit_completion_is_deferred =
       submission_policy.submit_completion_is_deferred;
   caps.supports_external_buffer_import = false;
@@ -2411,12 +2377,9 @@ iree_status_t iree_hal_amdxdna_native_device_query_caps(
         ~IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_COMMAND_CHAIN;
     out_caps->dispatch_models &=
         ~IREE_HAL_AMDXDNA_NATIVE_C_DISPATCH_MODEL_PARTIAL_ELF;
-    out_caps->supports_command_chain = false;
-    out_caps->supports_submit_many = false;
     out_caps->command_chain_status =
         IREE_HAL_AMDXDNA_NATIVE_C_COMMAND_CHAIN_STATUS_DISABLED_KNOWN_BAD_STACK;
   }
-  apply_command_chain_override(out_caps);
   return iree_ok_status();
 }
 

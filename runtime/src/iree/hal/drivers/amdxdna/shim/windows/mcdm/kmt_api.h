@@ -24,7 +24,9 @@
 
 namespace iree::hal::amdxdna::mcdm {
 
-constexpr size_t kMaxRetainedAdapterHandles = 256;
+// D3DKMT adapter enumeration is bounded so discovery uses fixed storage and
+// retains pre-selection handles without allocation during device bring-up.
+constexpr size_t kMaxComputeAdapterHandles = 256;
 constexpr size_t kMaxMcdmPrivateDataSize = 0x280;
 constexpr size_t kMaxPathBBoTableEntries = 6;
 constexpr size_t kCompactPathBChainHandleSize = 0x120;
@@ -90,6 +92,7 @@ struct McdmSubmissionPolicy {
 };
 
 McdmSubmissionPolicy GetMcdmSubmissionPolicy(McdmAbi abi);
+bool SupportsHostBufferReuse(McdmAbi abi);
 
 enum class McdmAbiSource {
   unknown,
@@ -202,13 +205,13 @@ bool QueryMcdmAbiDiagnostics(const KmtApi& api, D3DKMT_HANDLE adapter,
 struct Adapter {
   D3DKMT_HANDLE handle = 0;
   LUID luid = {};
-  D3DKMT_HANDLE retained_handles[kMaxRetainedAdapterHandles] = {};
+  D3DKMT_HANDLE retained_handles[kMaxComputeAdapterHandles] = {};
   size_t retained_handle_count = 0;
 };
 
 struct Device {
   D3DKMT_HANDLE adapter = 0;
-  D3DKMT_HANDLE retained_adapter_handles[kMaxRetainedAdapterHandles] = {};
+  D3DKMT_HANDLE retained_adapter_handles[kMaxComputeAdapterHandles] = {};
   size_t retained_adapter_handle_count = 0;
   D3DKMT_HANDLE device = 0;
   D3DKMT_HANDLE paging_queue = 0;
