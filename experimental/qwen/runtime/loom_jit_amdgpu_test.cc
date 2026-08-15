@@ -107,7 +107,7 @@ static iree_status_t LoadNpy(iree_hal_device_t* device, const std::string& path,
   buffer_params.type = IREE_HAL_MEMORY_TYPE_OPTIMAL_FOR_DEVICE;
   buffer_params.access = IREE_HAL_MEMORY_ACCESS_ALL;
   buffer_params.usage =
-      IREE_HAL_BUFFER_USAGE_DISPATCH_STORAGE | IREE_HAL_BUFFER_USAGE_TRANSFER;
+      IREE_HAL_BUFFER_USAGE_STORAGE | IREE_HAL_BUFFER_USAGE_TRANSFER;
   return iree_numpy_npy_load_ndarray(
       stream_ptr.get(), IREE_NUMPY_NPY_LOAD_OPTION_DEFAULT, buffer_params,
       device, iree_hal_device_allocator(device), out_buffer_view);
@@ -334,7 +334,7 @@ static iree_status_t PrepareTargetSpecializedRouter() {
   return iree_ok_status();
 }
 
-static iree_status_t RunRmsnormFixture(const std::string& fixture_directory) {
+static iree_status_t PrepareAndRunRmsnorm(const char* fixture_directory) {
   const char* device_uri_environment = std::getenv("QWEN_DEVICE_URI");
   const iree_string_view_t device_uri =
       device_uri_environment ? iree_make_cstring_view(device_uri_environment)
@@ -450,18 +450,41 @@ static iree_status_t RunRmsnormFixture(const std::string& fixture_directory) {
         "identical Qwen Loom specialization did not reuse its cache entry");
   }
 
+  const int64_t cached_code_workload_arguments[] = {510};
+  qwen_loom_jit_prepare_options_t cached_code_options = prepare_options;
+  cached_code_options.workload_arguments = cached_code_workload_arguments;
+  qwen_loom_executable_t* cached_code_executable = nullptr;
+  IREE_RETURN_IF_ERROR(qwen_loom_jit_prepare(
+      jit_ptr.get(), &cached_code_options, &cached_code_executable));
+  ExecutablePtr cached_code_executable_ptr(cached_code_executable);
+  const iree_hal_dispatch_config_t cached_code_dispatch_config =
+      qwen_loom_executable_dispatch_config(cached_code_executable_ptr.get());
+  if (cached_code_executable == executable_ptr.get() ||
+      qwen_loom_jit_entry_count(jit_ptr.get()) != 3 ||
+      cached_code_dispatch_config.workgroup_count[0] != 510 ||
+      cached_code_dispatch_config.workgroup_count[1] != 1 ||
+      cached_code_dispatch_config.workgroup_count[2] != 1 ||
+      qwen_loom_executable_hal_executable(cached_code_executable_ptr.get()) !=
+          qwen_loom_executable_hal_executable(executable_ptr.get())) {
+    return iree_make_status(
+        IREE_STATUS_INTERNAL,
+        "cached Qwen Loom code did not derive a new workload geometry");
+  }
+
+  if (!fixture_directory) return iree_ok_status();
+  const std::string fixture_path(fixture_directory);
+
   iree_hal_buffer_view_t* input_view = nullptr;
   IREE_RETURN_IF_ERROR(
-      LoadNpy(device.get(), fixture_directory + "/ffn_input.npy", &input_view));
+      LoadNpy(device.get(), fixture_path + "/ffn_input.npy", &input_view));
   BufferViewPtr input_view_ptr(input_view);
   iree_hal_buffer_view_t* weight_view = nullptr;
   IREE_RETURN_IF_ERROR(LoadNpy(
-      device.get(), fixture_directory + "/ffn_norm_weight.npy", &weight_view));
+      device.get(), fixture_path + "/ffn_norm_weight.npy", &weight_view));
   BufferViewPtr weight_view_ptr(weight_view);
   iree_hal_buffer_view_t* expected_view = nullptr;
-  IREE_RETURN_IF_ERROR(LoadNpy(device.get(),
-                               fixture_directory + "/expected_ffn_norm.npy",
-                               &expected_view));
+  IREE_RETURN_IF_ERROR(LoadNpy(
+      device.get(), fixture_path + "/expected_ffn_norm.npy", &expected_view));
   BufferViewPtr expected_view_ptr(expected_view);
 
   const iree_hal_dim_t matrix_shape[] = {512, 2048};
@@ -486,7 +509,7 @@ static iree_status_t RunRmsnormFixture(const std::string& fixture_directory) {
   output_params.type = IREE_HAL_MEMORY_TYPE_OPTIMAL_FOR_DEVICE;
   output_params.access = IREE_HAL_MEMORY_ACCESS_ALL;
   output_params.usage =
-      IREE_HAL_BUFFER_USAGE_DISPATCH_STORAGE | IREE_HAL_BUFFER_USAGE_TRANSFER;
+      IREE_HAL_BUFFER_USAGE_STORAGE | IREE_HAL_BUFFER_USAGE_TRANSFER;
   iree_hal_buffer_t* output_buffer = nullptr;
   IREE_RETURN_IF_ERROR(iree_hal_allocator_allocate_buffer(
       iree_hal_device_allocator(device.get()), output_params,
@@ -563,14 +586,17 @@ static iree_status_t RunRmsnormFixture(const std::string& fixture_directory) {
                            expected_buffer);
 }
 
-TEST(QwenLoomJitAmdgpuTest,
-     CompilesCachesAndExecutesPrefill512FixtureWithAccessSanitizer) {
+TEST(QwenLoomJitAmdgpuTest, CompilesAndCachesDistinctRmsnormWorkloads) {
+  IREE_ASSERT_OK(PrepareAndRunRmsnorm(/*fixture_directory=*/nullptr));
+}
+
+TEST(QwenLoomJitAmdgpuTest, ExecutesPrefill512FixtureWithAccessSanitizer) {
   const char* fixture_directory = std::getenv("QWEN_RMSNORM_FIXTURE_DIR");
   if (!fixture_directory) {
     GTEST_SKIP()
         << "QWEN_RMSNORM_FIXTURE_DIR must name the layer0 fixture directory";
   }
-  IREE_ASSERT_OK(RunRmsnormFixture(fixture_directory));
+  IREE_ASSERT_OK(PrepareAndRunRmsnorm(fixture_directory));
 }
 
 TEST(QwenLoomJitAmdgpuTest,
