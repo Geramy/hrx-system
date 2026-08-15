@@ -11,7 +11,6 @@
 #include "iree/base/api.h"
 #include "iree/hal/api.h"
 #include "loomc/sanitizer.h"
-#include "loomc/target/cmd/program.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -110,6 +109,14 @@ typedef enum qwen_command_barrier_wave_event_e {
   QWEN_COMMAND_BARRIER_WAVE_EVENT_COMPLETED = 1,
 } qwen_command_barrier_wave_event_t;
 
+// Half-open canonical command range within one command-program export.
+typedef struct qwen_command_range_t {
+  // Zero-based index of the first command in the range.
+  uint32_t first_command;
+  // Number of consecutive commands in the range.
+  uint32_t command_count;
+} qwen_command_range_t;
+
 // One synchronous barrier-wave progress event.
 typedef struct qwen_command_barrier_wave_event_info_t {
   // Size of this structure in bytes.
@@ -127,7 +134,7 @@ typedef struct qwen_command_barrier_wave_event_info_t {
   // Canonical barrier-wave ordinal carried by operation metadata.
   uint32_t barrier_wave_ordinal;
   // Canonical command range recorded into this wave command buffer.
-  loomc_cmd_program_command_range_t command_range;
+  qwen_command_range_t command_range;
 } qwen_command_barrier_wave_event_info_t;
 
 // Synchronous barrier-wave progress callback.
