@@ -211,6 +211,9 @@ typedef enum loomc_target_pipeline_kind_e {
   /// Lower source/kernel IR to target-low IR before target ABI/resource
   /// materialization and packetization preparation.
   LOOMC_TARGET_PIPELINE_KIND_SOURCE_LOW = 1,
+
+  /// Resolve authored templates and callables while preserving source IR.
+  LOOMC_TARGET_PIPELINE_KIND_EXPANDED_SOURCE = 2,
 } loomc_target_pipeline_kind_t;
 
 /// Control-flow shape selected for source-to-low lowering.

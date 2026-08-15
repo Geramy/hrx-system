@@ -126,6 +126,7 @@ static loomc_status_t loomc_pass_program_validate_target_pipeline_options(
   switch (options->kind) {
     case LOOMC_TARGET_PIPELINE_KIND_PREPARED_LOW:
     case LOOMC_TARGET_PIPELINE_KIND_SOURCE_LOW:
+    case LOOMC_TARGET_PIPELINE_KIND_EXPANDED_SOURCE:
       break;
     default:
       return loomc_make_status(LOOMC_STATUS_INVALID_ARGUMENT,
@@ -331,6 +332,14 @@ static loomc_status_t loomc_pass_program_build_target_pipeline(
       break;
     case LOOMC_TARGET_PIPELINE_KIND_SOURCE_LOW:
       status = loom_target_pipeline_build_to_source_low(
+          pass_program->pipeline_module,
+          loomc_pass_program_target_pipeline_identifier(options),
+          &internal_options,
+          loomc_target_environment_loom_target_environment(target_environment),
+          state->compile_options.environment, &pipeline_op);
+      break;
+    case LOOMC_TARGET_PIPELINE_KIND_EXPANDED_SOURCE:
+      status = loom_target_pipeline_build_to_expanded_source(
           pass_program->pipeline_module,
           loomc_pass_program_target_pipeline_identifier(options),
           &internal_options,

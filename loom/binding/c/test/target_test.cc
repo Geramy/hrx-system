@@ -916,6 +916,24 @@ TEST(TargetTest, AcceptsSanitizerPipelineOptions) {
   EXPECT_NE(pass_program.get(), nullptr);
 }
 
+TEST(TargetTest, AcceptsExpandedSourcePipeline) {
+  TargetEnvironmentPtr target_environment = CreateTestTargetEnvironment();
+  ContextPtr context = CreateTargetContext(target_environment.get());
+  loomc_target_pipeline_options_t pipeline_options = {
+      /*.type=*/LOOMC_STRUCTURE_TYPE_TARGET_PIPELINE_OPTIONS,
+      /*.structure_size=*/sizeof(pipeline_options),
+      /*.next=*/nullptr,
+      /*.identifier=*/loomc_make_cstring_view("expanded-source"),
+      /*.kind=*/LOOMC_TARGET_PIPELINE_KIND_EXPANDED_SOURCE,
+      /*.control_flow_lowering=*/LOOMC_TARGET_CONTROL_FLOW_LOWERING_CFG,
+      /*.source_to_low_max_errors=*/0,
+  };
+
+  PassProgramPtr pass_program =
+      CreateTargetPipelinePassProgram(context.get(), &pipeline_options);
+  EXPECT_NE(pass_program.get(), nullptr);
+}
+
 TEST(TargetTest, RejectsUnknownSanitizerCheckBits) {
   TargetEnvironmentPtr target_environment = CreateTestTargetEnvironment();
   ContextPtr context = CreateTargetContext(target_environment.get());
