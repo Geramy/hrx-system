@@ -48,6 +48,20 @@ low.func.def target<amdgpu.rdna3.core>(@gfx11_target) @gfx11_compiler_hint_nativ
 
 // ====
 
+// Native wait insertion must pass through compile-time fact identities.
+// RUN: emit amdgpu-native @gfx11_assume_forwards_native_wait strategy=source
+amdgpu.target<gfx1100> @gfx11_target
+low.func.def target<amdgpu.rdna3.core>(@gfx11_target) @gfx11_assume_forwards_native_wait(%kernarg: reg<amdgpu.sgpr x2>, %soffset: reg<amdgpu.sgpr>, %lhs: reg<amdgpu.sgpr>) -> (reg<amdgpu.sgpr>) asm {
+  %loaded = s_load_dword %kernarg, %soffset
+  %assumed = low.assume %loaded [range(%loaded, 0, 1024)] : reg<amdgpu.sgpr>
+  %sum = s_add_u32 %assumed, %lhs
+  return %sum
+}
+
+// ----
+
+// ====
+
 // RUN: emit amdgpu-assembly @gfx11_div_scale_vcc_state waits=none
 amdgpu.target<gfx1100> @gfx11_target
 low.func.def target<amdgpu.rdna3.core>(@gfx11_target) @gfx11_div_scale_vcc_state(%value: reg<amdgpu.vgpr>) asm {

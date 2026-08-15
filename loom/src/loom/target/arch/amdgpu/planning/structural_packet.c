@@ -104,6 +104,9 @@ loom_amdgpu_structural_packet_info_t loom_amdgpu_structural_packet_analyze(
     return info;
   }
   if (loom_traits_are_compile_time_only(node->traits)) {
+    if (loom_traits_are_fact_identity(node->traits)) {
+      info.flags = LOOM_AMDGPU_STRUCTURAL_PACKET_FLAG_FORWARDS_DEPENDENCIES;
+    }
     return info;
   }
   const loom_low_allocation_packet_move_op_kind_t packet_move_kind =
