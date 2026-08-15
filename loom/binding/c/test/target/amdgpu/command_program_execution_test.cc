@@ -63,17 +63,19 @@ constexpr char kSourceText[] = R"(
 kernel.def @add_bias(%element_count: index) {
   %one = index.constant 1 : index
   kernel.launch.config workgroups(%element_count, %one, %one) workgroup_size(%one, %one, %one) : index
-} launch(%bias: view<1xi32>, %source: buffer, %target: buffer) {
+} launch(%bias: buffer, %source: buffer, %target: buffer) {
   %base = index.constant 0 : offset
   %workgroup = kernel.workgroup.id<x> : index
   %zero = index.constant 0 : index
+  %bias_aligned = buffer.assume.alignment %bias {minimum_alignment = 4} : buffer
   %source_aligned = buffer.assume.alignment %source {minimum_alignment = 4} : buffer
   %target_aligned = buffer.assume.alignment %target {minimum_alignment = 4} : buffer
+  %bias_view = buffer.view %bias_aligned[%base] : buffer -> view<1xi32>
   %source_view = buffer.view %source_aligned[%base] : buffer -> view<1xi32>
   %target_view = buffer.view %target_aligned[%base] : buffer -> view<1xi32>
   %is_first = index.cmp eq, %workgroup, %zero : index
   scf.if %is_first {
-    %bias_value = view.load %bias[%zero] : view<1xi32> -> i32
+    %bias_value = view.load %bias_view[%zero] : view<1xi32> -> i32
     %value = view.load %source_view[%zero] : view<1xi32> -> i32
     %result = scalar.addi %value, %bias_value : i32
     view.store %result, %target_view[%zero] : i32, view<1xi32>
