@@ -176,7 +176,7 @@ iree_status_t qwen_request_create(
       IREE_HAL_SEMAPHORE_FLAG_DEFAULT, &request->timeline_semaphore);
 
   iree_hal_buffer_params_t staging_params = {
-      .usage = IREE_HAL_BUFFER_USAGE_DISPATCH_STORAGE |
+      .usage = IREE_HAL_BUFFER_USAGE_STORAGE |
                IREE_HAL_BUFFER_USAGE_TRANSFER_TARGET |
                IREE_HAL_BUFFER_USAGE_MAPPING_PERSISTENT |
                IREE_HAL_BUFFER_USAGE_MAPPING_ACCESS_RANDOM,
@@ -229,8 +229,7 @@ iree_status_t qwen_request_create(
   }
   if (iree_status_is_ok(status)) {
     iree_hal_buffer_params_t storage_params = {
-        .usage = IREE_HAL_BUFFER_USAGE_DISPATCH_STORAGE |
-                 IREE_HAL_BUFFER_USAGE_TRANSFER,
+        .usage = IREE_HAL_BUFFER_USAGE_STORAGE | IREE_HAL_BUFFER_USAGE_TRANSFER,
         .access = IREE_HAL_MEMORY_ACCESS_READ | IREE_HAL_MEMORY_ACCESS_WRITE,
         .type = IREE_HAL_MEMORY_TYPE_DEVICE_LOCAL,
         .queue_affinity = queue_affinity,

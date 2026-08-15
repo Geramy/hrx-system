@@ -3346,7 +3346,7 @@ iree_status_t qwen_program_issue(
   const iree_hal_queue_affinity_t queue_affinity =
       qwen_model_queue_affinity(program->model);
   const iree_hal_buffer_params_t scratch_params = {
-      .usage = IREE_HAL_BUFFER_USAGE_DISPATCH_STORAGE |
+      .usage = IREE_HAL_BUFFER_USAGE_STORAGE |
                (initializes_completion_counters
                     ? IREE_HAL_BUFFER_USAGE_TRANSFER_TARGET
                     : IREE_HAL_BUFFER_USAGE_NONE),
