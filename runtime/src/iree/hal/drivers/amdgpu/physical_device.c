@@ -622,11 +622,16 @@ iree_hal_amdgpu_physical_device_initialize_memory_system_capabilities(
   return iree_ok_status();
 }
 
+// Selects the queue kernarg ring memory. When CPU-visible device memory is
+// selected, |out_host_memory| receives the host kernarg memory used by the
+// queue's idle-submission ring; otherwise it is zeroed.
 static void iree_hal_amdgpu_physical_device_select_kernarg_ring_memory(
     const iree_hal_amdgpu_physical_device_t* physical_device,
     const iree_hal_amdgpu_host_memory_pools_t* host_memory_pools,
     hsa_agent_t* out_access_agent,
-    iree_hal_amdgpu_kernarg_ring_memory_t* out_memory) {
+    iree_hal_amdgpu_kernarg_ring_memory_t* out_memory,
+    iree_hal_amdgpu_kernarg_ring_memory_t* out_host_memory) {
+  memset(out_host_memory, 0, sizeof(*out_host_memory));
   iree_hal_amdgpu_physical_device_use_host_kernarg_memory(
       host_memory_pools, physical_device->device_agent, out_access_agent,
       out_memory);
@@ -634,6 +639,7 @@ static void iree_hal_amdgpu_physical_device_select_kernarg_ring_memory(
           &physical_device->cpu_visible_device_coarse_memory)) {
     return;
   }
+  *out_host_memory = *out_memory;
   iree_hal_amdgpu_physical_device_use_cpu_visible_kernarg_memory(
       &physical_device->cpu_visible_device_coarse_memory, out_memory);
 }
@@ -1317,9 +1323,10 @@ static void iree_hal_amdgpu_physical_device_initialize_host_queue_construction(
   const iree_hal_amdgpu_host_memory_pools_t* host_memory_pools =
       &physical_device->host_memory_pools;
   iree_hal_amdgpu_kernarg_ring_memory_t kernarg_memory;
+  iree_hal_amdgpu_kernarg_ring_memory_t host_kernarg_memory;
   iree_hal_amdgpu_physical_device_select_kernarg_ring_memory(
       physical_device, host_memory_pools, &construction->kernarg_access_agent,
-      &kernarg_memory);
+      &kernarg_memory, &host_kernarg_memory);
 
   iree_hal_amdgpu_host_queue_profiling_memory_t profiling_memory = {0};
   hsa_amd_memory_pool_t device_signal_memory_pool = {0};
@@ -1393,6 +1400,7 @@ static void iree_hal_amdgpu_physical_device_initialize_host_queue_construction(
       .memory =
           {
               .kernarg = kernarg_memory,
+              .host_kernarg = host_kernarg_memory,
               .pm4_ib_pool = host_memory_pools->fine_pool,
               .block_pool = &physical_device->fine_host_block_pool,
               .profiling = profiling_memory,

@@ -476,9 +476,14 @@ TEST_F(HostQueueCommandBufferTest,
               capability->host_write_publication.mode);
     EXPECT_EQ(queue->kernarg_ring.publication.hdp_mem_flush_control,
               capability->host_write_publication.hdp_mem_flush_control);
+    // Idle submissions take host kernargs that need no publication.
+    ASSERT_NE(queue->host_kernarg_ring.base, nullptr);
+    EXPECT_EQ(queue->host_kernarg_ring.publication.mode,
+              IREE_HAL_AMDGPU_KERNARG_RING_PUBLICATION_MODE_NONE);
   } else {
     EXPECT_EQ(queue->kernarg_ring.publication.mode,
               IREE_HAL_AMDGPU_KERNARG_RING_PUBLICATION_MODE_NONE);
+    EXPECT_EQ(queue->host_kernarg_ring.base, nullptr);
   }
 }
 
