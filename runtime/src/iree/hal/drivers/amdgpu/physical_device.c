@@ -220,6 +220,8 @@ void iree_hal_amdgpu_physical_device_options_initialize(
       IREE_HAL_AMDGPU_PHYSICAL_DEVICE_DEFAULT_HOST_QUEUE_NOTIFICATION_CAPACITY;
   out_options->host_queue_kernarg_capacity =
       IREE_HAL_AMDGPU_PHYSICAL_DEVICE_DEFAULT_HOST_QUEUE_KERNARG_CAPACITY;
+  out_options->host_queue_kernarg_placement =
+      IREE_HAL_AMDGPU_KERNARG_PLACEMENT_AUTO;
   out_options->host_queue_upload_capacity =
       IREE_HAL_AMDGPU_PHYSICAL_DEVICE_DEFAULT_HOST_QUEUE_UPLOAD_CAPACITY;
 
@@ -377,6 +379,8 @@ static iree_status_t iree_hal_amdgpu_physical_device_initialize_identity(
       options->host_queue_notification_capacity;
   out_physical_device->host_queue_kernarg_capacity =
       options->host_queue_kernarg_capacity;
+  out_physical_device->host_queue_kernarg_placement =
+      options->host_queue_kernarg_placement;
   out_physical_device->host_queue_upload_capacity =
       options->host_queue_upload_capacity;
 
@@ -622,9 +626,10 @@ iree_hal_amdgpu_physical_device_initialize_memory_system_capabilities(
   return iree_ok_status();
 }
 
-// Selects the queue kernarg ring memory. When CPU-visible device memory is
-// selected, |out_host_memory| receives the host kernarg memory used by the
-// queue's idle-submission ring; otherwise it is zeroed.
+// Selects the queue kernarg ring memory for |host_queue_kernarg_placement|
+// (see iree_hal_amdgpu_kernarg_placement_t). |out_host_memory| receives the
+// host kernarg memory of the queue's idle-submission ring under AUTO placement
+// with CPU-visible device memory, and is zeroed otherwise.
 static void iree_hal_amdgpu_physical_device_select_kernarg_ring_memory(
     const iree_hal_amdgpu_physical_device_t* physical_device,
     const iree_hal_amdgpu_host_memory_pools_t* host_memory_pools,
@@ -635,11 +640,16 @@ static void iree_hal_amdgpu_physical_device_select_kernarg_ring_memory(
   iree_hal_amdgpu_physical_device_use_host_kernarg_memory(
       host_memory_pools, physical_device->device_agent, out_access_agent,
       out_memory);
-  if (!iree_hal_amdgpu_cpu_visible_device_coarse_memory_is_available(
+  if (physical_device->host_queue_kernarg_placement ==
+          IREE_HAL_AMDGPU_KERNARG_PLACEMENT_HOST ||
+      !iree_hal_amdgpu_cpu_visible_device_coarse_memory_is_available(
           &physical_device->cpu_visible_device_coarse_memory)) {
     return;
   }
-  *out_host_memory = *out_memory;
+  if (physical_device->host_queue_kernarg_placement ==
+      IREE_HAL_AMDGPU_KERNARG_PLACEMENT_AUTO) {
+    *out_host_memory = *out_memory;
+  }
   iree_hal_amdgpu_physical_device_use_cpu_visible_kernarg_memory(
       &physical_device->cpu_visible_device_coarse_memory, out_memory);
 }
@@ -1181,6 +1191,18 @@ iree_status_t iree_hal_amdgpu_physical_device_initialize(
             out_physical_device->agent_target->primary_isa.identity.version,
             &system->topology,
             &out_physical_device->cpu_visible_device_coarse_memory);
+  }
+  if (iree_status_is_ok(status) &&
+      options->host_queue_kernarg_placement ==
+          IREE_HAL_AMDGPU_KERNARG_PLACEMENT_DEVICE &&
+      !iree_hal_amdgpu_cpu_visible_device_coarse_memory_is_available(
+          &out_physical_device->cpu_visible_device_coarse_memory)) {
+    status = iree_make_status(
+        IREE_STATUS_FAILED_PRECONDITION,
+        "device kernarg placement was requested but this GPU agent cannot "
+        "publish host writes into device memory: it needs a gfx94x, gfx120x, "
+        "or gfx125x ISA, HDP flush registers from the HSA runtime, and CPU "
+        "access to the device coarse-grained memory pool");
   }
   if (iree_status_is_ok(status)) {
     status =

@@ -487,6 +487,46 @@ TEST_F(HostQueueCommandBufferTest,
   }
 }
 
+TEST_F(HostQueueCommandBufferTest, KernargPlacementHostUsesHostRingOnly) {
+  iree_hal_amdgpu_logical_device_options_t options;
+  iree_hal_amdgpu_logical_device_options_initialize(&options);
+  options.preallocate_pools = 0;
+  options.host_queues.kernarg_placement =
+      IREE_HAL_AMDGPU_KERNARG_PLACEMENT_HOST;
+
+  TestLogicalDevice test_device;
+  IREE_ASSERT_OK(
+      test_device.Initialize(&options, &libhsa_, &topology_, host_allocator_));
+  iree_hal_amdgpu_host_queue_t* queue = test_device.first_host_queue();
+  ASSERT_NE(queue, nullptr);
+  EXPECT_EQ(queue->kernarg_ring.publication.mode,
+            IREE_HAL_AMDGPU_KERNARG_RING_PUBLICATION_MODE_NONE);
+  EXPECT_EQ(queue->host_kernarg_ring.base, nullptr);
+}
+
+TEST_F(HostQueueCommandBufferTest, KernargPlacementDeviceUsesDeviceRingOnly) {
+  iree_hal_amdgpu_logical_device_options_t options;
+  iree_hal_amdgpu_logical_device_options_initialize(&options);
+  options.preallocate_pools = 0;
+  options.host_queues.kernarg_placement =
+      IREE_HAL_AMDGPU_KERNARG_PLACEMENT_DEVICE;
+
+  TestLogicalDevice test_device;
+  iree_status_t status =
+      test_device.Initialize(&options, &libhsa_, &topology_, host_allocator_);
+  if (iree_status_is_failed_precondition(status)) {
+    iree_status_free(status);
+    GTEST_SKIP() << "this GPU agent cannot publish host writes into device "
+                    "memory, so device kernarg placement is rejected";
+  }
+  IREE_ASSERT_OK(status);
+  iree_hal_amdgpu_host_queue_t* queue = test_device.first_host_queue();
+  ASSERT_NE(queue, nullptr);
+  EXPECT_EQ(queue->kernarg_ring.publication.mode,
+            IREE_HAL_AMDGPU_KERNARG_RING_PUBLICATION_MODE_HDP_FLUSH);
+  EXPECT_EQ(queue->host_kernarg_ring.base, nullptr);
+}
+
 TEST_F(HostQueueCommandBufferTest,
        PrepublishedKernargsUseRecordedDeviceFineStorage) {
   iree_hal_amdgpu_logical_device_options_t options;
