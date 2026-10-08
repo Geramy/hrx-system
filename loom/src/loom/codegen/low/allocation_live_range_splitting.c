@@ -108,8 +108,18 @@ static bool loom_low_allocation_value_can_split_after_definition(
       defining_op->parent_block == NULL) {
     return false;
   }
+  // Preamble values hold their ABI locations from entry; split after the whole
+  // preamble so nothing lands between live-ins.
+  loom_op_t* insertion_anchor = defining_op;
+  if (loom_low_live_in_isa(defining_op) || loom_low_resource_isa(defining_op)) {
+    while (insertion_anchor->next_op != NULL &&
+           (loom_low_live_in_isa(insertion_anchor->next_op) ||
+            loom_low_resource_isa(insertion_anchor->next_op))) {
+      insertion_anchor = insertion_anchor->next_op;
+    }
+  }
   *out_insertion_block = defining_op->parent_block;
-  *out_insertion_anchor = defining_op;
+  *out_insertion_anchor = insertion_anchor;
   return true;
 }
 

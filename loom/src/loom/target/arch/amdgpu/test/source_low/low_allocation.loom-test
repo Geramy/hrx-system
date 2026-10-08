@@ -614,3 +614,41 @@ low.func.def schedule(locked) target<amdgpu.rdna3.core>(@target) @many_fixed_inp
   s_or_b32 s7, s14, s15
   s_or_b32 s8, s16, s17
   s_endpgm
+
+// ====
+
+// Live-in splits under SGPR pressure stay after the preamble and keep v0.
+// RUN: with-checks emit amdgpu-assembly @live_in_split_follows_entry_preamble strategy=source amdgpu.sgpr=7 fixed=%kernarg:physical_register:0:2 fixed=%group:physical_register:2:1 fixed=%lane:physical_register:0:1
+amdgpu.target<gfx1151> @target
+
+low.kernel.def target<amdgpu.rdna3_5.core>(@target) abi_layout({constant_count = 0, direct_arg_count = 0, direct_arg_names = {}, direct_arg_offsets = [], direct_arg_parameter_indices = [], direct_arg_sizes = [], parameter_count = 1, resource_count = 1, resource_offsets = [0], resource_parameter_indices = [0], uses_kernarg_segment_ptr = true}) workgroup_size(64, 1, 1) @live_in_split_follows_entry_preamble() asm {
+  %kernarg = live_in<amdgpu.kernarg_segment_ptr> : reg<amdgpu.sgpr x2>
+  %group = live_in<amdgpu.workgroup_id.x> : reg<amdgpu.sgpr>
+  %lane = live_in<amdgpu.workitem_id.x> : reg<amdgpu.vgpr>
+  %x0 = s_load_dword_offset_only %kernarg {offset = 8}
+  %y0 = s_mul_i32 %x0, %x0
+  %x1 = s_load_dword_offset_only %kernarg {offset = 12}
+  %y1 = s_mul_i32 %x1, %x1
+  %x2 = s_load_dword_offset_only %kernarg {offset = 16}
+  %y2 = s_mul_i32 %x2, %x2
+  %x3 = s_load_dword_offset_only %kernarg {offset = 20}
+  %y3 = s_mul_i32 %x3, %x3
+  %x4 = s_load_dword_offset_only %kernarg {offset = 24}
+  %y4 = s_mul_i32 %x4, %x4
+  %s1 = s_add_u32 %y0, %y1
+  %s2 = s_add_u32 %s1, %y2
+  %s3 = s_add_u32 %s2, %y3
+  %s4 = s_add_u32 %s3, %y4
+  %sum = s_add_u32 %s4, %group
+  %output = s_load_dwordx2_offset_only %kernarg
+  %value = v_mov_b32_copy %sum
+  %address = v_lshlrev_b32_src0_inline %lane, 2
+  global_store_b32_saddr %address, %value, %output
+  return
+}
+
+// ----
+CHECK: v_lshlrev_b32 v0, 2, v0
+CHECK: global_store_b32 v0, *
+CHECK-NOT: v_mov_b32_copy v0, *
+CHECK-NOT: scratch_load_b32 v0, *
