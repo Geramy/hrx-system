@@ -170,6 +170,7 @@ loom_cc_library(
     iree::base::internal
     iree::base::internal::arena
     loom::analysis::liveness
+    loom::analysis::liveness_dataflow
     loom::analysis::liveness_json
     loom::codegen::low::allocation::storage
     loom::codegen::low::allocation::target_constraints

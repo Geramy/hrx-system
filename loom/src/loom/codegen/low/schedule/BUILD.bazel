@@ -153,6 +153,7 @@ loom_cc_library(
         ":ready_frontier",
         ":resource_calendar",
         "//loom/src/loom/analysis:liveness",
+        "//loom/src/loom/analysis:liveness_dataflow",
         "//loom/src/loom/analysis:liveness_json",
         "//loom/src/loom/codegen/low:descriptor_traits",
         "//loom/src/loom/codegen/low:descriptors",

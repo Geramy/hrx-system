@@ -1095,6 +1095,52 @@ low.func.def target<test.low.core>(@test_target) @resource_stall_accounts_for_cf
 }
 
 // ====
+// Values live out of a block keep their storage through the whole block even
+// when no block node reads them. %pad is live through ^schedule and %use1 is
+// live out of it, so hard pressure limits charge both: issuing %load1 before
+// %use0 would leave no room for %use0 within 24 units.
+// RUN: emit low-schedule-json @resource_stall_charges_cfg_live_out_values strategy=resource-stall diagnostics=candidates test.i32=24 output=none
+
+test.target<low_core> @test_target
+
+low.func.def target<test.low.core>(@test_target) @resource_stall_charges_cfg_live_out_values(%pad: reg<test.i32 x8>, %ptr0: reg<test.ptr>, %ptr1: reg<test.ptr>, %lhs: reg<test.i32 x4>) -> (reg<test.i32 x8>, reg<test.i32 x4>) asm {
+  low.br ^schedule
+^schedule:
+  // REMARK@+1: BACKEND/015 {scheduled_ordinal="0", scored_candidate_count="2", chosen_packet="test.load.v4i32", rejected_packet="test.load.v4i32"}
+  %load0 = test.load.v4i32 %ptr0
+  // REMARK@+1: BACKEND/015 {scheduled_ordinal="1", chosen_packet="test.add.v4i32", rejected_packet="test.load.v4i32"}
+  %use0 = test.add.v4i32 %load0, %lhs
+  %load1 = test.load.v4i32 %ptr1
+  %use1 = test.add.v4i32 %load1, %use0
+  low.br ^exit
+^exit:
+  return %pad, %use1
+}
+
+// ====
+// RUN: with-checks emit low-schedule-json @scheduled_pressure_charges_cfg_live_out_values strategy=resource-stall test.i32=24
+
+test.target<low_core> @test_target
+
+low.func.def target<test.low.core>(@test_target) @scheduled_pressure_charges_cfg_live_out_values(%pad: reg<test.i32 x8>, %ptr0: reg<test.ptr>, %ptr1: reg<test.ptr>, %lhs: reg<test.i32 x4>) -> (reg<test.i32 x8>, reg<test.i32 x4>) asm {
+  low.br ^schedule
+^schedule:
+  %load0 = test.load.v4i32 %ptr0
+  %use0 = test.add.v4i32 %load0, %lhs
+  %load1 = test.load.v4i32 %ptr1
+  %use1 = test.add.v4i32 %load1, %use0
+  low.br ^exit
+^exit:
+  return %pad, %use1
+}
+
+// ----
+// ^schedule starts with %pad, %lhs and both pointers live and ends with %pad
+// and %use1 still live.
+CHECK: *{"node":1,"block":1,"scheduled_ordinal":0,"issue_cycle":0,"live_units_before":14,*
+CHECK: *{"node":5,"block":1,"scheduled_ordinal":4,"issue_cycle":9,"live_units_before":12,"killed_live_units":0,"produced_live_units":0,"live_units_after":12}*
+
+// ====
 // RUN: emit low-schedule-json @resource_stall_ends_cfg_block_arguments_at_definition strategy=resource-stall diagnostics=candidates cliff=test.i32:14:15:14 output=none
 
 test.target<low_core> @test_target

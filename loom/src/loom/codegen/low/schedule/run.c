@@ -1689,6 +1689,7 @@ static iree_status_t loom_low_schedule_build(
   loom_low_schedule_dependency_graph_initialize(&state.dependencies);
   IREE_ASSERT(state.body != NULL);
   state.memory_accesses = options->memory_accesses;
+  state.liveness_dataflow = &model->liveness_dataflow;
   state.register_type_resolver =
       loom_low_register_type_resolver_for_descriptor_set(
           state.target.descriptor_set);

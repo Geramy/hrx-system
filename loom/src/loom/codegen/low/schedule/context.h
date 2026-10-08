@@ -12,6 +12,7 @@
 #include "iree/base/api.h"
 #include "iree/base/internal/arena.h"
 #include "loom/analysis/liveness.h"
+#include "loom/analysis/liveness_dataflow.h"
 #include "loom/codegen/low/function.h"
 #include "loom/codegen/low/memory_access.h"
 #include "loom/codegen/low/representation_binding.h"
@@ -224,6 +225,9 @@ typedef struct loom_low_schedule_build_state_t {
   loom_module_t* module;
   // Scheduler options provided by the caller.
   const loom_low_schedule_options_t* options;
+  // Canonical block liveness of the scheduled function. Values live out of a
+  // block retain their storage through the whole block.
+  const loom_liveness_dataflow_t* liveness_dataflow;
   // Direct register-class pressure cliffs from |options|, or NULL.
   const loom_target_residency_direct_resource_table_t* pressure_cliffs;
   // Derived target pressure resources from |options|, or NULL.

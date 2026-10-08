@@ -808,6 +808,34 @@ static void loom_low_schedule_note_block_pressure_use(
   value->remaining_use_count += use_count;
 }
 
+// Charges each register value live out of the block one use that no block
+// node consumes. Block-local uses alone would retire such a value at its last
+// local read and never charge live-through values or results first read by a
+// successor, although their storage stays occupied for the whole block. The
+// pressure limits then admit schedules whose real live set exceeds them.
+static void loom_low_schedule_note_block_live_out_pressure(
+    loom_low_schedule_build_state_t* state,
+    const loom_low_schedule_block_t* block_record,
+    loom_low_schedule_pressure_state_t* pressure_state) {
+  const loom_liveness_dataflow_t* dataflow = state->liveness_dataflow;
+  const uint32_t block_index = block_record->block->region_index;
+  if (dataflow == NULL || block_index >= dataflow->block_count) {
+    return;
+  }
+  const loom_liveness_block_relation_t* relation =
+      &dataflow->blocks[block_index];
+  for (iree_host_size_t i = 0; i < relation->live_out_count; ++i) {
+    const loom_value_ordinal_t value_ordinal = loom_local_value_domain_ordinal(
+        state->value_domain, relation->live_out_values[i]);
+    if (state->values[value_ordinal].register_class_id ==
+        LOOM_LOW_REG_CLASS_NONE) {
+      continue;
+    }
+    loom_low_schedule_note_block_pressure_use(state, pressure_state,
+                                              value_ordinal, /*use_count=*/1);
+  }
+}
+
 void loom_low_schedule_pressure_initialize_block(
     loom_low_schedule_build_state_t* state,
     const loom_low_schedule_block_t* block_record,
@@ -870,6 +898,8 @@ void loom_low_schedule_pressure_initialize_block(
     }
     loom_low_schedule_reset_candidate_operand_uses(state, pressure_state);
   }
+  loom_low_schedule_note_block_live_out_pressure(state, block_record,
+                                                 pressure_state);
 
   for (iree_host_size_t i = 0; i < pressure_state->block_value_count; ++i) {
     const loom_value_ordinal_t value_ordinal =
