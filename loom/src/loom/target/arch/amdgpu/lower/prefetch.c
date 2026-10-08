@@ -62,8 +62,10 @@ static bool loom_amdgpu_prefetch_static_offset_split(
     return false;
   }
   const uint64_t static_byte_offset = (uint64_t)plan->source.static_byte_offset;
+  // The prefetch address ignores the two LSBs of each component (RDNA4 ISA
+  // 8.5). Keep a split immediate 4-byte aligned so the remainder carries them.
   const uint64_t immediate_offset =
-      iree_min(static_byte_offset, offset_info->unsigned_max);
+      iree_min(static_byte_offset, offset_info->unsigned_max & ~(uint64_t)3);
   const uint64_t scalar_byte_offset = static_byte_offset - immediate_offset;
   if (scalar_byte_offset > UINT32_MAX) {
     return false;
@@ -127,8 +129,9 @@ static bool loom_amdgpu_view_prefetch_count(const loom_op_t* source_op,
     case LOOM_VIEW_PREFETCH_LOCALITY_L3:
       // AMDGPU data-prefetch packets expose a span count, not a portable cache
       // locality selector. The source locality chooses whether to prefetch; the
-      // packet span stays at the minimal representable value.
-      *out_count = 1;
+      // packet span stays at the minimal representable value. The count is
+      // zero-based: 0 selects one 128-byte line.
+      *out_count = 0;
       return true;
     case LOOM_VIEW_PREFETCH_LOCALITY_COUNT_:
       break;
@@ -185,8 +188,8 @@ static bool loom_amdgpu_prefetch_select_source(
   IREE_ASSERT(descriptor != NULL);
   loom_amdgpu_descriptor_offset_immediate_info_t offset_info = {0};
   if (!loom_amdgpu_descriptor_offset_immediate_info(
-          descriptor_set, descriptor_ordinal, 1,
-          LOOM_LOW_IMMEDIATE_KIND_UNSIGNED, &offset_info)) {
+          descriptor_set, descriptor_ordinal, 1, LOOM_LOW_IMMEDIATE_KIND_SIGNED,
+          &offset_info)) {
     *out_decision_key = IREE_SV("prefetch.offset_immediate");
     return false;
   }
@@ -302,6 +305,40 @@ iree_status_t loom_amdgpu_select_view_prefetch_plan(
                                      out_selected);
 }
 
+// Adds an SGPR byte offset to the base address of a buffer descriptor.
+static iree_status_t loom_amdgpu_prefetch_offset_descriptor_base(
+    loom_low_lower_context_t* context, const loom_op_t* source_op,
+    loom_value_id_t low_descriptor, loom_value_id_t low_byte_offset,
+    loom_value_id_t* out_low_descriptor) {
+  loom_type_t scalar_type = loom_type_none();
+  loom_type_t pointer_type = loom_type_none();
+  loom_type_t descriptor_type = loom_type_none();
+  IREE_RETURN_IF_ERROR(loom_amdgpu_make_sgpr_type(context, &scalar_type));
+  IREE_RETURN_IF_ERROR(
+      loom_amdgpu_make_sgpr_range_type(context, 2, &pointer_type));
+  IREE_RETURN_IF_ERROR(
+      loom_amdgpu_make_sgpr_range_type(context, 4, &descriptor_type));
+  loom_value_id_t base = LOOM_VALUE_ID_INVALID;
+  loom_value_id_t extent = LOOM_VALUE_ID_INVALID;
+  loom_value_id_t control = LOOM_VALUE_ID_INVALID;
+  IREE_RETURN_IF_ERROR(loom_amdgpu_emit_low_slice(
+      context, source_op, low_descriptor, 0, pointer_type, &base));
+  IREE_RETURN_IF_ERROR(loom_amdgpu_emit_low_slice(
+      context, source_op, low_descriptor, 2, scalar_type, &extent));
+  IREE_RETURN_IF_ERROR(loom_amdgpu_emit_low_slice(
+      context, source_op, low_descriptor, 3, scalar_type, &control));
+  loom_value_id_t shifted_words[2];
+  IREE_RETURN_IF_ERROR(loom_amdgpu_emit_sgpr64_add_u32_offset(
+      context, source_op, base, low_byte_offset, shifted_words));
+  // S_BUFFER_PREFETCH_DATA does not bounds-check against num_records, so the
+  // extent is kept as is.
+  const loom_value_id_t fields[] = {shifted_words[0], shifted_words[1], extent,
+                                    control};
+  return loom_amdgpu_build_low_register_range(
+      context, source_op, fields, IREE_ARRAYSIZE(fields), descriptor_type,
+      out_low_descriptor);
+}
+
 iree_status_t loom_amdgpu_lower_view_prefetch(
     loom_low_lower_context_t* context, const loom_op_t* source_op,
     const loom_amdgpu_prefetch_plan_t* plan) {
@@ -322,10 +359,20 @@ iree_status_t loom_amdgpu_lower_view_prefetch(
       dynamic_index == LOOM_VALUE_ID_INVALID
           ? LOOM_LOW_SOURCE_MEMORY_ACCESS_BYTE_SHIFT_NONE
           : plan->source.dynamic_terms[0].byte_shift;
+  // SOFFSET is the span length on the prefetch packets, not an address offset
+  // (RDNA4 ISA 8.5.1). The SGPR byte offset is added to the descriptor base
+  // instead, and SOFFSET stays zero for the minimal span.
+  loom_value_id_t low_address_offset = LOOM_VALUE_ID_INVALID;
+  if (dynamic_index != LOOM_VALUE_ID_INVALID || plan->scalar_byte_offset != 0) {
+    IREE_RETURN_IF_ERROR(loom_amdgpu_emit_sgpr_byte_offset(
+        context, source_op, dynamic_index, dynamic_index_byte_stride,
+        dynamic_index_byte_shift, plan->scalar_byte_offset,
+        &low_address_offset));
+  }
   loom_value_id_t low_soffset = LOOM_VALUE_ID_INVALID;
   IREE_RETURN_IF_ERROR(loom_amdgpu_emit_sgpr_byte_offset(
-      context, source_op, dynamic_index, dynamic_index_byte_stride,
-      dynamic_index_byte_shift, plan->scalar_byte_offset, &low_soffset));
+      context, source_op, LOOM_VALUE_ID_INVALID, 1,
+      LOOM_LOW_SOURCE_MEMORY_ACCESS_BYTE_SHIFT_NONE, 0, &low_soffset));
 
   loom_named_attr_t attrs[] = {
       {
@@ -340,6 +387,11 @@ iree_status_t loom_amdgpu_lower_view_prefetch(
   loom_value_id_t low_descriptor = LOOM_VALUE_ID_INVALID;
   IREE_RETURN_IF_ERROR(loom_amdgpu_emit_hal_buffer_descriptor(
       context, source_op, low_resource, &plan->source, &low_descriptor));
+  if (low_address_offset != LOOM_VALUE_ID_INVALID) {
+    IREE_RETURN_IF_ERROR(loom_amdgpu_prefetch_offset_descriptor_base(
+        context, source_op, low_descriptor, low_address_offset,
+        &low_descriptor));
+  }
   loom_value_id_t operands[] = {
       low_descriptor,
       low_soffset,
